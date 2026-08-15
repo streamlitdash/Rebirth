@@ -1112,8 +1112,10 @@ python s03_publish.py
 `s03_publish.py` creates a temporary minimal bundle. It stages `s01_app.py` as
 Plotly's conventional `app.py` and `s04_server.py` as `gunicorn.conf.py` **only
 inside that temporary directory**. Tests, tools, docs, caches, and compatibility
-forwarders are not deployed. `plotly-cloud.toml` starts with only the new app
-name; the first publish records the new application metadata. The publisher
+forwarders are not deployed. `plotly-cloud.toml` now records the application
+metadata created by Rebirth's first publish. The deployment regression test
+pins that Rebirth-owned identity so a future publish cannot silently target an
+unrelated app. The publisher
 does not override Plotly Cloud's entrypoint: native backend detection discovers
 the Dash variable from the staged conventional `app.py`. `tzdata` is an
 explicit runtime dependency because slim Linux images do not necessarily ship

@@ -94,7 +94,8 @@ output file.
 - Real connector code is not imported at module load. The default application
   remains fully usable with fixtures and no private environment. The old
   `s08_plsend.csv`, inherited Plotly application IDs, and two stale pre-Rebirth
-  PDF exports were removed after all live references were migrated.
+  PDF exports were removed after all live references were migrated. The current
+  Plotly metadata belongs to the newly created Rebirth application.
 - No broad style or architecture refactor was performed. Changes beyond source
   reconstruction were limited to contract alignment, fixture isolation,
   correctness, deterministic testing, and removal of proven duplicates or

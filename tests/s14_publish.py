@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 import s03_publish as publishing
@@ -43,9 +44,11 @@ def test_publish_uses_plotly_native_entrypoint_discovery(
     assert captured["check"] is True
 
 
-def test_plotly_config_does_not_inherit_an_existing_app() -> None:
-    config = publishing.CONFIG.read_text(encoding="utf-8")
+def test_plotly_config_targets_the_rebirth_app() -> None:
+    config = tomllib.loads(publishing.CONFIG.read_text(encoding="utf-8"))
 
-    assert 'name = "rebirth"' in config
-    assert "app_id" not in config
-    assert "app_url" not in config
+    assert config == {
+        "name": "rebirth",
+        "app_id": "7a4087c3-84a7-4f1a-a5fb-d5ac2cccb661",
+        "app_url": "71053046-5033-4d1f-8024-3494abf67602",
+    }
