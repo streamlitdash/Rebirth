@@ -1,1 +1,1 @@
-"""Copyable connector examples that are never loaded by the application."""
+"""Connector contracts and inline recovered code; fixture mode imports none."""

@@ -20,7 +20,13 @@ from core.s04_pl import (
 from core.s05_storage import LocalCsvAdjustmentRepository
 from feeds.s01_sources import build_production_refresh_manager
 from ui import s08_plevents as pl_events
-from ui.s06_plview import build_pl_page, build_pl_send_sections
+from ui.s03_aggregate import format_number, prepare_risk_data
+from ui.s06_plview import (
+    PL_AGGREGATE_TOGGLE_TYPE,
+    build_pl_aggregate_table,
+    build_pl_page,
+    build_pl_send_sections,
+)
 from ui.s08_plevents import PLSendConfig
 from ui.s09_factory import build_app
 
@@ -246,6 +252,9 @@ def test_native_pl_page_owns_workflow_and_adjustment_state() -> None:
     assert getattr(page, "id", None) == "pnl-page-container"
     assert {
         "pnl-page",
+        "pnl-aggregate-open-risk-types",
+        "pnl-aggregate-pl-dimension",
+        "pnl-aggregate-pl-grid",
         "pl-adjustment-revision-store",
         "pl-workflow-state",
         "pl-preview-summary",
@@ -256,6 +265,102 @@ def test_native_pl_page_owns_workflow_and_adjustment_state() -> None:
 
     cold_page = build_pl_page(start_initial_load=True)
     assert "pnl-initial-load-trigger" in _string_ids(cold_page)
+
+
+def test_pl_aggregate_table_uses_only_page_owned_toggle_ids() -> None:
+    manager = build_production_refresh_manager()
+    manager.refresh(force_risk=True, force_pl=True)
+    prepared = prepare_risk_data(manager.read_frame("dashboard_frame").frame)
+
+    table = build_pl_aggregate_table(prepared, "activity", ["IR"])
+    toggle_ids = [
+        component_id
+        for item in _walk(table)
+        if isinstance((component_id := getattr(item, "id", None)), dict)
+    ]
+
+    assert toggle_ids
+    assert all(
+        component_id
+        == {
+            "type": PL_AGGREGATE_TOGGLE_TYPE,
+            "risk_type": component_id["risk_type"],
+        }
+        for component_id in toggle_ids
+    )
+    assert not any(
+        component_id.get("type") == "aggregate-row-toggle"
+        for component_id in toggle_ids
+    )
+
+
+def test_pl_aggregate_callback_renders_all_mapped_rows_independently() -> None:
+    manager = build_production_refresh_manager()
+    manager.refresh(force_risk=True, force_pl=True)
+    app = build_app(refresh_manager=manager)
+    page = _native_page(app, "/pnl")
+    page_ids = _string_ids(page)
+    selector = next(
+        item
+        for item in _walk(page)
+        if isinstance(item, dcc.RadioItems) and item.id == "pnl-aggregate-pl-dimension"
+    )
+
+    assert {
+        "pnl-aggregate-open-risk-types",
+        "pnl-aggregate-pl-dimension",
+        "pnl-aggregate-pl-grid",
+        "pnl-unavailable",
+    } <= page_ids
+    assert selector.value == "activity"
+    assert {option["value"] for option in selector.options} >= {
+        "activity",
+        "portfolio",
+    }
+    assert "aggregate-pl-grid" not in page_ids
+    assert "aggregate-pl-dimension" not in page_ids
+    initial_grid = next(
+        item
+        for item in _walk(page)
+        if getattr(item, "id", None) == "pnl-aggregate-pl-grid"
+    )
+    assert any(
+        getattr(item, "className", None) == "aggregate-risk-row"
+        for item in _walk(initial_grid)
+    )
+
+    aggregate = _callback(app, "pnl-aggregate-pl-grid.children")
+    open_state, table = aggregate(
+        "activity",
+        manager.health.revision,
+        [],
+        [],
+    )
+    prepared = prepare_risk_data(manager.read_frame("dashboard_frame").frame)
+    risk_rows = [
+        item
+        for item in _walk(table)
+        if getattr(item, "className", None) == "aggregate-risk-row"
+    ]
+    total_row = next(
+        item
+        for item in _walk(table)
+        if getattr(item, "className", None) == "aggregate-total-row"
+    )
+
+    assert open_state is no_update
+    assert len(risk_rows) == prepared["risk type"].nunique()
+    assert prepared["portfolio"].nunique() > 0
+    assert total_row.children[-1].children.children == format_number(
+        prepared["pl"].sum(min_count=1)
+    )
+
+    metadata = next(
+        value
+        for value in app.callback_map.values()
+        if "pnl-aggregate-pl-grid.children" in str(value["output"])
+    )
+    assert any(PL_AGGREGATE_TOGGLE_TYPE in item["id"] for item in metadata["inputs"])
 
 
 def test_histo_data_is_lazy_and_filters_chart_and_table(
@@ -326,6 +431,16 @@ def test_manager_app_without_pl_config_omits_inert_workflow(tmp_path: Path) -> N
     assert not any(
         "pl-send-preview-grid.data" in key for key in without_pl.callback_map
     )
+    without_pnl_page = _native_page(without_pl, "/pnl")
+    without_pnl_ids = _string_ids(without_pnl_page)
+    assert {
+        "pnl-aggregate-pl-dimension",
+        "pnl-aggregate-pl-grid",
+        "pnl-unavailable",
+    } <= without_pnl_ids
+    assert any(
+        "pnl-aggregate-pl-grid.children" in key for key in without_pl.callback_map
+    )
 
     config = PLSendConfig(
         mapping_source=Path("data/s08_concerto.csv"),
@@ -369,6 +484,10 @@ def test_cold_native_pnl_is_safe_before_commit_and_recovers_at_revision_one(
 
     assert "pnl-initial-load-trigger" in _string_ids(page)
     assert manager.health.revision == 0
+    aggregate = _callback(app, "pnl-aggregate-pl-grid.children")
+    aggregate_state, aggregate_view = aggregate("activity", 0, [], [])
+    assert aggregate_state is no_update
+    assert "still loading" in str(aggregate_view.children)
     preview = _callback(app, "pl-send-preview-grid.data")
     rows, status = preview(1, 0, [], 0)
     assert rows == []
@@ -379,6 +498,17 @@ def test_cold_native_pnl_is_safe_before_commit_and_recovers_at_revision_one(
     assert (store, options, selected) == ({}, [], None)
 
     manager.refresh(force_risk=True, force_pl=True)
+    aggregate_state, aggregate_view = aggregate(
+        "activity",
+        manager.health.revision,
+        [],
+        [],
+    )
+    assert aggregate_state is no_update
+    assert any(
+        getattr(item, "className", None) == "aggregate-risk-row"
+        for item in _walk(aggregate_view)
+    )
     rows, status = preview(1, manager.health.revision, [], 0)
     assert rows
     assert "unique Portfolio + ConcertoField rows" in status

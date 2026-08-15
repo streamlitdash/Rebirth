@@ -6,10 +6,10 @@ data cannot be mistaken for production.
 
 Those files sit behind small public connector functions. The dated Risk Checker
 function owns both readiness and inventory files. Recovered private connector
-sources are preserved, fully commented and non-importable, under the sibling
-``_disabled`` archives in ``feeds`` and ``adapters``. They are deliberately not
-registered here or included in deployment bundles. To connect real systems,
-replace the marked body of each public loader below.
+code is preserved as clearly delimited, comment-only ``REAL`` blocks immediately
+beside the active CSV fallback in this file and the matching adapter module. To
+connect real systems, uncomment a ``REAL`` block and comment its adjacent active
+CSV fallback/return as instructed by the marker.
 Keep its parameters and documented return columns unchanged; the common pipeline
 will continue to own validation, joins, P&L formulas, aggregation, readiness-date
 transitions, and transactional last-good-snapshot behavior.
@@ -46,6 +46,82 @@ from core.s02_pipeline import (
     ProductConnectorAdapter,
     RiskRefreshManager,
 )
+
+# === REAL PRODUCT IMPORTS (COMMENTED OUT) ====================================
+# Uncomment these only after uncommenting the recovered builders in the named
+# adapter modules. The active CSV registration is at get_product_connector_adapters.
+# from adapters.s02_ir import (
+#     build_ir_basis_adapter,
+#     build_ir_bond_adapter,
+#     build_ir_delta_adapter,
+#     build_ir_deltavega_adapter,
+#     build_ir_inflation_adapter,
+#     build_ir_inflationvega_adapter,
+#     build_ir_xccy_adapter,
+# )
+# from adapters.s03_fx import (
+#     build_fx_delta_adapter,
+#     build_fx_gamma_adapter,
+#     build_fx_vega_adapter,
+# )
+# from adapters.s04_credit import build_credit_delta_adapter
+# No private Commodity builder was present in the recovered source.
+#
+# Recovered dependencies for get_risk_checker/get_portfolio_config:
+# import colossus
+# import mrx
+# import numpy as np
+# from awacs_poc import configmanager as cm
+# from pandas.tseries.offsets import BDay
+# colossus_connection = colossus.connect("PROD")
+#
+# Recovered original import inventory (reference only; do not uncomment this
+# whole list). Most names were unused by the recovered connector bodies, but
+# they are kept inline so moving away from the old archive files loses nothing:
+# import asyncio
+# import boto3
+# import concerto
+# import credentials_wrapper as cw
+# import dataframe_image as dfi
+# import datetime as dt
+# import io
+# import json
+# import mailer
+# import pathlib
+# import re
+# import requests
+# import streamlit as st
+# import string
+# import time as time_time
+# import warnings
+# import xva_rpmlib.ver as rple
+# from base64 import b64encode
+# from collections import Counter
+# from cryptdl2 import pypdl
+# from cryptdl2.pypdl import pdl_read, gnp_exec
+# from dataclasses import dataclass
+# from datetime import *
+# from functools import reduce
+# from IPython.display import Image, display
+# from numpy import *
+# from PIL import Image as PilImage
+# from st_aggrid import (
+#     Aggrid,
+#     ColumnsAutoSizeMode,
+#     DataReturnMode,
+#     GridOptionsBuilder,
+#     GridUpdateMode,
+#     JsCode,
+# )
+# from typing import Dict, List, Literal, Tuple
+# from xva.boli.local import *
+# from xva.boli.local import bkeu_functions, gcd
+# from xva.boli.local.utils import dates
+# from xva.rpmlib.data.attributes import DataAttributes
+# from xva.rpmlib.mercury_xva_api import MercuryXvaApi
+# from xva.rpmlib.pal.pal_credit_data import PalCreditData
+# from xva.rpmlib.pal.pal_enums import PalServers, Xvascope, xvacode
+# === END REAL PRODUCT IMPORTS ================================================
 
 
 FAKE_DATA_DIRECTORY = Path(__file__).resolve().parent.parent / "data"
@@ -292,7 +368,96 @@ def get_risk_checker(
     frame contains ``Risk Type``, ``Risk Greek``, ``MMMFile``, and ``Product``.
     A real implementation should fetch both atomically for ``checker_date``.
     """
-    # REPLACE THESE FAKE CSV READS WITH YOUR ONE REAL RISK-CHECKER FUNCTION.
+
+    # === REAL RISK CHECKER (COMMENTED OUT) ===================================
+    # SWITCH (1/2): uncomment this REAL block.
+    # SWITCH (2/2): comment the adjacent ACTIVE CSV FALLBACK block below.
+    # _normalized_date(checker_date, parameter="checker_date")
+    # try:
+    #     view = mrx.MRXView(r"mrx/static/age.tsv")
+    #     view += ("Current Date", checker_date.strftime("%Y/%m/%d"))
+    #     data = view.fetch(verify=False)
+    #     data = data.rename(columns={"Age": "Aged", "Risk Type": "Risk All"})
+    #
+    #     hpce_files = [
+    #         "MICRO_XTARGET_RT_PAL.DAT",
+    #         "MICRO_XTARGET_RT_PAL.DAT",
+    #         "MICRO_XTARGET_PT_ADJ.DAT",
+    #         "MICRO_PLATO_LON.DAT",
+    #         "HPCE_RPO_XVA_STOCK.DAT",
+    #         "HPCE_CRD_XVA_STOCK.DAT",
+    #         "HPCE_CMD_XVA_STOCK.DAT",
+    #         "HPCE_RPO_XVA_CR_SP01_SPLIT_PARENT_TENOR.DAT",
+    #         "HPCE_CRD_XVA_CR_SP01_SPLIT_PARENT_TENOR.DAT",
+    #         "RHO_HAT_DETAILED_FAST_MANAGEMENT.DAT",
+    #         "PAL_CMD_XVA_CR_SP01_SPLIT_PARENT_TENOR.DAT",
+    #     ]
+    #
+    #     data["Product"] = np.where(
+    #         data["MRX File"].str.contains("PAL", na=False), "XVA", "Hedges"
+    #     )
+    #     data["Age"] = np.where(data["Aged"] == "Aged", 1, 0)
+    #     data = data[~data["MRX File"].isin(hpce_files)]
+    #
+    #     data_mapping = {
+    #         "CO Delta Cash (GeAR)": ("Commo", "Delta"),
+    #         "CO Vega ATM": ("Commo", "Vega"),
+    #         "Credit Spread Delta (GeAR)": ("Credit", "Delta"),
+    #         "Credit Option Vega": ("Credit", "Vega"),
+    #         "FX Exposure (Ext.) (GeAR)": ("FX", "Delta"),
+    #         "FX Gamma Ccy1 (Soho)": ("FX", "Gamma"),
+    #         "FX Vega (Soho) (GeAR)": ("FX", "Vega"),
+    #         "IR Delta (GeAR)": ("IR", "Delta"),
+    #         "IR Gamma +10 (GeAR)": ("IR", "Gamma"),
+    #         "IR Gamma -10 (GeAR)": ("IR", "Gamma"),
+    #         "IR Vega (GeAR)": ("IR", "DeltaVega"),
+    #         "INF ZC Delta (GeAR)": ("IR", "Inflation"),
+    #         "INF ZC Spread (GeAR)": ("IR", "Inflation"),
+    #         "INF ZC SABRAP Vega": ("IR", "InflationVega"),
+    #         "IR Basis Spread (GeAR)": ("IR", "Basis"),
+    #         "Bond Spread (GeAR)": ("IR", "Bond"),
+    #     }
+    #     mapping = pd.DataFrame(
+    #         [[key, *values] for key, values in data_mapping.items()],
+    #         columns=["Risk All", "Risk Type", "Risk Greek"],
+    #     )
+    #     data = pd.merge(data, mapping, on="Risk All", how="left")
+    #     checker = data.loc[
+    #         data["Age"] != 0,
+    #         ["Risk Type", "Risk Greek", "MRX File", "Product"],
+    #     ].copy()
+    #     readiness = (
+    #         data[["Risk Type", "Risk Greek", "Age"]]
+    #         .groupby(["Risk Type", "Risk Greek"], as_index=False)
+    #         .sum()
+    #     )
+    #     basis_age = readiness.loc[
+    #         readiness["Risk Greek"] == "Basis", "Age"
+    #     ].sum()
+    #     readiness = pd.concat(
+    #         [
+    #             readiness,
+    #             pd.DataFrame(
+    #                 {
+    #                     "Risk Type": ["IR", "IR"],
+    #                     "Risk Greek": ["XCCY", "XCCYVega"],
+    #                     "Age": [basis_age, basis_age],
+    #                 }
+    #             ),
+    #         ],
+    #         ignore_index=True,
+    #     )
+    #     readiness.to_csv("data/s01_readiness.csv", index=False)
+    #     checker.to_csv("data/s02_checker.csv", index=False)
+    # except Exception:
+    #     readiness = pd.read_csv("data/s01_readiness.csv")
+    #     checker = pd.read_csv("data/s02_checker.csv")
+    # # Contract shim: current Cube calls this column MMMFile.
+    # checker = checker.rename(columns={"MRX File": "MMMFile"})
+    # return readiness.copy(), checker.copy()
+    # === END REAL RISK CHECKER ===============================================
+
+    # === ACTIVE CSV FALLBACK (COMMENT OUT WHEN REAL IS ENABLED) =============
     _normalized_date(checker_date, parameter="checker_date")
     readiness = _read_fake_csv("risk_readiness")
     checker = _read_fake_csv("risk_checker")
@@ -307,7 +472,9 @@ def get_risk(risk_date: pd.Timestamp, source_type: str) -> pd.DataFrame:
     tenor fields. Credit may additionally return connector-owned ``Region``.
     Connector Group, Region, Risk, and dRisk remain authoritative.
     """
-    # REPLACE THIS FAKE CSV READ WITH YOUR REAL RISK/DRISK CONNECTOR.
+    # REAL risk bodies are comment-preserved in adapters/s02_ir.py,
+    # adapters/s03_fx.py, and adapters/s04_credit.py. Switch them only in
+    # get_product_connector_adapters below. ACTIVE CSV FALLBACK follows.
     _normalized_date(risk_date, parameter="risk_date")
     spec = _source_spec(source_type)
     output_columns = [
@@ -375,7 +542,8 @@ def get_market_open(
     authority. The manager supplies one Risk-derived ``underlying`` per call.
     Use the explicit ``market_status`` to select the Live or OFFICIAL dataset.
     """
-    # REPLACE THIS FAKE CSV READ WITH YOUR REAL OPEN-MARKET CONNECTOR.
+    # REAL Open bodies live beside their adapter contracts. The ACTIVE CSV
+    # FALLBACK below remains selected by get_product_connector_adapters.
     _normalized_date(market_date, parameter="market_date")
     _market_status(market_status)
     if not isinstance(underlying, str) or not underlying.strip():
@@ -420,7 +588,8 @@ def get_market_status(
     ``OFFICIAL``. A real connector uses it to choose the upstream source rather
     than comparing the date to its own clock.
     """
-    # REPLACE THIS FAKE CSV READ WITH YOUR REAL LIVE/OFFICIAL MARKET CONNECTOR.
+    # REAL Current bodies live beside their adapter contracts. The ACTIVE CSV
+    # FALLBACK below remains selected by get_product_connector_adapters.
     _normalized_date(market_date, parameter="market_date")
     selected_status = _market_status(market_status)
     if not isinstance(underlying, str) or not underlying.strip():
@@ -456,8 +625,159 @@ def get_portfolio_config(portfolio_date: pd.Timestamp) -> pd.DataFrame:
     fields such as ``Sub Category`` are preserved when supplied. The manager
     supplies ``market_date - BDay(1)`` as ``portfolio_date``.
     """
+
+    # === REAL PORTFOLIO MAPPING (COMMENTED OUT) ==============================
+    # SWITCH (1/2): uncomment this REAL block and the REAL imports above.
+    # SWITCH (2/2): comment the adjacent ACTIVE CSV FALLBACK block below.
+    # _normalized_date(portfolio_date, parameter="portfolio_date")
+    # try:
+    #     try:
+    #         body = {
+    #             "reportingCurrency": "EUR",
+    #             "attributes": ["Ptf", "PtfName", "SignoffGroup"],
+    #             "values": ["SteppedDailyPnL"],
+    #             "filters": [
+    #                 {"attributeName": "PnlType", "filters": ["Gross P&L"]}
+    #             ],
+    #             "fromDateKey": (portfolio_date - BDay(2)).strftime("%Y%m%d"),
+    #             "toDateKey": portfolio_date.strftime("%Y%m%d"),
+    #         }
+    #         response = colossus_connection.raw_request(
+    #             "POST",
+    #             endpoint_uri="/v1/data-warehouse/reports/query",
+    #             body=body,
+    #         )
+    #         sog_colossus = pd.DataFrame(
+    #             [row["fields"] for row in response["results"][1:]],
+    #             columns=response["results"][0]["fields"],
+    #         ).drop(columns=["SteppedDailyPnL"]).rename(
+    #             columns={"Ptf": "Portfolio", "PtfName": "Portfolio Name"}
+    #         )
+    #         sog_colossus.to_csv("data/s03_colossusbp.csv", index=False)
+    #     except Exception:
+    #         sog_colossus = pd.read_csv("data/s03_colossusbp.csv")
+    #
+    #     try:
+    #         ptf_mapping = pd.DataFrame(cm.get("XVA.IM Optin.PnL.Ann.Ptf List"))
+    #         ptf_mapping["Portfolio"] = (
+    #             ptf_mapping["Portfolio"]
+    #             .fillna("NA")
+    #             .str.replace(" ", "", regex=True)
+    #         )
+    #         ptf_mapping.to_csv("data/s04_configbp.csv", index=False)
+    #     except Exception:
+    #         ptf_mapping = pd.read_csv("data/s04_configbp.csv")
+    #
+    #     try:
+    #         view = mrx.MRXView("mrx/static/product.tsv")
+    #         view += ("Current Date", portfolio_date.strftime("%Y/%m/%d"))
+    #         product_data = view.fetch(verify=False)
+    #         xva_products = [
+    #             "CVA-NONRISKMANAGED",
+    #             "CVA-RISKMANAGED",
+    #             "FCVA",
+    #             "FBVA",
+    #             "COLVA",
+    #         ]
+    #         portfolio_product = product_data[["Portfolio", "Product"]].drop_duplicates()
+    #         portfolio_xva = portfolio_product[
+    #             portfolio_product["Product"].isin(xva_products)
+    #         ].drop_duplicates(subset="Portfolio")
+    #         portfolio_xva["Product"] = "XVA"
+    #         all_portfolios = product_data["Portfolio"].drop_duplicates()
+    #         portfolio_hedges = all_portfolios[
+    #             ~all_portfolios.isin(portfolio_xva["Portfolio"])
+    #         ].to_frame()
+    #         portfolio_hedges["Product"] = "Hedges"
+    #         productmap = pd.concat(
+    #             [
+    #                 portfolio_xva[["Portfolio", "Product"]],
+    #                 portfolio_hedges[["Portfolio", "Product"]],
+    #             ],
+    #             ignore_index=True,
+    #         )
+    #         cit_sog = sog_colossus[
+    #             sog_colossus["SignoffGroup"] == "CIT XVA"
+    #         ].copy()
+    #         cit_sog["Product"] = np.where(
+    #             cit_sog["Portfolio Name"].str.contains("HED", na=False),
+    #             "Hedges",
+    #             "XVA",
+    #         )
+    #         productmap = pd.concat(
+    #             [productmap, cit_sog[["Portfolio", "Product"]]],
+    #             ignore_index=True,
+    #         )
+    #         productmap.to_csv("data/s05_productbp.csv", index=False)
+    #     except Exception:
+    #         productmap = pd.read_csv("data/s05_productbp.csv")
+    #
+    #     for source in (ptf_mapping, sog_colossus, productmap):
+    #         source["Portfolio"] = (
+    #             source["Portfolio"]
+    #             .astype(str)
+    #             .str.replace(",", "", regex=True)
+    #             .str.replace(r"\.0$", "", regex=True)
+    #         )
+    #     frame = pd.merge(
+    #         ptf_mapping, sog_colossus, on="Portfolio", how="outer"
+    #     ).fillna("NA")
+    #     cit_xva_rows = frame[frame["SignoffGroup"] == "CIT XVA"].copy()
+    #     cit_xva_rows["Portfolio"] = cit_xva_rows["Portfolio Name"]
+    #     frame = pd.concat([frame, cit_xva_rows], ignore_index=True)
+    #     frame = pd.merge(
+    #         frame, productmap, on="Portfolio", how="outer"
+    #     ).fillna("NA")
+    #     frame = frame.drop(columns=["Ptf Name"])[
+    #         [
+    #             "Portfolio",
+    #             "Product",
+    #             "SignoffGroup",
+    #             "Activity",
+    #             "Portfolio Name",
+    #             "Category",
+    #             "Sub Category",
+    #         ]
+    #     ]
+    #     frame = frame[frame["Product"].isin(["XVA", "Hedges"])]
+    #     frame.to_csv("data/s06_portfolios.csv", index=False)
+    # except Exception:
+    #     # The recovered implementation used its last successful local extracts.
+    #     sog_colossus = pd.read_csv("data/s03_colossusbp.csv")
+    #     ptf_mapping = pd.read_csv("data/s04_configbp.csv")
+    #     productmap = pd.read_csv("data/s05_productbp.csv")
+    #     for source in (ptf_mapping, sog_colossus, productmap):
+    #         source["Portfolio"] = (
+    #             source["Portfolio"]
+    #             .astype(str)
+    #             .str.replace(r"\.0$", "", regex=True)
+    #         )
+    #     frame = pd.merge(
+    #         ptf_mapping, sog_colossus, on="Portfolio", how="outer"
+    #     ).fillna("NA")
+    #     cit_xva_rows = frame[frame["SignoffGroup"] == "CIT XVA"].copy()
+    #     cit_xva_rows["Portfolio"] = cit_xva_rows["Portfolio Name"]
+    #     frame = pd.concat([frame, cit_xva_rows], ignore_index=True)
+    #     frame = pd.merge(
+    #         frame, productmap, on="Portfolio", how="outer"
+    #     ).fillna("NA")
+    #     frame = frame.drop(columns=["Ptf Name"])[
+    #         [
+    #             "Portfolio",
+    #             "Product",
+    #             "SignoffGroup",
+    #             "Activity",
+    #             "Portfolio Name",
+    #             "Category",
+    #             "Sub Category",
+    #         ]
+    #     ]
+    #     frame = frame[frame["Product"].isin(["XVA", "Hedges"])]
+    # return frame.copy()
+    # === END REAL PORTFOLIO MAPPING ==========================================
+
+    # === ACTIVE CSV FALLBACK (COMMENT OUT WHEN REAL IS ENABLED) =============
     _normalized_date(portfolio_date, parameter="portfolio_date")
-    # REPLACE THIS FAKE CSV READ WITH YOUR REAL PORTFOLIO CONFIG CONNECTOR.
     frame = _read_fake_csv("portfolio_config")
     _require_fake_notice(
         frame,
@@ -477,7 +797,11 @@ def get_risk_thresholds() -> pd.DataFrame:
     Real replacement contract: return one unique ``Risk Type`` + ``Risk Greek``
     row with positive absolute ``PL``, ``Risk``, and ``dRisk`` limits.
     """
-    # REPLACE THIS FAKE CSV READ WITH YOUR REAL RISK-THRESHOLD CONNECTOR.
+    # === RECOVERED ORIGINAL THRESHOLDS (COMMENTED OUT) =======================
+    # The original implementation was itself a CSV read; no private threshold
+    # service body was present to restore.
+    # return pd.read_csv("data/s07_thresholds.csv").copy()
+    # === ACTIVE CSV FALLBACK ==================================================
     return _read_fake_csv("risk_thresholds").copy()
 
 
@@ -489,7 +813,10 @@ def get_reported_underlyings() -> pd.DataFrame:
     unique source key; multiple source keys may share one reported target.
     """
 
-    # REPLACE THIS FAKE CSV READ WITH YOUR REAL REPORTING-MAPPING CONNECTOR.
+    # === RECOVERED ORIGINAL REPORTING MAP (COMMENTED OUT) ====================
+    # The original implementation also read data/s09_reported.csv directly.
+    # return pd.read_csv("data/s09_reported.csv", dtype="string")
+    # === ACTIVE VALIDATED CSV FALLBACK =======================================
     frame = _read_fake_csv("reported_underlyings")
     _require_fake_notice(
         frame,
@@ -570,6 +897,17 @@ def get_intraday_cashflows(cashflow_date: pd.Timestamp) -> pd.DataFrame:
 
 def send_sog_pl(frame: pd.DataFrame) -> None:
     """Reject external SOG delivery while the fixture boundary is active."""
+    # === RECOVERED ORIGINAL SENDER (COMMENTED OUT) ===========================
+    # The recovered module declared this endpoint but did not contain a caller
+    # or an authenticated transport implementation:
+    # submit_endpoint = "/api/svc/predict/submitPredictByPortfolio"
+    # SWITCH (1/2): uncomment this REAL block.
+    # SWITCH (2/2): comment the adjacent ACTIVE FIXTURE REJECTION below.
+    # if not isinstance(frame, pd.DataFrame):
+    #     raise TypeError("send_sog_pl expects a pandas DataFrame")
+    # print("success", flush=True)
+    # return
+    # === ACTIVE FIXTURE REJECTION ============================================
     if not isinstance(frame, pd.DataFrame):
         raise TypeError("send_sog_pl expects a pandas DataFrame")
     raise RuntimeError(
@@ -580,6 +918,14 @@ def send_sog_pl(frame: pd.DataFrame) -> None:
 
 def send_portfolio_pl(frame: pd.DataFrame) -> None:
     """Reject external Portfolio delivery while the fixture boundary is active."""
+    # === RECOVERED ORIGINAL SENDER (COMMENTED OUT) ===========================
+    # SWITCH (1/2): uncomment this REAL block.
+    # SWITCH (2/2): comment the adjacent ACTIVE FIXTURE REJECTION below.
+    # if not isinstance(frame, pd.DataFrame):
+    #     raise TypeError("send_portfolio_pl expects a pandas DataFrame")
+    # print("success", flush=True)
+    # return
+    # === ACTIVE FIXTURE REJECTION ============================================
     if not isinstance(frame, pd.DataFrame):
         raise TypeError("send_portfolio_pl expects a pandas DataFrame")
     raise RuntimeError(
@@ -588,15 +934,14 @@ def send_portfolio_pl(frame: pd.DataFrame) -> None:
     )
 
 
-def get_product_connector_adapters() -> Mapping[str, ProductConnectorAdapter]:
-    """Return the active per-source views over the fake CSV loaders.
+def _get_csv_product_connector_adapters() -> Mapping[str, ProductConnectorAdapter]:
+    """Build the per-source views over the active fake CSV loaders.
 
     Every source gets its own bound callable. Market callables receive the
     ordered, unique Underlyings from validated Risk and intentionally fetch them
     one at a time before returning one all-or-nothing frame. Replace any one
     callable with that function's real API implementation without changing the
-    other products. The recovered private registrations in ``_disabled`` are
-    archival reference only and are never imported by this composition root.
+    other products.
     """
     adapters: dict[str, ProductConnectorAdapter] = {}
     for source_type in PRODUCT_SPECS_BY_SOURCE_TYPE:
@@ -641,6 +986,42 @@ def get_product_connector_adapters() -> Mapping[str, ProductConnectorAdapter]:
     return adapters
 
 
+def get_product_connector_adapters() -> Mapping[str, ProductConnectorAdapter]:
+    """Select the comment-only REAL adapters or the active CSV fallback."""
+
+    # === REAL PRODUCT REGISTRATION (COMMENTED OUT) ===========================
+    # SWITCH (1/2): uncomment the imports near the top of this file and this
+    # block after uncommenting the matching builders in adapters/*.py.
+    # SWITCH (2/2): comment the one-line ACTIVE CSV FALLBACK return below.
+    # adapters = dict(_get_csv_product_connector_adapters())
+    # adapters["credit/delta"] = build_credit_delta_adapter()
+    # # The original registration referenced this, but no builder body was recovered:
+    # # adapters["credit/vega"] = build_credit_vega_adapter()  # unavailable
+    #
+    # # No private Commodity body was recovered. Keep its CSV entry active.
+    # # adapters["commo/delta"] = build_commo_delta_adapter()  # unavailable
+    # # adapters["commo/vega"] = build_commo_vega_adapter()  # unavailable
+    #
+    # adapters["fx/delta"] = build_fx_delta_adapter()
+    # adapters["fx/gamma"] = build_fx_gamma_adapter()
+    # adapters["fx/vega"] = build_fx_vega_adapter()
+    #
+    # adapters["ir/delta"], adapters["ir/gamma"] = build_ir_delta_adapter()
+    # adapters["ir/xccy"] = build_ir_xccy_adapter()
+    # # Listed by the recovered module, but no builder body was recovered:
+    # # adapters["ir/xccyvega"] = build_ir_xccyvega_adapter()  # unavailable
+    # adapters["ir/basis"] = build_ir_basis_adapter()
+    # adapters["ir/inflation"] = build_ir_inflation_adapter()
+    # adapters["ir/bond"] = build_ir_bond_adapter()
+    # adapters["ir/deltavega"] = build_ir_deltavega_adapter()
+    # adapters["ir/inflationvega"] = build_ir_inflationvega_adapter()
+    # return adapters
+    # === END REAL PRODUCT REGISTRATION =======================================
+
+    # === ACTIVE CSV FALLBACK (COMMENT OUT WHEN REAL IS ENABLED) =============
+    return _get_csv_product_connector_adapters()
+
+
 def build_production_refresh_manager(
     *, stage_delays: Mapping[str, float] | None = None
 ) -> RiskRefreshManager:
@@ -661,9 +1042,8 @@ def build_production_refresh_manager(
         )
 
     resolve_market_state.__name__ = "get_market_state"
-    # ACTIVE RUNTIME REGISTRATION: these callables are the CSV-backed boundary
-    # above. Files in feeds/_disabled and adapters/_disabled are intentionally
-    # non-importable archives and must never be wired here implicitly.
+    # ACTIVE RUNTIME REGISTRATION: get_product_connector_adapters performs the
+    # explicit, adjacent REAL-versus-CSV switch documented in that function.
     return RiskRefreshManager(
         get_portfolio_config,
         thresholds=get_risk_thresholds,

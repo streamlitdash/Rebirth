@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import json
+import time
 from collections.abc import Iterable
 from threading import Event, Thread
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
 from dash import dash_table, no_update
 from flask import Flask
+from plotly.utils import PlotlyJSONEncoder
 
 from adapters.s05_stock import (
     GetStock,
@@ -25,26 +29,42 @@ from core.s08_stock import (
     PRIOR_QUANTITY_COLUMN,
     QUANTITY_CHANGE_COLUMN,
     STOCK_CHANGE_COLUMN,
+    STOCK_HIERARCHY_LEVEL_COLUMN,
+    STOCK_HIERARCHY_PATH_COLUMN,
+    STOCK_HIERARCHY_POSITION_COUNT_COLUMN,
     STOCK_IDENTITY_COLUMNS,
+    STOCK_PROMOTION_BUCKET_COLUMN,
+    STOCK_PROMOTION_THRESHOLD_DEFAULT,
+    STOCK_TEMPORARY_GROUP_COLUMN,
     compare_stock_snapshots,
     filter_stock_comparison,
     map_stock_comparison_portfolios,
     map_stock_portfolios,
+    prepare_stock_hierarchy,
+    summarize_stock_hierarchy,
+    summarize_visible_stock_hierarchy,
 )
 from feeds.s01_sources import build_production_refresh_manager
 from pages import PAGE_SERVICES_CONFIG_KEY
 from pages.stock import layout as stock_page_layout
 from ui.s02_constants import DIMENSION_FILTER_IDS, FILTER_DIMENSION_FIELDS
 from ui.s07_events import STARTUP_COORDINATOR_CONFIG_KEY
+from ui import s09_factory as factory_module
 from ui.s09_factory import build_app
 from ui.s10_stock import (
     STOCK_FILTER_FIELDS,
     STOCK_FILTER_IDS,
+    STOCK_HIERARCHY_TOGGLE_TYPE,
+    StockPageData,
+    build_stock_hierarchy_with_state,
     build_stock_page,
+    build_stock_page_from_data,
     build_stock_page_from_sources,
     build_stock_page_shell,
     default_stock_dates,
     normalize_stock_date_pair,
+    stock_hierarchy_path_token,
+    toggle_stock_hierarchy_open_tokens,
 )
 
 
@@ -98,6 +118,48 @@ def _comparison_legs() -> tuple[pd.DataFrame, pd.DataFrame]:
     return current, prior
 
 
+def _large_stock_inputs(
+    row_count: int = 10_000,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    portfolios = [f"BOOK_{index}" for index in range(20)]
+    current = _stock(
+        [
+            [
+                f"CRDS-{index}",
+                f"CPTY-{index % 250}",
+                portfolios[index % len(portfolios)],
+                f"INSTRUMENT-{index}",
+                ("USD", "GBP", "EUR")[index % 3],
+                float(index % 100),
+                60_000.0 + float(index % 100),
+            ]
+            for index in range(row_count)
+        ]
+    )
+    prior = current.copy()
+    prior["Quantity"] = prior["Quantity"] - 1.0
+    prior["Market Value"] = prior["Market Value"] - 250.0
+    config = _config(
+        [
+            [
+                portfolio,
+                "XVA",
+                "Macro" if index % 2 == 0 else "Hedge",
+                f"SOG-{index % 4}",
+                "Core",
+                "Stock",
+            ]
+            for index, portfolio in enumerate(portfolios)
+        ]
+    )
+    return current, prior, config
+
+
+def _large_mapped_stock(row_count: int = 10_000) -> pd.DataFrame:
+    current, prior, config = _large_stock_inputs(row_count)
+    return map_stock_comparison_portfolios(current, prior, config)
+
+
 def _walk(component: object) -> Iterable[object]:
     yield component
     children = getattr(component, "children", None)
@@ -106,6 +168,28 @@ def _walk(component: object) -> Iterable[object]:
             yield from _walk(child)
     elif children is not None:
         yield from _walk(children)
+
+
+def _hierarchy_levels(component: object) -> list[str]:
+    levels: list[str] = []
+    for item in _walk(component):
+        if not hasattr(item, "to_plotly_json"):
+            continue
+        value = item.to_plotly_json().get("props", {}).get("data-stock-hierarchy-level")
+        if value is not None:
+            levels.append(str(value))
+    return levels
+
+
+def _hierarchy_paths(component: object) -> set[str]:
+    paths: set[str] = set()
+    for item in _walk(component):
+        if not hasattr(item, "to_plotly_json"):
+            continue
+        value = item.to_plotly_json().get("props", {}).get("data-stock-hierarchy-path")
+        if value is not None:
+            paths.add(str(value))
+    return paths
 
 
 def _callback_for_input(app, component_id: str):
@@ -237,6 +321,280 @@ def test_stock_comparison_mapping_and_filters_are_or_within_and_across() -> None
         filter_stock_comparison(mapped, {"risk-only-filter": ["x"]})
 
 
+def test_stock_promotion_and_hierarchy_preserve_identity_and_totals() -> None:
+    current = _stock(
+        [
+            ["CRDS-1", "CPTY-A", "BOOK_A", "EQ-A", "USD", 10.0, 50_000.0],
+            ["CRDS-2", "CPTY-B", "BOOK_B", "EQ-B", "GBP", 20.0, -60_000.0],
+            ["CRDS-3", "CPTY-C", "BOOK_C", "EQ-C", "USD", 30.0, 49_999.0],
+            [
+                "CRDS-4",
+                "CPTY-D",
+                "BOOK_UNKNOWN",
+                "EQ-D",
+                "EUR",
+                40.0,
+                100_000.0,
+            ],
+        ]
+    )
+    prior = current.copy()
+    prior["Market Value"] = 0.0
+    mapped = map_stock_comparison_portfolios(current, prior, _config())
+
+    prepared = prepare_stock_hierarchy(mapped, 50_000)
+    assert prepared[STOCK_PROMOTION_BUCKET_COLUMN].tolist() == [
+        "Promoted",  # equality is intentionally inclusive
+        "Promoted",  # negative current MV uses its absolute value
+        "Other",
+        "Promoted",
+    ]
+    assert prepared[STOCK_TEMPORARY_GROUP_COLUMN].tolist() == [
+        "Temporary currency group · USD",
+        "Temporary currency group · GBP",
+        "Temporary currency group · USD",
+        "Temporary currency group · EUR",
+    ]
+    assert prepared[PORTFOLIO_MAPPED_COLUMN].tolist() == [True, True, True, False]
+
+    hierarchy = summarize_stock_hierarchy(mapped, 50_000)
+    total = hierarchy.loc[
+        hierarchy[STOCK_HIERARCHY_PATH_COLUMN].map(lambda path: path == ())
+    ].iloc[0]
+    assert total[CURRENT_MARKET_VALUE_COLUMN] == 139_999.0
+    assert total[MARKET_VALUE_CHANGE_COLUMN] == 139_999.0
+    paths = set(hierarchy[STOCK_HIERARCHY_PATH_COLUMN])
+    macro = hierarchy.loc[
+        hierarchy[STOCK_HIERARCHY_PATH_COLUMN].map(lambda path: path == ("Macro",))
+    ].iloc[0]
+    assert macro[STOCK_HIERARCHY_POSITION_COUNT_COLUMN] == 2
+    assert macro[CURRENT_MARKET_VALUE_COLUMN] == 99_999.0
+    assert macro[MARKET_VALUE_CHANGE_COLUMN] == 99_999.0
+    assert (
+        "Macro",
+        "Promoted",
+        "Temporary currency group · USD",
+        "CPTY-A",
+        "CRDS-1",
+    ) in paths
+    assert (
+        "Macro",
+        "Other",
+        "Temporary currency group · USD",
+        "CPTY-C",
+        "CRDS-3",
+    ) in paths
+    assert (
+        UNMAPPED_VALUE,
+        "Promoted",
+        "Temporary currency group · EUR",
+        "CPTY-D",
+        "CRDS-4",
+    ) in paths
+    assert set(hierarchy[STOCK_HIERARCHY_LEVEL_COLUMN]) == {
+        "Total",
+        "Activity",
+        STOCK_PROMOTION_BUCKET_COLUMN,
+        STOCK_TEMPORARY_GROUP_COLUMN,
+        "CPTY",
+        "CRDS",
+    }
+
+
+def test_stock_hierarchy_progressively_renders_only_open_branches() -> None:
+    current, prior = _comparison_legs()
+    mapped = map_stock_comparison_portfolios(current, prior, _config())
+
+    initial_summary = summarize_visible_stock_hierarchy(mapped, 10.0)
+    assert set(initial_summary[STOCK_HIERARCHY_LEVEL_COLUMN]) == {
+        "Total",
+        "Activity",
+    }
+
+    tree, open_tokens = build_stock_hierarchy_with_state(
+        mapped,
+        promotion_threshold=10.0,
+    )
+    assert set(_hierarchy_levels(tree)) == {"Total", "Activity"}
+    toggle_ids = {
+        component_id["path"]
+        for item in _walk(tree)
+        if isinstance((component_id := getattr(item, "id", None)), dict)
+        and component_id.get("type") == STOCK_HIERARCHY_TOGGLE_TYPE
+    }
+    macro = stock_hierarchy_path_token(("Macro",))
+    assert macro in toggle_ids
+    assert open_tokens == []
+
+    open_tokens = toggle_stock_hierarchy_open_tokens(open_tokens, macro)
+    tree, open_tokens = build_stock_hierarchy_with_state(
+        mapped,
+        promotion_threshold=10.0,
+        open_path_tokens=open_tokens,
+    )
+    assert "Promotion Bucket" in _hierarchy_levels(tree)
+    assert "Group (Temporary Fixture)" not in _hierarchy_levels(tree)
+
+    promoted = stock_hierarchy_path_token(("Macro", "Promoted"))
+    open_tokens = toggle_stock_hierarchy_open_tokens(open_tokens, promoted)
+    tree, open_tokens = build_stock_hierarchy_with_state(
+        mapped,
+        promotion_threshold=10.0,
+        open_path_tokens=open_tokens,
+    )
+    assert "Group (Temporary Fixture)" in _hierarchy_levels(tree)
+    assert "CPTY" not in _hierarchy_levels(tree)
+    assert "Macro / Other / Temporary currency group · GBP" not in _hierarchy_paths(
+        tree
+    )
+
+    group = stock_hierarchy_path_token(
+        ("Macro", "Promoted", "Temporary currency group · USD")
+    )
+    open_tokens = toggle_stock_hierarchy_open_tokens(open_tokens, group)
+    tree, open_tokens = build_stock_hierarchy_with_state(
+        mapped,
+        promotion_threshold=10.0,
+        open_path_tokens=open_tokens,
+    )
+    assert "CPTY" in _hierarchy_levels(tree)
+    assert "CRDS" not in _hierarchy_levels(tree)
+
+    counterparty = stock_hierarchy_path_token(
+        (
+            "Macro",
+            "Promoted",
+            "Temporary currency group · USD",
+            "CPTY-A",
+        )
+    )
+    open_tokens = toggle_stock_hierarchy_open_tokens(open_tokens, counterparty)
+    tree, effective = build_stock_hierarchy_with_state(
+        mapped,
+        promotion_threshold=10.0,
+        open_path_tokens=open_tokens,
+    )
+    assert "CRDS" in _hierarchy_levels(tree)
+    assert "Macro / Promoted / Temporary currency group · USD / CPTY-A / CRDS-1" in (
+        _hierarchy_paths(tree)
+    )
+    assert effective == open_tokens
+
+
+def test_closed_10k_stock_page_is_bounded_and_keeps_source_rows_lazy() -> None:
+    mapped = _large_mapped_stock()
+
+    started = time.perf_counter()
+    page = build_stock_page_from_data(
+        StockPageData(
+            mapped_stock=mapped,
+            current_date=pd.Timestamp("2026-08-14"),
+            prior_date=pd.Timestamp("2026-08-13"),
+            portfolio_date=pd.Timestamp("2026-08-14"),
+        )
+    )
+    elapsed = time.perf_counter() - started
+    payload = json.dumps(page, cls=PlotlyJSONEncoder, separators=(",", ":"))
+    tree = next(
+        item
+        for item in _walk(page)
+        if getattr(item, "id", None) == "stock-hierarchy-stack"
+    )
+
+    assert elapsed < 2.5
+    assert len(payload.encode("utf-8")) < 250_000
+    assert set(_hierarchy_levels(tree)) == {"Total", "Activity"}
+    assert "CRDS-9999" not in payload
+    assert not any(isinstance(item, dash_table.DataTable) for item in _walk(page))
+    assert (
+        sum(
+            getattr(item, "id", None) == "stock-source-rows-button"
+            for item in _walk(page)
+        )
+        == 1
+    )
+
+
+def test_10k_cached_hierarchy_expand_does_not_resend_source_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current, prior, config = _large_stock_inputs()
+    calls = 0
+
+    def stock_source(stock_date: pd.Timestamp) -> pd.DataFrame:
+        nonlocal calls
+        calls += 1
+        return current if stock_date == pd.Timestamp("2026-08-14") else prior
+
+    app = build_app(
+        refresh_manager=build_production_refresh_manager(),
+        stock_source=stock_source,
+        stock_portfolio_source=lambda _date: config,
+    )
+    load = _callback_for_input(app, "stock-load-trigger")
+    loaded = load(
+        1,
+        "0",
+        0,
+        -1,
+        None,
+        "2026-08-14",
+        "2026-08-13",
+        [],
+        *([[]] * len(STOCK_FILTER_FIELDS)),
+        "large-lazy-stock",
+    )
+    initial_payload = json.dumps(
+        loaded[0],
+        cls=PlotlyJSONEncoder,
+        separators=(",", ":"),
+    )
+    assert len(initial_payload.encode("utf-8")) < 250_000
+    assert not any(
+        isinstance(item, dash_table.DataTable)
+        for component in loaded[0]
+        for item in _walk(component)
+    )
+
+    macro_path = stock_hierarchy_path_token(("Macro",))
+    monkeypatch.setattr(
+        factory_module,
+        "ctx",
+        SimpleNamespace(
+            triggered_id={
+                "type": STOCK_HIERARCHY_TOGGLE_TYPE,
+                "path": macro_path,
+            },
+            triggered=[{"value": 1}],
+        ),
+    )
+    hierarchy_callback = _callback_for_input(app, STOCK_FILTER_IDS["activity"])
+    expanded = hierarchy_callback(
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        50_000.0,
+        loaded[2],
+        [1],
+        [],
+    )
+    assert expanded[:4] == (no_update, no_update, no_update, no_update)
+    assert expanded[4] == [macro_path]
+    assert not any(
+        isinstance(item, dash_table.DataTable) for item in _walk(expanded[5])
+    )
+    expanded_payload = json.dumps(
+        expanded[5],
+        cls=PlotlyJSONEncoder,
+        separators=(",", ":"),
+    )
+    assert len(expanded_payload.encode("utf-8")) < 250_000
+    assert calls == 2
+
+
 def test_stock_filter_ids_and_store_are_independent_from_risk() -> None:
     assert [field.key for field in STOCK_FILTER_FIELDS] == [
         field.key for field in FILTER_DIMENSION_FIELDS
@@ -250,6 +608,15 @@ def test_stock_filter_ids_and_store_are_independent_from_risk() -> None:
     assert set(STOCK_FILTER_IDS.values()) <= ids
     assert "stock-dimension-filter-store" in ids
     assert "stock-filter-exclude-selected" in ids
+    assert "stock-promotion-threshold" in ids
+    threshold = next(
+        component
+        for component in _walk(shell)
+        if getattr(component, "id", None) == "stock-promotion-threshold"
+    )
+    assert threshold.value == STOCK_PROMOTION_THRESHOLD_DEFAULT
+    assert threshold.min == 0
+    assert threshold.debounce is True
     assert "dimension-filter-store" not in ids
     assert not (set(DIMENSION_FILTER_IDS.values()) & ids)
 
@@ -282,7 +649,7 @@ def test_stock_date_pair_requires_prior_before_current(
         normalize_stock_date_pair(current, prior)
 
 
-def test_stock_page_exposes_comparison_table_and_filtered_counts() -> None:
+def test_stock_page_keeps_source_rows_lazy_and_exposes_filtered_counts() -> None:
     current, prior = _comparison_legs()
     page = build_stock_page(
         current,
@@ -293,26 +660,40 @@ def test_stock_page_exposes_comparison_table_and_filtered_counts() -> None:
         selected_filters={"activity": ["Macro"]},
     )
     components = list(_walk(page))
-    ids = {getattr(component, "id", None) for component in components}
-    table = next(
-        component
+    ids = {
+        component_id
         for component in components
-        if isinstance(component, dash_table.DataTable)
-    )
-
+        if isinstance((component_id := getattr(component, "id", None)), str)
+    }
     assert {
         "stock-comparison-view",
-        "stock-table",
+        "stock-hierarchy-panel",
+        "stock-hierarchy-view",
+        "stock-hierarchy-stack",
+        "stock-source-comparison-details",
+        "stock-source-rows-button",
+        "stock-table-panel",
         "stock-row-count",
         "stock-mapped-count",
         "stock-unmapped-count",
     } <= ids
-    assert [column["id"] for column in table.columns] == list(
-        MAPPED_STOCK_COMPARISON_COLUMNS
+    assert (
+        sum(
+            getattr(component, "id", None) == "stock-source-rows-button"
+            for component in components
+        )
+        == 1
     )
-    assert table.filter_action == "native"
-    assert table.sort_action == "native"
-    assert {row["CRDS"] for row in table.data} == {"CRDS-1", "CRDS-3"}
+    assert (
+        sum(
+            getattr(component, "id", None) == "stock-table-panel"
+            for component in components
+        )
+        == 1
+    )
+    assert not any(
+        isinstance(component, dash_table.DataTable) for component in components
+    )
     row_count = next(
         item for item in components if getattr(item, "id", None) == "stock-row-count"
     )
@@ -390,6 +771,8 @@ def test_factory_is_lazy_and_loads_default_two_business_day_snapshots() -> None:
         "stock-page-content",
         "stock-loaded-revision",
         "stock-loaded-dates",
+        "stock-hierarchy-open-paths",
+        "stock-source-rows-state",
         "stock-load-trigger",
         "stock-request-scope",
         "stock-current-date",
@@ -397,6 +780,20 @@ def test_factory_is_lazy_and_loads_default_two_business_day_snapshots() -> None:
         "stock-compare-button",
     } <= ids
     assert calls == []
+    assert (
+        sum(
+            getattr(component, "id", None) == "stock-source-rows-button"
+            for component in components
+        )
+        == 1
+    )
+    assert (
+        sum(
+            getattr(component, "id", None) == "stock-table-panel"
+            for component in components
+        )
+        == 1
+    )
 
     current_picker = next(
         item for item in components if getattr(item, "id", None) == "stock-current-date"
@@ -432,6 +829,49 @@ def test_factory_is_lazy_and_loads_default_two_business_day_snapshots() -> None:
     coordinator = app.server.config[STARTUP_COORDINATOR_CONFIG_KEY]
     assert coordinator.status().phase == "idle"
     assert manager.health.revision == 0
+
+
+def test_initial_stock_shell_contains_every_stock_callback_output_target() -> None:
+    app = build_app(
+        refresh_manager=build_production_refresh_manager(),
+        stock_source=lambda _date: _stock(),
+        stock_portfolio_source=lambda _date: _config(),
+    )
+    with app.server.test_request_context("/stock"):
+        page = stock_page_layout()
+    shell_ids = {
+        str(component_id)
+        for item in _walk(page)
+        if isinstance((component_id := getattr(item, "id", None)), str)
+    }
+    stock_inputs = {
+        "stock-load-trigger",
+        "stock-compare-button",
+        "stock-filter-exclude-selected",
+        "stock-promotion-threshold",
+        "stock-source-rows-button",
+        *STOCK_FILTER_IDS.values(),
+    }
+    callback_outputs = {
+        str(output.component_id)
+        for metadata in app.callback_map.values()
+        if any(str(item["id"]) in stock_inputs for item in metadata["inputs"])
+        for output in _callback_outputs(metadata)
+        if isinstance(output.component_id, str)
+        and output.component_id.startswith("stock-")
+    }
+
+    assert callback_outputs
+    assert callback_outputs <= shell_ids
+    assert {
+        "stock-table-panel",
+        "stock-row-count",
+        "stock-mapped-count",
+        "stock-unmapped-count",
+        "stock-hierarchy-view",
+        "stock-source-rows-button",
+        "stock-source-rows-state",
+    } <= shell_ids
 
 
 def test_factory_warm_shell_defaults_from_committed_market_date() -> None:
@@ -615,9 +1055,28 @@ def test_stock_enabled_callback_map_has_single_output_owners() -> None:
     assert len(owners[("stock-page-content", "children")]) == 1
     assert len(owners[("stock-loaded-dates", "data")]) == 1
     assert len(owners[("stock-load-trigger", "disabled")]) == 1
+    assert len(owners[("stock-hierarchy-open-paths", "data")]) == 1
+    assert len(owners[("stock-hierarchy-view", "children")]) == 1
+    assert len(owners[("stock-table-panel", "children")]) == 1
+    assert len(owners[("stock-source-rows-state", "data")]) == 1
+    assert len(owners[("stock-source-rows-button", "children")]) == 1
+    hierarchy_callback = next(
+        metadata
+        for metadata in app.callback_map.values()
+        if any(
+            output.component_id == "stock-hierarchy-view"
+            for output in _callback_outputs(metadata)
+        )
+    )
+    assert any(
+        STOCK_HIERARCHY_TOGGLE_TYPE in item["id"]
+        for item in hierarchy_callback["inputs"]
+    )
 
 
-def test_stock_filter_callback_uses_cache_only_and_updates_visible_counts() -> None:
+def test_stock_filter_callback_uses_cache_only_and_updates_visible_counts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls = 0
 
     def stock_source(_date: pd.Timestamp) -> pd.DataFrame:
@@ -646,18 +1105,19 @@ def test_stock_filter_callback_uses_cache_only_and_updates_visible_counts() -> N
     )
     assert calls == 2
     filter_callback = _callback_for_input(app, STOCK_FILTER_IDS["activity"])
-    panel, rows, mapped, unmapped, store = filter_callback(
+    rows, mapped, unmapped, store, open_paths, hierarchy = filter_callback(
         [],
         ["Macro"],
         [],
         [],
         [],
         [],
+        10.0,
         loaded[2],
+        [],
+        [],
     )
 
-    assert isinstance(panel, dash_table.DataTable)
-    assert {row["CRDS"] for row in panel.data} == {"CRDS-1", "CRDS-3"}
     assert "Rows: 2 of 3" in rows
     assert mapped == "Mapped: 2"
     assert unmapped == "Unmapped: 0"
@@ -670,19 +1130,97 @@ def test_stock_filter_callback_uses_cache_only_and_updates_visible_counts() -> N
             "subcategory": [],
         },
         "exclude_selected": False,
+        "promotion_threshold": 10.0,
     }
-    excluded_panel, excluded_rows, *_rest = filter_callback(
+    assert hierarchy.id == "stock-hierarchy-stack"
+    assert open_paths == []
+    assert hierarchy.to_plotly_json()["props"]["data-stock-promotion-threshold"] == (
+        "10.0"
+    )
+    macro_path = stock_hierarchy_path_token(("Macro",))
+    monkeypatch.setattr(
+        factory_module,
+        "ctx",
+        SimpleNamespace(
+            triggered_id={
+                "type": STOCK_HIERARCHY_TOGGLE_TYPE,
+                "path": macro_path,
+            },
+            triggered=[{"value": 1}],
+        ),
+    )
+    expanded = filter_callback(
+        [],
+        ["Macro"],
+        [],
+        [],
+        [],
+        [],
+        10.0,
+        loaded[2],
+        [1],
+        [],
+    )
+    assert expanded[:4] == (no_update, no_update, no_update, no_update)
+    assert expanded[4] == [macro_path]
+    assert "Promotion Bucket" in _hierarchy_levels(expanded[5])
+    assert not any(
+        isinstance(item, dash_table.DataTable) for item in _walk(expanded[5])
+    )
+    assert calls == 2
+    monkeypatch.setattr(
+        factory_module,
+        "ctx",
+        SimpleNamespace(
+            triggered_id="stock-filter-exclude-selected",
+            triggered=[{"value": ["exclude"]}],
+        ),
+    )
+    excluded_rows, *_rest = filter_callback(
         [],
         ["Macro"],
         [],
         [],
         [],
         ["exclude"],
+        50_000.0,
         loaded[2],
+        [],
+        [],
     )
-    assert isinstance(excluded_panel, dash_table.DataTable)
-    assert [row["CRDS"] for row in excluded_panel.data] == ["CRDS-2"]
     assert "Rows: 1 of 3" in excluded_rows
+    assert calls == 2
+
+    source_callback = _callback_for_input(app, "stock-source-rows-button")
+    monkeypatch.setattr(
+        factory_module,
+        "ctx",
+        SimpleNamespace(
+            triggered_id="stock-source-rows-button",
+            triggered=[{"value": 1}],
+        ),
+    )
+    source_panel, source_state, source_label, source_open = source_callback(
+        1,
+        loaded[2],
+        [],
+        ["Macro"],
+        [],
+        [],
+        [],
+        [],
+        {"requested": False, "loaded_dates": loaded[2]},
+    )
+    assert isinstance(source_panel, dash_table.DataTable)
+    assert [column["id"] for column in source_panel.columns] == list(
+        MAPPED_STOCK_COMPARISON_COLUMNS
+    )
+    assert source_panel.filter_action == "native"
+    assert source_panel.sort_action == "native"
+    assert {row["CRDS"] for row in source_panel.data} == {"CRDS-1", "CRDS-3"}
+    assert source_state == {"requested": True, "loaded_dates": loaded[2]}
+    assert source_label == "Hide source rows"
+    assert source_open is True
     assert calls == 2
 
 
@@ -714,7 +1252,37 @@ def test_stock_load_retries_a_transient_source_failure() -> None:
         *([[]] * len(STOCK_FILTER_FIELDS)),
         "transient-retry",
     )
-    assert any(getattr(item, "id", None) == "stock-load-error" for item in first[0])
+    error_ids = {
+        str(component_id)
+        for item in first[0]
+        for descendant in _walk(item)
+        if isinstance((component_id := getattr(descendant, "id", None)), str)
+    }
+    assert {
+        "stock-load-error",
+        "stock-table-panel",
+        "stock-source-rows-button",
+        "stock-row-count",
+        "stock-mapped-count",
+        "stock-unmapped-count",
+        "stock-hierarchy-view",
+    } <= error_ids
+    assert (
+        sum(
+            getattr(descendant, "id", None) == "stock-source-rows-button"
+            for item in first[0]
+            for descendant in _walk(item)
+        )
+        == 1
+    )
+    assert (
+        sum(
+            getattr(descendant, "id", None) == "stock-table-panel"
+            for item in first[0]
+            for descendant in _walk(item)
+        )
+        == 1
+    )
     assert first[1] is no_update
     assert first[2] is None
     assert first[3] is False

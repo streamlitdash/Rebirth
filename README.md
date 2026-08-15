@@ -111,19 +111,23 @@ tooling exceptions.
 | `adapters/s01_common.py` | Exact-schema/status helpers shared by personal adapters. |
 | `adapters/s02_ir.py` | Working IR Delta curve and IR DeltaVega surface examples. |
 | `adapters/s03_commo.py` | Working Commodity Delta curve example. |
+| `adapters/s03_fx.py` | FX Delta/Gamma/Vega contracts plus the recovered comment-only private builders. |
 | `adapters/s04_credit.py` | Working Credit Delta curve and credit-measure example. |
 | `adapters/s05_stock.py` | Validated replaceable `GetStock` boundary plus clearly marked fake rows. |
 | `adapters/s06_new_positions.py` | Isolated raw `MARKET`/`CASHFLOW` New Positions blotter scaffold; it is not wired into the risk pipeline. |
 
-Recovered private adapters and the original shared `run_async` helper are
-preserved, byte-verified after LF normalization, under `adapters/_disabled/`.
-Every source line is comment-prefixed and every archive uses the
-`.py.disabled` suffix, so these provenance copies cannot be imported or replace
-the active fake-CSV runtime. The matching recovered feed composition is kept
-under `feeds/_disabled/`. The available original pipeline fragment is preserved
-under `core/_disabled/`; it records ProductSpec formula metadata, RiskChecker
-Age arithmetic, and MRX naming without changing live calculations. None of the
-disabled directories is staged for Plotly.
+Recovered private adapter bodies and the original shared `run_async` helper are
+preserved as clearly marked, comment-only `REAL` blocks directly inside
+`adapters/s01_common.py`, `s02_ir.py`, `s03_fx.py`, and `s04_credit.py`.
+RiskChecker, Portfolio, sender, and product-registration blocks are likewise
+inline in `feeds/s01_sources.py`, immediately before the active CSV fallback.
+Each block has a two-step switch marker: uncomment `REAL`, then comment the
+adjacent CSV fallback/return. The recovered pipeline differences are also kept
+as comment-only blocks beside the active definitions in `core/s02_pipeline.py`:
+MRX/MMM naming, ProductSpec formula metadata, Credit measure naming, and the
+alternative Age arithmetic. The two recovered formula names whose calculation
+engine was unavailable are explicitly marked reference-only rather than exposed
+as an unsafe one-line switch. There are no separate `_disabled` source folders.
 
 ### `ui/`
 
@@ -135,11 +139,11 @@ disabled directories is staged for Plotly.
 | `s04_components.py` | Pure Dash component, table, chart, date-panel, shell, and page builders. |
 | `s05_cashflows.py` | Pure Intraday Cashflows page/component builder; the schema and loader boundary live in `core/s06_cashflow.py`. |
 | `s05_staticdata.py` | Path-safe selector and table builder for approved fixture/static CSV files. |
-| `s06_plview.py` | The native P&L Sender page, its five independent disclosures, and editable DataTables. |
+| `s06_plview.py` | The native P&L page, its Aggregate P&L view, sender disclosures, and editable DataTables. |
 | `s07_events.py` | Startup coordinator and Risk/Cashflow/search/date callbacks. |
 | `s08_plevents.py` | Adjustment editors, send/write actions, and Histo/Predicted callbacks. |
 | `s09_factory.py` | Dash/Flask construction, native Dash Pages registration, shared shell, health, and progress endpoints. |
-| `s10_stock.py` | Dated Stock comparison controls, page-local filters, table builders, and replaceable source composition. |
+| `s10_stock.py` | Dated Stock comparison controls, independent filters, promotion stack, source table, and replaceable source composition. |
 
 ### `pages/`
 
@@ -148,7 +152,7 @@ disabled directories is staged for Plotly.
 | `risk.py` | Stable native-page layout wrapper for the revision-aware Risk dashboard. |
 | `pnl.py` | Stable native-page wrapper for the governed P&L Sender at `/pnl`. |
 | `stock.py` | Lazily resolves and renders the filtered dated Stock comparison at `/stock`. |
-| `static_data.py` | Lazily builds Static Data only when `/static-data` is active. |
+| `static_data.py` | Lazily builds Statics only when `/static-data` is active. |
 | `not_found_404.py` | Prefix-safe native fallback for unknown URLs. |
 
 The wrappers are deliberately manager-agnostic. They resolve the active app's
@@ -173,8 +177,8 @@ while tests and hosted workers can construct more than one app factory.
   the Plotly deployment bundle and entrypoint, reporting-identity mapping,
   supplied-risk overlays, shared refresh ownership, Stock, the isolated New
   Positions blotter contract, page-local Risk filtering, and exact isolation of
-  recovered private connector archives, and the isolated recovered pipeline
-  fragment.
+  inline recovered private connector blocks, and the inline recovered pipeline
+  contracts.
 
 | Test file | Main boundary proved |
 |---|---|
@@ -198,8 +202,8 @@ while tests and hosted workers can construct more than one app factory.
 | `tests/s18_stock.py` | Exact `GetStock` schema, dated outer comparison, Portfolio mapping/filtering, lazy cache, table, and page service. |
 | `tests/s19_new_positions_adapter.py` | Raw `MARKET`/`CASHFLOW` schema, traded-level availability, identity, and direct cashflow P&L. |
 | `tests/s20_risk_filters.py` | Portfolio View-by/filter support, Risk-local include/exclude semantics, consumer wiring, and Stock-state isolation. |
-| `tests/s21_disabled_connectors.py` | Exact normalized hashes, symbols, comment-only isolation, non-importability, manifests, and continued fake-CSV registration for recovered private connector archives. |
-| `tests/s22_disabled_pipeline.py` | Exact normalized hash, key contracts, comment-only isolation, non-importability, manifest, and publisher exclusion for the recovered pipeline fragment. |
+| `tests/s21_disabled_connectors.py` | Inline switch markers, recovered symbols, comment-only isolation, adjacency, and continued fake-CSV registration. |
+| `tests/s22_disabled_pipeline.py` | Inline recovered pipeline markers plus proof that the validated CSV-compatible formulas/date contract remain active. |
 
 ## What happens on startup
 
@@ -887,6 +891,21 @@ Start in `feeds/s01_sources.py`. Keep the public signatures and replace one body
 at a time. The shared pipeline should not know your database client, API field
 names, credentials, or retries.
 
+For the recovered site code, search for `SWITCH TO REAL` / `SWITCH (1/2)`.
+The original body is already comment-prefixed immediately above the active
+fixture path. Uncomment that body and its marked imports, then comment the
+adjacent `ACTIVE CSV FALLBACK` (or its one-line registration return). The
+recovered `from __future__ import annotations` line stays commented because
+each live adapter module already enables it at line 1. The
+private `mrx`, `colossus`, ramp/QCD, and configuration dependencies still need
+to exist in the target environment; keeping the source inline does not make
+those unavailable services or credentials part of this repository. Commodity
+is the main exception: no private Commodity implementation was recovered, so
+its marker deliberately leaves the validated CSV adapter active. The original
+registration also named Credit Vega and XCCY Vega builders whose bodies were
+not recovered; those names are retained as `unavailable` provenance comments,
+not switches that falsely claim to be runnable.
+
 ### Step 1: checker, market state, and portfolio functions
 
 ```python
@@ -1098,16 +1117,19 @@ page copies or second content router. Its prefix-safe routes are:
 | Path | Page-owned content |
 |---|---|
 | `/` | Risk dashboard, including Aggregate P&L and Unmapped Books. |
-| `/pnl` | P&L Preview, SOG/Portfolio editing and sending, Write PL, and Histo P&L. |
-| `/stock` | One filtered two-date GetStock comparison enriched by authoritative Portfolio mapping. |
-| `/static-data` | Approved fixture/static CSV selector and table. |
+| `/pnl` | Aggregate P&L plus Preview, SOG/Portfolio editing and sending, Write PL, and Histo P&L. |
+| `/stock` | A lazy Activity → Promotion → temporary Group → CPTY → CRDS stack over the filtered two-date comparison. |
+| `/static-data` | The Statics fixture/static CSV selector and table. |
 | `/404` | Native fallback for unknown paths. |
 
 The header, navigation, session stores, and single shared refresh-control shell
 sit outside the page container. Risk and P&L expose that same refresh shell;
-Stock and Static Data do not mount duplicate refresh controls. Page wrappers
+Stock and Statics do not mount duplicate refresh controls. Page wrappers
 resolve per-app builders from Flask configuration because Dash's page registry
-is process-wide.
+is process-wide. Risk and P&L share one prepared dashboard frame per committed
+revision, so revisiting either route does not repeat the full pandas
+normalization pass. Stock initially serializes only visible hierarchy rows;
+closed branches and the raw source table are loaded explicitly on demand.
 
 The retained Intraday Cashflows modules are a tested extension example, not a
 registered route. Their responsibilities remain separated so the data contract
@@ -1368,8 +1390,9 @@ docstrings and type hints are the source of truth.
   page/action boundaries.
 - `adapters.s01_common.exact_frame`, `exact_status`, `exact_underlying`, and
   `market_frame` enforce the small personal-adapter contracts.
-- `build_ir_adapters`, `build_commo_adapter`, and `build_credit_adapter` bind the
-  working IR Delta/DeltaVega, Commodity Delta, and Credit Delta examples.
+- `build_ir_adapters`, `build_fx_adapters`, `build_commo_adapter`, and
+  `build_credit_adapter` bind the active IR, FX, Commodity, and Credit contracts;
+  their recovered site-owned implementations remain comment-only until switched.
 - `adapters.s05_stock.get_stock`/`GetStock`, `validate_stock_frame`, and
   `build_stock_adapter` own the replaceable dated Stock boundary.
 - `adapters.s06_new_positions.get_new_positions`, `validate_new_positions`, and

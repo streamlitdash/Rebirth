@@ -90,6 +90,12 @@ DRISK_THRESHOLD = "dRisk Threshold"
 PL_THRESHOLD = "PL Threshold"
 RISK_DATE = "Risk Date"
 AGE = "Age"
+# === RECOVERED ORIGINAL RISK-CHECKER FIELD (COMMENTED OUT) ==================
+# SWITCH TO THE RECOVERED CONNECTOR CONTRACT: uncomment the line below, comment
+# the active CSV-compatible line beneath it, then remove the matching
+# ``MRX File`` -> ``MMMFile`` shim in ``feeds/s01_sources.py``.
+# MRX_FILE = "MRX File"
+# === ACTIVE CSV-COMPATIBLE FIELD =============================================
 MMM_FILE = "MMMFile"
 EFFECTIVE_RISK_DATE = "Effective Risk Date"
 FORCE_RISK = "Force Risk"
@@ -98,11 +104,33 @@ SUGGESTED_RISK_DATE = "Suggested Risk Date"
 AGE_DEFAULTED = "Age Defaulted"
 
 CREDIT_MEASURES = ("SP01", "PSP01", "PM01", "PM01P", "Theta", "JTD")
+# === RECOVERED ORIGINAL CREDIT COLUMN EXPRESSION (COMMENTED OUT) ============
+# The original fragment literally generated ``Risk (measure)`` and
+# ``dRisk (measure)`` repeatedly.  It is retained for provenance, but activating
+# it would create duplicate column names and is therefore not a valid switch.
+# CREDIT_MEASURE_COLUMNS = tuple(
+#     f"{metric} (measure)"
+#     for measure in CREDIT_MEASURES
+#     for metric in (RISK, DRISK)
+# )
+# === ACTIVE UNIQUE CREDIT MEASURE COLUMNS ====================================
 CREDIT_MEASURE_COLUMNS = tuple(
     f"{metric} {measure}" for measure in CREDIT_MEASURES for metric in (RISK, DRISK)
 )
 
 MarketUnit = Literal["pips", "outright", "vol_points", "bp"]
+# === RECOVERED ORIGINAL FORMULA NAMES (COMMENTED OUT) ========================
+# The recovered ProductSpec metadata used two extra formula names.  Their
+# original calculation implementation was not present in the recovered source,
+# so this is reference material rather than a safe one-line activation switch.
+# PlFormula = Literal[
+#     "absolute",
+#     "minusabsolute",
+#     "percentage",
+#     "percentage_vega",
+#     "taylor_gamma",
+# ]
+# === ACTIVE VALIDATED FORMULA ENGINE =========================================
 PlFormula = Literal["absolute", "percentage", "taylor_gamma"]
 FrameSource = pd.DataFrame | Callable[[], pd.DataFrame] | None
 DataFrameSource = pd.DataFrame | str | Path
@@ -213,6 +241,63 @@ class ProductSpec:
         return [RISK_TYPE, RISK_GREEK, UNDERLYING, *self.tenor_columns]
 
 
+# === RECOVERED ORIGINAL PRODUCT METADATA (COMMENTED OUT) ====================
+# This is the formula metadata recovered from the original fragment.  It is
+# intentionally adjacent to the active table, but it must not be uncommented
+# until ``minusabsolute`` and ``percentage_vega`` are implemented and tested in
+# the P&L engine.  The recovered ``commoddelta`` spelling also differs from the
+# active, fixture-backed ``commodelta`` source key.
+# PRODUCT_SPECS: dict[str, ProductSpec] = {
+#     "fxdelta": ProductSpec(
+#         "fxdelta", "fx/delta", "FX", "Delta", (), "pips", "percentage"
+#     ),
+#     "fxgamma": ProductSpec(
+#         "fxgamma", "fx/gamma", "FX", "Gamma", (), "outright", "taylor_gamma", 1, 1
+#     ),
+#     "fxvega": ProductSpec(
+#         "fxvega", "fx/vega", "FX", "Vega", (SWAP_AXIS,), "vol_points", "absolute"
+#     ),
+#     "irdelta": ProductSpec(
+#         "irdelta", "ir/delta", "IR", "Delta", (SWAP_AXIS,), "bp", "minusabsolute"
+#     ),
+#     "irgamma": ProductSpec(
+#         "irgamma", "ir/gamma", "IR", "Gamma", (SWAP_AXIS,), "bp", "taylor_gamma", 1, 1
+#     ),
+#     "irdeltavega": ProductSpec(
+#         "irdeltavega", "ir/deltavega", "IR", "DeltaVega", (SWAP_AXIS, OPTION_AXIS), "bp", "percentage_vega"
+#     ),
+#     "xccy": ProductSpec(
+#         "xccy", "ir/xccy", "IR", "XCCY", (SWAP_AXIS,), "bp", "minusabsolute"
+#     ),
+#     "xccyvega": ProductSpec(
+#         "xccyvega", "ir/xccyvega", "IR", "XCCYVega", (SWAP_AXIS, OPTION_AXIS), "bp", "percentage_vega",
+#     ),
+#     "inflation": ProductSpec(
+#         "inflation", "ir/inflation", "IR", "Inflation", (SWAP_AXIS,), "bp", "absolute",
+#     ),
+#     "inflationvega": ProductSpec(
+#         "inflationvega", "ir/inflationvega", "IR", "InflationVega", (SWAP_AXIS, OPTION_AXIS), "bp", "percentage_vega",
+#     ),
+#     "basis": ProductSpec(
+#         "basis", "ir/basis", "IR", "Basis", (SWAP_AXIS,), "bp", "minusabsolute"
+#     ),
+#     "bond": ProductSpec(
+#         "bond", "ir/bond", "IR", "Bond", (SWAP_AXIS,), "bp", "minusabsolute"
+#     ),
+#     "creditdelta": ProductSpec(
+#         "creditdelta", "credit/delta", "Credit", "Delta", (SWAP_AXIS,), "bp", "absolute",
+#     ),
+#     "creditvega": ProductSpec(
+#         "creditvega", "credit/vega", "Credit", "Vega", (SWAP_AXIS,), "bp", "absolute",
+#     ),
+#     "commoddelta": ProductSpec(
+#         "commoddelta", "commo/delta", "Commo", "Delta", (SWAP_AXIS,), "outright", "percentage",
+#     ),
+#     "commovega": ProductSpec(
+#         "commovega", "commo/vega", "Commo", "Vega", (SWAP_AXIS,), "vol_points", "absolute",
+#     ),
+# }
+# === ACTIVE FIXTURE-VALIDATED PRODUCT METADATA ===============================
 PRODUCT_SPECS: dict[str, ProductSpec] = {
     "fxdelta": ProductSpec(
         "fxdelta", "fx/delta", "FX", "Delta", (), "pips", "percentage"
@@ -583,6 +668,18 @@ def risk_date_for(
         or not selected_age.is_integer()
     ):
         raise ValueError("Age must be a non-negative integer")
+
+    # === RECOVERED ORIGINAL AGE RULE (COMMENTED OUT) ========================
+    # SWITCH TO THE RECOVERED RULE: uncomment these four lines and comment the
+    # active CSV-compatible return below.  This changes positive Age values by
+    # one business day, so it is an explicit financial-date decision.
+    # if selected_age > 0:
+    #     selected_age -= 1
+    # else:
+    #     selected_age = 0
+    # return _as_timestamp(checker_date) - pd.offsets.BDay(int(selected_age))
+
+    # === ACTIVE CSV-COMPATIBLE AGE RULE =====================================
     return _as_timestamp(checker_date) - pd.offsets.BDay(int(selected_age))
 
 

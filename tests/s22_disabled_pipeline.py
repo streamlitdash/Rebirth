@@ -1,63 +1,42 @@
-"""Preservation and isolation tests for the recovered pipeline fragment."""
+"""Regression tests for recovered pipeline references kept inline."""
 
 from __future__ import annotations
 
-import hashlib
-import importlib.util
 from pathlib import Path
 
-import s03_publish as publishing
+from core.s02_pipeline import MMM_FILE, PRODUCT_SPECS, risk_date_for
 
 
 PROJECT = Path(__file__).resolve().parents[1]
-ARCHIVE = PROJECT / "core" / "_disabled" / "s02_pipeline_part_1.py.disabled"
-EXPECTED_SHA256 = "0aeb6be35c87496b3c7e76b943efca6f980cafe2a3b552cee4a5f6959972124a"
+PIPELINE = PROJECT / "core" / "s02_pipeline.py"
 
 
-def _recover_original() -> str:
-    text = ARCHIVE.read_text(encoding="utf-8")
-    assert text.endswith("\n")
-    lines = text.splitlines()
-    assert lines
-    assert all(line == "#" or line.startswith("# ") for line in lines)
-    return "\n".join("" if line == "#" else line[2:] for line in lines) + "\n"
+def test_recovered_pipeline_contracts_are_inline_and_comment_only() -> None:
+    text = PIPELINE.read_text(encoding="utf-8")
 
-
-def test_recovered_pipeline_fragment_is_exact_and_non_importable() -> None:
-    assert ARCHIVE.is_file()
-    assert ARCHIVE.name.endswith(".py.disabled")
-    assert importlib.util.spec_from_file_location("disabled_pipeline", ARCHIVE) is None
-
-    recovered = _recover_original()
-    assert hashlib.sha256(recovered.encode("utf-8")).hexdigest() == EXPECTED_SHA256
-    for contract in (
-        "class ProductSpec:",
-        "PRODUCT_SPECS: dict[str, ProductSpec]",
+    for marker in (
+        "RECOVERED ORIGINAL RISK-CHECKER FIELD (COMMENTED OUT)",
+        '# MRX_FILE = "MRX File"',
+        "RECOVERED ORIGINAL FORMULA NAMES (COMMENTED OUT)",
+        '"minusabsolute"',
+        '"percentage_vega"',
+        "RECOVERED ORIGINAL PRODUCT METADATA (COMMENTED OUT)",
         '"irdelta", "ir/delta", "IR", "Delta", (SWAP_AXIS,), "bp", "minusabsolute"',
-        "def risk_date_for(",
-        "if selected_age > 0:",
-        "selected_age -= 1",
-        'MRX_FILE = "MRX File"',
+        "RECOVERED ORIGINAL AGE RULE (COMMENTED OUT)",
+        "#     selected_age -= 1",
     ):
-        assert contract in recovered
+        assert marker in text
+
+    assert not any((PROJECT / "core").rglob("*.disabled"))
 
 
-def test_disabled_pipeline_manifest_records_the_runtime_boundary() -> None:
-    manifest = PROJECT / "core" / "_disabled" / "MANIFEST.txt"
-    text = manifest.read_text(encoding="utf-8")
+def test_active_pipeline_remains_on_validated_csv_compatible_contract() -> None:
+    assert MMM_FILE == "MMMFile"
+    assert PRODUCT_SPECS["irdelta"].pl_formula == "absolute"
+    assert PRODUCT_SPECS["irdeltavega"].pl_formula == "percentage"
+    assert PRODUCT_SPECS["irgamma"].gamma_move_scale == 10_000.0
+    assert PRODUCT_SPECS["irgamma"].gamma_risk_step == 10.0
+    assert "commodelta" in PRODUCT_SPECS
+    assert "commoddelta" not in PRODUCT_SPECS
 
-    assert all(line.startswith("#") for line in text.splitlines())
-    assert "ProductSpec P&L-formula metadata" in text
-    assert "RiskChecker Age business-day arithmetic" in text
-    assert "MRX File naming contract" in text
-    assert "not active, imported" in text
-
-
-def test_disabled_pipeline_fragment_is_excluded_from_plotly_bundle(
-    tmp_path: Path,
-) -> None:
-    staged = publishing.stage_bundle(tmp_path / "runtime")
-
-    assert "_disabled" in publishing.IGNORED_NAMES
-    assert not (staged / "core" / "_disabled").exists()
-    assert not any(staged.rglob("*.disabled"))
+    assert risk_date_for("2026-08-14", 1).isoformat() == "2026-08-13T00:00:00"

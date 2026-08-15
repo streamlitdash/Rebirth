@@ -1,4 +1,4 @@
-"""Dash components for the Static Data Files viewer page."""
+"""Dash components for the Statics CSV viewer page."""
 
 from __future__ import annotations
 
@@ -118,7 +118,7 @@ def _build_static_data_table(file_key: str) -> html.Div:
 
 
 def build_static_data_page() -> html.Div:
-    """Build the Static Data Files viewer page.
+    """Build the Statics viewer page.
 
     Displays a dropdown selector for static CSV data files with a filterable
     and sortable DataTable.
@@ -137,11 +137,11 @@ def build_static_data_page() -> html.Div:
                     html.Div(
                         [
                             html.H2(
-                                "Static Data Files",
+                                "Statics",
                                 className="static-data-page-title",
                             ),
                             html.P(
-                                "Select a static CSV data file to view with per-column filtering and sorting.",
+                                "Select a CSV fixture to view with per-column filtering and sorting.",
                                 className="static-data-page-note",
                             ),
                         ]

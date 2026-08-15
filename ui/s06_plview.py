@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
+import pandas as pd
 from dash import dash_table, dcc, html
 from core.s04_pl import HISTORY_TYPE, PL_HISTORY_COLUMNS
+
+from .s02_constants import DEFAULT_VIEW_DIMENSION, VIEW_DIMENSION_FIELDS
+from .s04_components import build_aggregate_pl_table, build_cube_loader
 
 
 DISPLAY_COLUMNS = (
@@ -17,6 +23,98 @@ DISPLAY_COLUMNS = (
 )
 
 GRID_ROW_ID = "id"
+PL_AGGREGATE_TOGGLE_TYPE = "pnl-aggregate-row-toggle"
+
+
+def _walk_components(component: object) -> Iterable[object]:
+    """Yield a Dash component tree without relying on private Dash helpers."""
+    yield component
+    children = getattr(component, "children", None)
+    if children is None:
+        return
+    if isinstance(children, (list, tuple)):
+        for child in children:
+            yield from _walk_components(child)
+    else:
+        yield from _walk_components(children)
+
+
+def build_pl_aggregate_table(
+    frame: pd.DataFrame,
+    dimension: str,
+    open_risk_types: list[str] | None,
+) -> html.Div:
+    """Render Aggregate P&L with page-owned, collision-free toggle IDs."""
+    table = build_aggregate_pl_table(frame, dimension, open_risk_types)
+    for component in _walk_components(table):
+        component_id = getattr(component, "id", None)
+        if not isinstance(component_id, dict):
+            continue
+        if component_id.get("type") != "aggregate-row-toggle":
+            continue
+        risk_type = component_id.get("risk_type", component_id.get("risk type"))
+        component.id = {
+            "type": PL_AGGREGATE_TOGGLE_TYPE,
+            "risk_type": str(risk_type),
+        }
+    return table
+
+
+def _pl_aggregate_section(
+    initial_frame: pd.DataFrame | None = None,
+) -> html.Details:
+    """Build the P&L page's independent mapped Aggregate P&L section."""
+    view_dimension_options = [
+        {"label": field.label, "value": field.key} for field in VIEW_DIMENSION_FIELDS
+    ]
+    return html.Details(
+        [
+            html.Summary(
+                "Aggregate P&L",
+                className="aux-summary aggregate-pl-summary",
+            ),
+            html.Div(
+                [
+                    html.Div("View by", className="aggregate-pl-title"),
+                    dcc.RadioItems(
+                        id="pnl-aggregate-pl-dimension",
+                        options=view_dimension_options,
+                        value=DEFAULT_VIEW_DIMENSION,
+                        inline=True,
+                        className="aggregate-pl-selector",
+                    ),
+                ],
+                className="aggregate-pl-header",
+            ),
+            html.Div(
+                dcc.Loading(
+                    html.Div(
+                        (
+                            build_pl_aggregate_table(
+                                initial_frame,
+                                DEFAULT_VIEW_DIMENSION,
+                                [],
+                            )
+                            if initial_frame is not None
+                            else html.Div(
+                                "P&L data is still loading. Aggregate P&L will "
+                                "update after the first committed refresh.",
+                                className="empty-state",
+                                role="status",
+                            )
+                        ),
+                        id="pnl-aggregate-pl-grid",
+                    ),
+                    custom_spinner=build_cube_loader("Loading aggregate P&L"),
+                    delay_show=120,
+                    className="cube-loading-boundary",
+                ),
+                className="aggregate-pl-panel",
+            ),
+        ],
+        open=True,
+        className="aux-details aggregate-pl-details",
+    )
 
 
 def _preview_columns() -> list[dict[str, object]]:
@@ -746,8 +844,24 @@ def build_pl_send_sections() -> list[html.Div | html.Details]:
     return [state, preview, by_sog, by_portfolio, save, history]
 
 
-def build_pl_page(*, start_initial_load: bool = False) -> html.Main:
-    """Build the native P&L Sender page and all page-local workflow state."""
+def build_pl_page(
+    *,
+    start_initial_load: bool = False,
+    send_workflow_available: bool = True,
+    initial_aggregate_frame: pd.DataFrame | None = None,
+) -> html.Main:
+    """Build the native P&L page and its independent Aggregate P&L state."""
+    workflow_sections = (
+        build_pl_send_sections()
+        if send_workflow_available
+        else [
+            html.P(
+                "P&L sending is not configured for this application.",
+                id="pnl-unavailable",
+                className="static-data-empty",
+            )
+        ]
+    )
     return html.Main(
         html.Section(
             [
@@ -761,14 +875,26 @@ def build_pl_page(*, start_initial_load: bool = False) -> html.Main:
                     if start_initial_load
                     else None
                 ),
-                dcc.Store(id="pl-adjustment-revision-store", data=0),
+                dcc.Store(id="pnl-aggregate-open-risk-types", data=[]),
+                (
+                    dcc.Store(id="pl-adjustment-revision-store", data=0)
+                    if send_workflow_available
+                    else None
+                ),
                 html.H1("P&L Sender", className="static-data-page-title"),
                 html.P(
-                    "Preview governed P&L, edit and send it by SOG or Portfolio, "
-                    "write the complete file, and compare Histo with Predicted P&L.",
+                    (
+                        "Review mapped Aggregate P&L, preview governed P&L, edit "
+                        "and send it by SOG or Portfolio, write the complete file, "
+                        "and compare Histo with Predicted P&L."
+                        if send_workflow_available
+                        else "Review mapped Aggregate P&L from the latest committed "
+                        "risk refresh."
+                    ),
                     className="static-data-page-note",
                 ),
-                *build_pl_send_sections(),
+                _pl_aggregate_section(initial_aggregate_frame),
+                *workflow_sections,
             ],
             id="pnl-page",
             className="static-data-page",
@@ -780,6 +906,8 @@ def build_pl_page(*, start_initial_load: bool = False) -> html.Main:
 __all__ = [
     "DISPLAY_COLUMNS",
     "GRID_ROW_ID",
+    "PL_AGGREGATE_TOGGLE_TYPE",
+    "build_pl_aggregate_table",
     "build_pl_page",
     "build_pl_send_sections",
 ]

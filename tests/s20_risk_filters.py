@@ -264,6 +264,55 @@ def test_portfolio_is_rendered_as_a_filter_and_a_view_by_dimension() -> None:
         assert selector.value == "activity"
 
 
+def test_warm_risk_layout_pre_renders_default_tables_and_filter_state() -> None:
+    prepared = prepare_risk_data(_raw_risk_frame())
+    layout = build_layout(prepared, _snapshot(), refresh_enabled=True)
+    components = list(_walk(layout))
+
+    risk_grid = next(
+        item for item in components if getattr(item, "id", None) == "risk-grid"
+    )
+    aggregate_grid = next(
+        item for item in components if getattr(item, "id", None) == "aggregate-pl-grid"
+    )
+    filter_values = next(
+        item
+        for item in components
+        if getattr(item, "id", None) == "dimension-filter-values-store"
+    )
+
+    assert any(isinstance(item, html.Table) for item in _walk(risk_grid.children))
+    assert any(isinstance(item, html.Table) for item in _walk(aggregate_grid.children))
+    assert filter_values.data == [None] * len(FILTER_DIMENSION_FIELDS)
+
+
+def test_aggregate_toggle_ids_match_the_registered_pattern_callback() -> None:
+    prepared = prepare_risk_data(_raw_risk_frame())
+    table = build_aggregate_pl_table(prepared, "activity", [])
+    toggle_ids = [
+        item.id
+        for item in _walk(table)
+        if isinstance(getattr(item, "id", None), dict)
+        and item.id.get("type") == "aggregate-row-toggle"
+    ]
+
+    assert toggle_ids
+    assert all(
+        set(component_id) == {"type", "risk_type"} for component_id in toggle_ids
+    )
+
+    app = build_app(refresh_manager=_warm_manager())
+    aggregate_inputs = _callback_inputs_for_output(
+        app,
+        "aggregate-pl-grid",
+        "children",
+    )
+    assert (
+        '{"risk_type":["ALL"],"type":"aggregate-row-toggle"}',
+        "n_clicks",
+    ) in aggregate_inputs
+
+
 def test_aggregate_pl_can_group_by_portfolio() -> None:
     prepared = prepare_risk_data(_raw_risk_frame())
     component = build_aggregate_pl_table(prepared, "portfolio", [])

@@ -11,7 +11,7 @@ from typing import Callable
 
 import pandas as pd
 import plotly.graph_objects as go
-from dash import Dash, Input, Output, Patch, State, ctx, dcc, no_update
+from dash import ALL, Dash, Input, Output, Patch, State, ctx, dcc, html, no_update
 from dash.exceptions import PreventUpdate
 from core.s01_schema import PORTFOLIO_MAPPED_COLUMN, PORTFOLIO_METADATA_COLUMNS
 from core.s04_pl import (
@@ -40,7 +40,11 @@ from core.s04_pl import (
 from .s06_plview import (
     DISPLAY_COLUMNS,
     GRID_ROW_ID,
+    PL_AGGREGATE_TOGGLE_TYPE,
+    build_pl_aggregate_table,
 )
+from .s02_constants import RISK_TYPE_ORDER
+from .s03_aggregate import prepare_risk_data
 from .s01_contracts import AdjustmentRepositoryProtocol, RefreshManagerProtocol
 
 
@@ -672,6 +676,107 @@ def _write_pl_result(
         finally:
             temporary.unlink(missing_ok=True)
     return f"No write_pl connector configured; saved local fallback to {destination}"
+
+
+def register_pl_aggregate_callbacks(
+    app: Dash,
+    refresh_manager: RefreshManagerProtocol,
+    *,
+    prepared_frame_loader: Callable[[], pd.DataFrame | None] | None = None,
+) -> None:
+    """Register the P&L page's mapped, revision-aware Aggregate P&L view."""
+    cache_lock = RLock()
+    cached_revision = -1
+    cached_frame: pd.DataFrame | None = None
+
+    def current_aggregate_frame() -> pd.DataFrame | None:
+        """Read only the mapped dashboard frame and prepare it once per revision."""
+        nonlocal cached_frame, cached_revision
+        if prepared_frame_loader is not None:
+            return prepared_frame_loader()
+        try:
+            manager_revision = int(refresh_manager.health.revision)
+        except Exception:
+            manager_revision = -1
+        if manager_revision <= 0:
+            return None
+        with cache_lock:
+            if cached_frame is not None and cached_revision == manager_revision:
+                return cached_frame
+
+        try:
+            dashboard = refresh_manager.read_frame("dashboard_frame")
+        except RuntimeError:
+            return None
+        if dashboard.frame.empty:
+            prepared = dashboard.frame.copy(deep=True)
+        else:
+            prepared = prepare_risk_data(dashboard.frame)
+        with cache_lock:
+            if int(dashboard.revision) >= cached_revision:
+                cached_revision = int(dashboard.revision)
+                cached_frame = prepared
+            return cached_frame
+
+    @app.callback(
+        Output("pnl-aggregate-open-risk-types", "data"),
+        Output("pnl-aggregate-pl-grid", "children"),
+        Input("pnl-aggregate-pl-dimension", "value"),
+        Input("data-revision-store", "data"),
+        Input(
+            {"type": PL_AGGREGATE_TOGGLE_TYPE, "risk_type": ALL},
+            "n_clicks",
+        ),
+        State("pnl-aggregate-open-risk-types", "data"),
+    )
+    def reduce_and_render_pl_aggregate(
+        dimension,
+        _data_revision,
+        row_clicks,
+        open_risk_types,
+    ):
+        """Reduce one P&L-local chevron and render every mapped P&L row."""
+        requested_open = list(open_risk_types or [])
+        effective_open = list(requested_open)
+        updated_open = no_update
+        if row_clicks and max(int(value or 0) for value in row_clicks) > 0:
+            triggered = ctx.triggered_id
+            if isinstance(triggered, dict):
+                risk_type = str(triggered.get("risk_type", "")).strip()
+                if risk_type:
+                    opened = set(effective_open)
+                    if risk_type in opened:
+                        opened.remove(risk_type)
+                    else:
+                        opened.add(risk_type)
+                    effective_open = sorted(
+                        opened,
+                        key=lambda value: (RISK_TYPE_ORDER.get(value, 99), value),
+                    )
+                    updated_open = effective_open
+
+        frame = current_aggregate_frame()
+        if frame is None:
+            return (
+                updated_open,
+                html.Div(
+                    "P&L data is still loading. Aggregate P&L will update after the first committed refresh.",
+                    className="empty-state",
+                    role="status",
+                ),
+            )
+        if frame.empty:
+            valid_open: list[str] = []
+        else:
+            valid_types = set(frame["risk type"].astype(str))
+            valid_open = [value for value in effective_open if value in valid_types]
+        if valid_open != effective_open:
+            effective_open = valid_open
+            updated_open = effective_open
+        return (
+            updated_open,
+            build_pl_aggregate_table(frame, dimension, effective_open),
+        )
 
 
 def register_pl_send_callbacks(
@@ -1406,4 +1511,9 @@ def register_pl_send_callbacks(
             return f"Not saved: {exc}", no_update
 
 
-__all__ = ["PLSendConfig", "WritePLFunction", "register_pl_send_callbacks"]
+__all__ = [
+    "PLSendConfig",
+    "WritePLFunction",
+    "register_pl_aggregate_callbacks",
+    "register_pl_send_callbacks",
+]

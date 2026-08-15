@@ -10,11 +10,13 @@ from uuid import uuid4
 
 import pandas as pd
 from dash import (
+    ALL,
     Dash,
     Input,
     Output,
     State,
     dcc,
+    ctx,
     html,
     no_update,
     page_container,
@@ -22,6 +24,7 @@ from dash import (
     register_page,
 )
 from flask import jsonify, request
+from dash.exceptions import MissingCallbackContextException
 
 from pages import PAGE_SERVICES_CONFIG_KEY
 from pages.not_found_404 import layout as not_found_page_layout
@@ -42,24 +45,34 @@ from .s04_components import (
     build_layout,
     build_shared_refresh_shell,
 )
-from .s08_plevents import PLSendConfig, register_pl_send_callbacks
+from .s08_plevents import (
+    PLSendConfig,
+    register_pl_aggregate_callbacks,
+    register_pl_send_callbacks,
+)
 from .s06_plview import build_pl_page
 from .s01_contracts import RefreshManagerProtocol
 from .s10_stock import (
     STOCK_FILTER_FIELDS,
     STOCK_FILTER_IDS,
+    STOCK_HIERARCHY_TOGGLE_TYPE,
     StockPageData,
+    build_stock_hierarchy_panel_with_state,
     build_stock_page_from_data,
+    build_stock_page_placeholder,
     build_stock_page_shell,
     build_stock_table_panel,
     default_stock_dates,
     filter_stock_comparison,
     load_stock_page_data,
     normalize_stock_date_pair,
+    normalize_stock_promotion_threshold,
+    normalize_stock_hierarchy_open_tokens,
     stock_exclude_selected,
     stock_filter_map,
     stock_filter_options,
     stock_summary_text,
+    toggle_stock_hierarchy_open_tokens,
 )
 
 
@@ -75,26 +88,26 @@ def _register_native_pages() -> None:
         layout=risk_page_layout,
     )
     register_page(
-        "pages.pnl",
-        path="/pnl",
-        name="P&L",
-        title="Cube — P&L Sender",
-        order=1,
-        layout=pnl_page_layout,
-    )
-    register_page(
         "pages.stock",
         path="/stock",
         name="Stock",
         title="Cube — Stock",
-        order=2,
+        order=1,
         layout=stock_page_layout,
+    )
+    register_page(
+        "pages.pnl",
+        path="/pnl",
+        name="P&L",
+        title="Cube — P&L Sender",
+        order=2,
+        layout=pnl_page_layout,
     )
     register_page(
         "pages.static_data",
         path="/static-data",
-        name="Static Data",
-        title="Cube — Static Data",
+        name="Statics",
+        title="Cube — Statics",
         order=3,
         layout=static_data_page_layout,
     )
@@ -211,6 +224,17 @@ def build_app(
         if data is None:
             raise RuntimeError("A static app requires a DataFrame")
         risk_data = prepare_risk_data(data)
+
+    prepared_dashboard_lock = Lock()
+    prepared_dashboard_revision = (
+        int(initial_snapshot.revision) if initial_snapshot is not None else -1
+    )
+    prepared_dashboard_frame: pd.DataFrame | None = (
+        risk_data if initial_snapshot is not None else None
+    )
+    risk_snapshot_lock = Lock()
+    risk_snapshot_revision = prepared_dashboard_revision
+    risk_snapshot_cache = initial_snapshot
 
     dash_options = dict(dash_kwargs or {})
     # Only the active URL's page body is mounted. Page-specific callback
@@ -329,13 +353,69 @@ def build_app(
     stock_href = app.get_relative_path("/stock")
     static_data_href = app.get_relative_path("/static-data")
 
+    def prepared_committed_dashboard(
+        *,
+        revision: int | None = None,
+        frame: pd.DataFrame | None = None,
+    ) -> pd.DataFrame | None:
+        """Prepare the mapped dashboard at most once per committed revision."""
+
+        nonlocal prepared_dashboard_frame, prepared_dashboard_revision
+        if refresh_manager is None:
+            return risk_data
+        if frame is None:
+            try:
+                requested_revision = int(refresh_manager.health.revision)
+            except Exception:
+                requested_revision = -1
+            if requested_revision <= 0:
+                return None
+            with prepared_dashboard_lock:
+                if (
+                    prepared_dashboard_frame is not None
+                    and prepared_dashboard_revision == requested_revision
+                ):
+                    return prepared_dashboard_frame
+            dashboard_read = refresh_manager.read_frame("dashboard_frame")
+            revision = int(dashboard_read.revision)
+            frame = dashboard_read.frame
+        elif revision is None:
+            raise ValueError("revision is required when a dashboard frame is supplied")
+
+        selected_revision = int(revision)
+        with prepared_dashboard_lock:
+            if (
+                prepared_dashboard_frame is not None
+                and prepared_dashboard_revision == selected_revision
+            ):
+                return prepared_dashboard_frame
+            prepared = prepare_risk_data(frame) if not frame.empty else frame.copy()
+            if selected_revision >= prepared_dashboard_revision:
+                prepared_dashboard_revision = selected_revision
+                prepared_dashboard_frame = prepared
+            return prepared_dashboard_frame
+
     def current_cube_page():
         """Serve the shell cold and the complete dashboard after revision 1."""
+        nonlocal risk_snapshot_cache, risk_snapshot_revision
         if refresh_manager is not None:
             try:
-                if refresh_manager.health.revision > 0:
-                    snapshot = refresh_manager.snapshot
-                    prepared = prepare_risk_data(snapshot.dashboard_frame)
+                revision = int(refresh_manager.health.revision)
+                if revision > 0:
+                    with risk_snapshot_lock:
+                        if (
+                            risk_snapshot_cache is None
+                            or risk_snapshot_revision != revision
+                        ):
+                            risk_snapshot_cache = refresh_manager.snapshot
+                            risk_snapshot_revision = int(risk_snapshot_cache.revision)
+                        snapshot = risk_snapshot_cache
+                    prepared = prepared_committed_dashboard(
+                        revision=int(snapshot.revision),
+                        frame=snapshot.dashboard_frame,
+                    )
+                    if prepared is None:
+                        raise RuntimeError("Committed dashboard frame is unavailable")
                     return build_layout(
                         prepared,
                         snapshot,
@@ -383,16 +463,23 @@ def build_app(
         return initial_snapshot
 
     def pnl_page_body():
-        """Mount the sender workflow only on its native P&L route."""
-        if pl_send_config is not None:
+        """Mount Aggregate P&L and the optional sender on the native P&L route."""
+        if refresh_manager is not None:
+            initial_aggregate_frame = None
             try:
-                start_initial_load = (
-                    refresh_manager is not None
-                    and int(refresh_manager.health.revision) <= 0
-                )
+                start_initial_load = int(refresh_manager.health.revision) <= 0
+                if not start_initial_load:
+                    initial_aggregate_frame = prepared_committed_dashboard()
             except Exception:
-                start_initial_load = refresh_manager is not None
-            return build_pl_page(start_initial_load=start_initial_load)
+                start_initial_load = True
+                app.logger.exception(
+                    "Could not pre-render committed Aggregate P&L on the P&L page"
+                )
+            return build_pl_page(
+                start_initial_load=start_initial_load,
+                send_workflow_available=pl_send_config is not None,
+                initial_aggregate_frame=initial_aggregate_frame,
+            )
         return html.Main(
             [
                 html.H1("P&L Sender", className="static-data-page-title"),
@@ -490,19 +577,19 @@ def build_app(
                                     className="app-nav-link cube-nav-link is-active",
                                 ),
                                 dcc.Link(
-                                    "P&L",
-                                    href=pnl_href,
-                                    id="pnl-nav-link",
-                                    className="app-nav-link cube-nav-link",
-                                ),
-                                dcc.Link(
                                     "Stock",
                                     href=stock_href,
                                     id="stock-nav-link",
                                     className="app-nav-link cube-nav-link",
                                 ),
                                 dcc.Link(
-                                    "Static Data",
+                                    "P&L",
+                                    href=pnl_href,
+                                    id="pnl-nav-link",
+                                    className="app-nav-link cube-nav-link",
+                                ),
+                                dcc.Link(
+                                    "Statics",
                                     href=static_data_href,
                                     id="static-data-nav-link",
                                     className="app-nav-link cube-nav-link",
@@ -571,6 +658,12 @@ def build_app(
         route_prefix=request_prefix,
         startup_coordinator=startup_coordinator,
     )
+    if refresh_manager is not None:
+        register_pl_aggregate_callbacks(
+            app,
+            refresh_manager,
+            prepared_frame_loader=prepared_committed_dashboard,
+        )
     if refresh_manager is not None and pl_send_config is not None:
         register_pl_send_callbacks(app, refresh_manager, pl_send_config)
     if stock_source is not None and stock_portfolio_source is not None:
@@ -629,14 +722,10 @@ def build_app(
 
         def stock_error_result(error: Exception, *, retryable: bool):
             return (
-                [
-                    html.P(
-                        f"Stock could not be loaded: {error}",
-                        id="stock-load-error",
-                        className="static-data-empty",
-                        role="alert",
-                    )
-                ],
+                build_stock_page_placeholder(
+                    f"Stock could not be loaded: {error}",
+                    error=True,
+                ),
                 no_update,
                 None,
                 not retryable,
@@ -825,33 +914,46 @@ def build_app(
             )
 
         @app.callback(
-            Output("stock-table-panel", "children"),
             Output("stock-row-count", "children"),
             Output("stock-mapped-count", "children"),
             Output("stock-unmapped-count", "children"),
             Output("stock-dimension-filter-store", "data"),
+            Output("stock-hierarchy-open-paths", "data"),
+            Output("stock-hierarchy-view", "children"),
             *[
                 Input(STOCK_FILTER_IDS[field.key], "value")
                 for field in STOCK_FILTER_FIELDS
             ],
             Input("stock-filter-exclude-selected", "value"),
-            State("stock-loaded-dates", "data"),
+            Input("stock-promotion-threshold", "value"),
+            Input("stock-loaded-dates", "data"),
+            Input(
+                {"type": STOCK_HIERARCHY_TOGGLE_TYPE, "path": ALL},
+                "n_clicks",
+            ),
+            State("stock-hierarchy-open-paths", "data"),
             prevent_initial_call=True,
         )
         def filter_stock_table(*values):
-            """Filter only the server-cached Stock comparison for this page."""
+            """Rebuild the Stock stack and source rows from the server cache."""
             selected_filter_values = values[: len(STOCK_FILTER_FIELDS)]
             exclude_value = values[len(STOCK_FILTER_FIELDS)]
-            loaded_dates = values[-1]
+            promotion_threshold = values[len(STOCK_FILTER_FIELDS) + 1]
+            loaded_dates = values[len(STOCK_FILTER_FIELDS) + 2]
+            _row_clicks = values[len(STOCK_FILTER_FIELDS) + 3]
+            current_open_paths = values[-1]
             selected_filters = stock_filter_map(selected_filter_values)
             key = stock_cache_key(loaded_dates)
             page_data = stock_cached_pages.get(key)
             if page_data is None:
-                return (no_update,) * 5
+                return (no_update,) * 6
             filtered = filter_stock_comparison(
                 page_data.mapped_stock,
                 selected_filters,
                 exclude_selected=stock_exclude_selected(exclude_value),
+            )
+            effective_threshold = normalize_stock_promotion_threshold(
+                promotion_threshold
             )
             rows, mapped, unmapped = stock_summary_text(
                 filtered,
@@ -859,18 +961,130 @@ def build_app(
                 current_date=page_data.current_date,
                 prior_date=page_data.prior_date,
             )
+            requested_open_paths = normalize_stock_hierarchy_open_tokens(
+                current_open_paths
+            )
+            try:
+                triggered = ctx.triggered_id
+                triggered_clicks = ctx.triggered[0].get("value") if ctx.triggered else 0
+            except MissingCallbackContextException:
+                triggered = None
+                triggered_clicks = 0
+            if (
+                isinstance(triggered, dict)
+                and triggered.get("type") == STOCK_HIERARCHY_TOGGLE_TYPE
+                and int(triggered_clicks or 0) > 0
+            ):
+                requested_open_paths = toggle_stock_hierarchy_open_tokens(
+                    requested_open_paths,
+                    triggered.get("path"),
+                )
+            hierarchy, effective_open_paths = build_stock_hierarchy_panel_with_state(
+                filtered,
+                has_unfiltered_rows=not page_data.mapped_stock.empty,
+                promotion_threshold=effective_threshold,
+                open_path_tokens=requested_open_paths,
+            )
+            hierarchy_triggered = (
+                isinstance(triggered, dict)
+                and triggered.get("type") == STOCK_HIERARCHY_TOGGLE_TYPE
+                and int(triggered_clicks or 0) > 0
+            )
+            if hierarchy_triggered:
+                return (
+                    no_update,
+                    no_update,
+                    no_update,
+                    no_update,
+                    effective_open_paths,
+                    hierarchy,
+                )
             return (
-                build_stock_table_panel(
-                    filtered,
-                    has_unfiltered_rows=not page_data.mapped_stock.empty,
-                ),
                 rows,
                 mapped,
                 unmapped,
                 {
                     "filters": selected_filters,
                     "exclude_selected": stock_exclude_selected(exclude_value),
+                    "promotion_threshold": effective_threshold,
                 },
+                effective_open_paths,
+                hierarchy,
+            )
+
+        @app.callback(
+            Output("stock-table-panel", "children"),
+            Output("stock-source-rows-state", "data"),
+            Output("stock-source-rows-button", "children"),
+            Output("stock-source-comparison-details", "open"),
+            Input("stock-source-rows-button", "n_clicks"),
+            Input("stock-loaded-dates", "data"),
+            *[
+                Input(STOCK_FILTER_IDS[field.key], "value")
+                for field in STOCK_FILTER_FIELDS
+            ],
+            Input("stock-filter-exclude-selected", "value"),
+            State("stock-source-rows-state", "data"),
+            prevent_initial_call=True,
+        )
+        def render_stock_source_rows(
+            _button_clicks,
+            loaded_dates,
+            *filter_values_exclude_and_state,
+        ):
+            """Load filtered raw rows only after an explicit page-local request."""
+
+            selected_filter_values = filter_values_exclude_and_state[
+                : len(STOCK_FILTER_FIELDS)
+            ]
+            exclude_value = filter_values_exclude_and_state[len(STOCK_FILTER_FIELDS)]
+            current_state = filter_values_exclude_and_state[-1]
+            key = stock_cache_key(loaded_dates)
+            page_data = stock_cached_pages.get(key)
+            state = current_state if isinstance(current_state, Mapping) else {}
+            same_snapshot = stock_cache_key(state.get("loaded_dates")) == key
+            requested = bool(state.get("requested")) and same_snapshot
+            try:
+                triggered = ctx.triggered_id
+                triggered_clicks = ctx.triggered[0].get("value") if ctx.triggered else 0
+            except MissingCallbackContextException:
+                triggered = None
+                triggered_clicks = 0
+            if (
+                triggered == "stock-source-rows-button"
+                and int(triggered_clicks or 0) > 0
+            ):
+                requested = not requested
+
+            state_payload = {
+                "requested": requested,
+                "loaded_dates": loaded_dates if key is not None else None,
+            }
+            if page_data is None or not requested:
+                return (
+                    html.P(
+                        "Source comparison rows are not loaded. Load them only when needed.",
+                        className="static-data-page-note",
+                    ),
+                    {**state_payload, "requested": False},
+                    "Load filtered source rows",
+                    False,
+                )
+
+            selected_filters = stock_filter_map(selected_filter_values)
+            filtered = filter_stock_comparison(
+                page_data.mapped_stock,
+                selected_filters,
+                exclude_selected=stock_exclude_selected(exclude_value),
+            )
+            return (
+                build_stock_table_panel(
+                    filtered,
+                    has_unfiltered_rows=not page_data.mapped_stock.empty,
+                ),
+                state_payload,
+                "Hide source rows",
+                True,
             )
 
     return app

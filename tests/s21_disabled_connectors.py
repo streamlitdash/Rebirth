@@ -1,9 +1,7 @@
-"""Preservation and isolation tests for recovered private connector source."""
+"""Inline preservation and isolation tests for recovered connector source."""
 
 from __future__ import annotations
 
-import hashlib
-import importlib.util
 from pathlib import Path
 
 import pandas as pd
@@ -12,19 +10,16 @@ from feeds import s01_sources as sources
 
 
 PROJECT = Path(__file__).resolve().parents[1]
-ARCHIVES = {
-    PROJECT / "adapters" / "_disabled" / "s01_common.py.disabled": {
-        "sha256": "458fc3964603842681ee6c470d83eefa4d6b462c5dae872e9d6c00f11fd6954e",
-        "symbols": (
-            "run_async",
-            "exact_frame",
-            "exact_status",
-            "exact_underlying",
-            "market_frame",
-        ),
+
+INLINE_ADAPTERS = {
+    PROJECT / "adapters" / "s01_common.py": {
+        "start": "=== REAL CONNECTOR IMPLEMENTATION (COMMENTED OUT)",
+        "end": "=== ACTIVE FIXTURE/CSV COMPATIBILITY HELPERS",
+        "symbols": ("run_async", "max_workers=1", "asyncio.new_event_loop"),
     },
-    PROJECT / "adapters" / "_disabled" / "s02_ir.py.disabled": {
-        "sha256": "07ee062e6ac5ac8aa50ac5592e4a619f5ef85c73f3356808f8d3e0958a320b0c",
+    PROJECT / "adapters" / "s02_ir.py": {
+        "start": "=== REAL IR CONNECTORS (COMMENTED OUT)",
+        "end": "=== ACTIVE VALIDATED CONTRACT (CSV RUNTIME IS SELECTED IN FEEDS)",
         "symbols": (
             "build_ir_delta_adapter",
             "build_ir_deltavega_adapter",
@@ -35,70 +30,118 @@ ARCHIVES = {
             "build_ir_bond_adapter",
         ),
     },
-    PROJECT / "adapters" / "_disabled" / "s03_fx.py.disabled": {
-        "sha256": "ade8a0be99e2291484bba33d3778dfd588f84cd778d3a76d750ed13295dc35bb",
+    PROJECT / "adapters" / "s03_fx.py": {
+        "start": "=== REAL FX CONNECTORS (COMMENTED OUT)",
+        "end": "=== ACTIVE VALIDATED CONTRACT (CSV RUNTIME IS SELECTED IN FEEDS)",
         "symbols": (
             "build_fx_delta_adapter",
             "build_fx_gamma_adapter",
             "build_fx_vega_adapter",
         ),
     },
-    PROJECT / "adapters" / "_disabled" / "s04_credit.py.disabled": {
-        "sha256": "c8df28c483810e02ab32934a27377ed4a01e3b68908741ea4bea971192be5bcc",
+    PROJECT / "adapters" / "s04_credit.py": {
+        "start": "=== REAL CREDIT CONNECTOR (COMMENTED OUT)",
+        "end": "=== ACTIVE VALIDATED CONTRACT (CSV RUNTIME IS SELECTED IN FEEDS)",
         "symbols": ("build_credit_delta_adapter",),
-    },
-    PROJECT / "feeds" / "_disabled" / "s01_sources.py.disabled": {
-        "sha256": "b4de2c3a2caf7b7f475fd942b7f92b642c1fab9c273fad99caa49d727325594f",
-        "symbols": (
-            "get_risk_checker",
-            "get_portfolio_config",
-            "get_product_connector_adapters",
-            "build_production_refresh_manager",
-        ),
     },
 }
 
 
-def _recover_original(archive: Path) -> str:
-    text = archive.read_text(encoding="utf-8")
-    assert text.endswith("\n")
-    lines = text.splitlines()
-    assert lines
-    assert all(line == "#" or line.startswith("# ") for line in lines)
-    return "\n".join("" if line == "#" else line[2:] for line in lines) + "\n"
+def _comment_only_region(text: str, start: str, end: str) -> str:
+    marker_offset = text.index(start)
+    start_offset = text.rfind("\n", 0, marker_offset) + 1
+    end_marker = text.index(end, marker_offset)
+    end_offset = text.find("\n", end_marker)
+    if end_offset == -1:
+        end_offset = len(text)
+    region = text[start_offset:end_offset]
+    executable = [
+        line
+        for line in region.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert executable == []
+    return region
 
 
-def test_recovered_connector_bodies_are_exact_commented_archives() -> None:
-    for archive, expected in ARCHIVES.items():
-        assert archive.is_file()
-        assert archive.name.endswith(".py.disabled")
-        assert (
-            importlib.util.spec_from_file_location("disabled_connector", archive)
-            is None
+def test_recovered_adapter_bodies_are_inline_and_comment_only() -> None:
+    for path, expected in INLINE_ADAPTERS.items():
+        text = path.read_text(encoding="utf-8")
+        assert text.count("\nfrom __future__ import annotations\n") == 1
+        assert text.index("from __future__ import annotations") < text.index(
+            expected["start"]
         )
-
-        recovered = _recover_original(archive)
-        assert (
-            hashlib.sha256(recovered.encode("utf-8")).hexdigest() == expected["sha256"]
-        )
+        region = _comment_only_region(text, expected["start"], expected["end"])
+        assert "SWITCH TO REAL" in region
+        assert "Leave the recovered ``from __future__ import annotations``" in region
+        assert "# from __future__ import annotations" in region
         for symbol in expected["symbols"]:
-            assert f"def {symbol}" in recovered
+            assert symbol in region
+
+    assert not any((PROJECT / "adapters" / "_disabled").glob("**/*"))
 
 
-def test_disabled_manifests_record_runtime_and_commodity_boundaries() -> None:
-    adapter_manifest = PROJECT / "adapters" / "_disabled" / "MANIFEST.txt"
-    feed_manifest = PROJECT / "feeds" / "_disabled" / "MANIFEST.txt"
+def test_recovered_adapter_body_can_be_uncommented_without_future_import_error() -> (
+    None
+):
+    for path, expected in INLINE_ADAPTERS.items():
+        text = path.read_text(encoding="utf-8")
+        region_start = text.index(expected["start"])
+        recovered_future = text.index(
+            "# from __future__ import annotations",
+            region_start,
+        )
+        body_start = text.index("\n", recovered_future) + 1
+        active_marker = text.index(expected["end"], body_start)
+        body_end = text.rfind("\n", 0, active_marker) + 1
+        body = text[body_start:body_end]
+        uncommented = "\n".join(
+            "" if line == "#" else line[2:] if line.startswith("# ") else line
+            for line in body.splitlines()
+        )
+        switched = text[:body_start] + uncommented + "\n" + text[body_end:]
 
-    for manifest in (adapter_manifest, feed_manifest):
-        lines = manifest.read_text(encoding="utf-8").splitlines()
-        assert lines
-        assert all(line.startswith("#") for line in lines)
-        assert "fake CSV" in manifest.read_text(encoding="utf-8")
+        compile(switched, str(path), "exec")
 
-    adapter_notes = adapter_manifest.read_text(encoding="utf-8")
-    assert "run_async is not active or imported" in adapter_notes
-    assert "no private Commodity adapter body" in adapter_notes
-    assert (PROJECT / "adapters" / "s03_commo.py").is_file()
+
+def test_recovered_feed_blocks_are_adjacent_comment_only_switches() -> None:
+    text = (PROJECT / "feeds" / "s01_sources.py").read_text(encoding="utf-8")
+    regions = (
+        ("=== REAL PRODUCT IMPORTS", "=== END REAL PRODUCT IMPORTS"),
+        ("=== REAL RISK CHECKER", "=== END REAL RISK CHECKER"),
+        ("=== REAL PORTFOLIO MAPPING", "=== END REAL PORTFOLIO MAPPING"),
+        ("=== REAL PRODUCT REGISTRATION", "=== END REAL PRODUCT REGISTRATION"),
+    )
+    for start, end in regions:
+        region = _comment_only_region(text, start, end)
+        assert "SWITCH" in region or start == "=== REAL PRODUCT IMPORTS"
+
+    for recovered_text in (
+        'mrx.MRXView(r"mrx/static/age.tsv")',
+        'cm.get("XVA.IM Optin.PnL.Ann.Ptf List")',
+        "colossus_connection.raw_request(",
+        'adapters["credit/delta"] = build_credit_delta_adapter()',
+        'adapters["credit/vega"] = build_credit_vega_adapter()  # unavailable',
+        'adapters["fx/gamma"] = build_fx_gamma_adapter()',
+        'adapters["ir/delta"], adapters["ir/gamma"]',
+        'adapters["ir/xccyvega"] = build_ir_xccyvega_adapter()  # unavailable',
+        'submit_endpoint = "/api/svc/predict/submitPredictByPortfolio"',
+        "No private Commodity body was recovered",
+    ):
+        assert recovered_text in text
+
+    assert not any((PROJECT / "feeds" / "_disabled").glob("**/*"))
+
+
+def test_each_feed_switch_is_immediately_followed_by_its_active_fallback() -> None:
+    text = (PROJECT / "feeds" / "s01_sources.py").read_text(encoding="utf-8")
+    risk_end = text.index("=== END REAL RISK CHECKER")
+    portfolio_end = text.index("=== END REAL PORTFOLIO MAPPING")
+    assert text.index("=== ACTIVE CSV FALLBACK", risk_end) > risk_end
+    assert text.index("=== ACTIVE CSV FALLBACK", portfolio_end) > portfolio_end
+    registration_end = text.index("=== END REAL PRODUCT REGISTRATION")
+    active_return = text.index("return _get_csv_product_connector_adapters()")
+    assert active_return > registration_end
 
 
 def test_active_product_registration_still_reads_the_fake_csv_boundary() -> None:

@@ -1,5 +1,11 @@
 """Working Commodity Delta curve adapter example."""
 
+# === REAL COMMODITY CONNECTOR: SOURCE BODY NOT RECOVERED =====================
+# The retained originals referenced ``build_commo_delta_adapter`` and
+# ``build_commo_vega_adapter`` but contained neither implementation. Nothing was
+# invented. This strict adapter contract remains active over the CSV feed.
+# === END COMMODITY RECOVERY MARKER ===========================================
+
 from __future__ import annotations
 
 import pandas as pd

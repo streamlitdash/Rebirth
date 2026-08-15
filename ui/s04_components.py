@@ -19,17 +19,20 @@ from core.s03_search import HIERARCHY_DEPTH
 from .s03_aggregate import (
     HierarchyAggregationIndex,
     aggregate_values,
+    apply_credit_measure,
     credit_measure_available,
     credit_measure_values,
     default_open_rows,
     detail_frame,
     dimension_title,
     display_metric,
+    filter_ir_family,
     format_number,
     frame_for_context,
     number_sign_class,
     ordered_unique,
     parse_row_key,
+    recompute_filtered_promotion,
     row_key,
     selected_dimension,
     should_show_sum,
@@ -2206,7 +2209,7 @@ def build_aggregate_pl_table(
                                 "⌄" if is_open else "›",
                                 id={
                                     "type": "aggregate-row-toggle",
-                                    "risk type": risk_type,
+                                    "risk_type": risk_type,
                                 },
                                 n_clicks=0,
                                 className="aggregate-row-toggle",
@@ -4502,6 +4505,39 @@ def build_layout(
         )
         for field in FILTER_DIMENSION_FIELDS
     ]
+    initial_risk_type = risk_options[0]["value"]
+    initial_ir_family = "delta" if initial_risk_type == "IR" else None
+    initial_risk_frame = risk_data.loc[risk_data["risk type"].eq(initial_risk_type)]
+    initial_risk_frame = filter_ir_family(
+        initial_risk_frame,
+        initial_risk_type,
+        initial_ir_family,
+    )
+    if not initial_risk_frame.empty:
+        initial_risk_frame = recompute_filtered_promotion(initial_risk_frame)
+    if initial_risk_type == "Credit":
+        initial_risk_frame = apply_credit_measure(
+            initial_risk_frame,
+            CREDIT_MEASURES[0],
+        )
+    initial_open_rows = default_open_rows(initial_risk_frame, initial_risk_type)
+    initial_risk_table = build_risk_table(
+        initial_risk_frame,
+        [],
+        initial_open_rows,
+        dimension=DEFAULT_VIEW_DIMENSION,
+        toggle_type="main-row-toggle",
+        cell_type="main-risk-cell",
+        index_label=initial_risk_type,
+        promotion_enabled=True,
+        region_enabled=False,
+        underlying_sort_metric=DEFAULT_UNDERLYING_SORT_METRIC,
+    )
+    initial_aggregate_table = build_aggregate_pl_table(
+        risk_data,
+        DEFAULT_VIEW_DIMENSION,
+        [],
+    )
     top_book_open_rows = default_top_book_open_rows(risk_data)
     return html.Div(
         [
@@ -4534,21 +4570,16 @@ def build_layout(
             dcc.Store(id="aggregate-open-risk-types", data=[]),
             dcc.Store(
                 id="dimension-filter-store",
-                data={
-                    field.key: (
-                        ["CVAI", "FVA", "COLVA"] if field.key == "activity" else []
-                    )
-                    for field in FILTER_DIMENSION_FIELDS
-                },
+                data={field.key: None for field in FILTER_DIMENSION_FIELDS},
             ),
             dcc.Store(
                 id="dimension-filter-values-store",
-                data={
-                    field.key: (
-                        ["CVAI", "FVA", "COLVA"] if field.key == "activity" else []
-                    )
-                    for field in FILTER_DIMENSION_FIELDS
-                },
+                # This Store is positional because the Risk reducer binds it to
+                # FILTER_DIMENSION_FIELDS with ``zip(..., strict=True)``.  Its
+                # initial value must match the blank dropdowns exactly; the old
+                # mapping briefly turned field names into character filters and
+                # could replace a warm table with an empty render during mount.
+                data=[None for _field in FILTER_DIMENSION_FIELDS],
             ),
             dcc.Store(id="top-book-open-rows-store", data=top_book_open_rows),
             dcc.Store(id="selected-cell-store", data=None),
@@ -4678,7 +4709,10 @@ def build_layout(
                     ),
                     html.Div(
                         dcc.Loading(
-                            html.Div(id="aggregate-pl-grid"),
+                            html.Div(
+                                initial_aggregate_table,
+                                id="aggregate-pl-grid",
+                            ),
                             custom_spinner=build_cube_loader("Loading aggregate P&L"),
                             delay_show=120,
                             className="cube-loading-boundary",
@@ -4916,7 +4950,11 @@ def build_layout(
                 # a full browser layout and makes ordinary navigation feel
                 # like a data refresh. Explicit Refresh Risk / Refresh PL
                 # operations retain the dedicated refresh progress loader.
-                html.Div(id="risk-grid", className="risk-grid"),
+                html.Div(
+                    initial_risk_table,
+                    id="risk-grid",
+                    className="risk-grid",
+                ),
                 id="main-risk-panel",
                 className="risk-panel",
             ),

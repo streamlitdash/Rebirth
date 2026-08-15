@@ -16,6 +16,7 @@ from dash.exceptions import UnsupportedRelativePath
 
 from feeds.s01_sources import build_production_refresh_manager
 from ui import s07_events as events
+from ui import s09_factory as factory
 from ui.s05_staticdata import (
     STATIC_FILE_OPTIONS,
     build_static_data_page,
@@ -537,19 +538,35 @@ def test_every_callback_output_has_one_nonduplicate_owner() -> None:
 def test_native_pages_mount_one_exact_page_and_explicit_404() -> None:
     app = build_app(refresh_manager=build_production_refresh_manager())
     nav = _callback_for_output(app, "cube-nav-link", "className")
+    app_layout = app.layout() if callable(app.layout) else app.layout
+    primary_navigation = next(
+        item
+        for item in _walk(app_layout)
+        if getattr(item, "className", None) == "cube-nav"
+    )
+
+    assert [link.children for link in primary_navigation.children] == [
+        "Risk",
+        "Stock",
+        "P&L",
+        "Statics",
+    ]
 
     static_page, metadata = _native_page(app, "/static-data")
     static_ids = {getattr(item, "id", None) for item in _walk(static_page)}
     cube_class, pnl_class, stock_class, static_class, shell_style = nav(
         app.get_relative_path("/static-data/")
     )
-    assert metadata == {"title": "Cube — Static Data"}
+    assert metadata == {"title": "Cube — Statics"}
     assert cube_class == "app-nav-link cube-nav-link"
     assert pnl_class == "app-nav-link cube-nav-link"
     assert stock_class == "app-nav-link cube-nav-link"
     assert static_class == "app-nav-link cube-nav-link is-active"
     assert shell_style == {"display": "none"}
     assert {"static-data-page", "static-data-file-selector"} <= static_ids
+    assert any(
+        getattr(item, "children", None) == "Statics" for item in _walk(static_page)
+    )
     assert "cube-page-container" not in static_ids
     assert "initial-load-trigger" not in static_ids
 
@@ -615,6 +632,32 @@ def test_native_pages_mount_one_exact_page_and_explicit_404() -> None:
     assert return_link.href == app.get_relative_path("/")
 
 
+def test_risk_and_pnl_navigation_share_one_prepared_frame_per_revision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = build_production_refresh_manager()
+    app = build_app(refresh_manager=manager)
+    manager.refresh(force_risk=True, force_pl=True)
+    calls = 0
+    original = factory.prepare_risk_data
+
+    def counted_prepare(frame):
+        nonlocal calls
+        calls += 1
+        return original(frame)
+
+    monkeypatch.setattr(factory, "prepare_risk_data", counted_prepare)
+
+    _native_page(app, "/")
+    _native_page(app, "/pnl")
+    _native_page(app, "/")
+    _native_page(app, "/pnl")
+    aggregate = _callback_for_output(app, "pnl-aggregate-pl-grid", "children")
+    aggregate("activity", manager.health.revision, [], [])
+
+    assert calls == 1
+
+
 def test_native_pages_match_the_public_prefix_exactly() -> None:
     app = build_app(
         refresh_manager=build_production_refresh_manager(),
@@ -675,11 +718,13 @@ def test_repeated_apps_keep_native_page_services_isolated() -> None:
 
     assert tuple(page_registry) == (
         "pages.risk",
-        "pages.pnl",
         "pages.stock",
+        "pages.pnl",
         "pages.static_data",
         "pages.not_found_404",
     )
+    assert page_registry["pages.static_data"]["name"] == "Statics"
+    assert page_registry["pages.static_data"]["title"] == "Cube — Statics"
     assert page_registry["pages.pnl"]["relative_path"] == "/warm/pnl"
     assert page_registry["pages.stock"]["relative_path"] == "/warm/stock"
     assert page_registry["pages.static_data"]["relative_path"] == "/warm/static-data"

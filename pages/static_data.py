@@ -1,4 +1,4 @@
-"""Native Dash Pages entry for lazily mounted static reference data."""
+"""Native Dash Pages entry for the lazily mounted Statics catalogue."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from ui.s05_staticdata import build_static_data_page
 
 
 def layout(**_kwargs: Any):
-    """Build Static Data only when its URL is active."""
+    """Build Statics only when its URL is active."""
     return build_static_data_page()
 
 

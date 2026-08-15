@@ -32,14 +32,25 @@ def test_stage_bundle_uses_conventional_runtime_names(tmp_path: Path) -> None:
             publishing.PROJECT / "pages" / page_module
         ).read_bytes()
     for relative_path in (
+        Path("adapters/s01_common.py"),
+        Path("adapters/s02_ir.py"),
+        Path("adapters/s03_fx.py"),
+        Path("adapters/s04_credit.py"),
         Path("adapters/s05_stock.py"),
         Path("adapters/s06_new_positions.py"),
         Path("core/s08_stock.py"),
+        Path("feeds/s01_sources.py"),
         Path("ui/s10_stock.py"),
     ):
         assert (staged / relative_path).read_bytes() == (
             publishing.PROJECT / relative_path
         ).read_bytes()
+    assert "=== REAL IR CONNECTORS (COMMENTED OUT)" in (
+        staged / "adapters" / "s02_ir.py"
+    ).read_text(encoding="utf-8")
+    assert "=== ACTIVE CSV FALLBACK" in (staged / "feeds" / "s01_sources.py").read_text(
+        encoding="utf-8"
+    )
     history_files = sorted((publishing.PROJECT / "data" / "histo").rglob("*.csv"))
     assert history_files
     assert {path.name for path in history_files} == {"histo.csv", "predicted.csv"}
