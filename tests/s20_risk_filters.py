@@ -9,7 +9,9 @@ from types import SimpleNamespace
 import pandas as pd
 from dash import dcc, html
 
+from core.s09_saved_views import SavedFilterView
 from core.s03_search import MARKET_RESULT_COLUMNS, SearchCatalog
+from ui import s07_events as events_module
 from ui.s02_constants import (
     DEFAULT_VIEW_DIMENSION,
     DIMENSION_FILTER_IDS,
@@ -22,7 +24,11 @@ from ui.s03_aggregate import (
     prepare_risk_data,
     selected_dimension,
 )
-from ui.s04_components import build_aggregate_pl_table, build_layout
+from ui.s04_components import (
+    RISK_SAVED_VIEW_CONTROLS,
+    build_aggregate_pl_table,
+    build_layout,
+)
 from ui.s07_events import (
     _RiskDataCache,
     _render_quick_search_pivot,
@@ -30,6 +36,7 @@ from ui.s07_events import (
     filter_unmapped_portfolios,
 )
 from ui.s09_factory import build_app
+from ui.s11_saved_views import saved_view_apply_request
 
 
 def _raw_risk_frame() -> pd.DataFrame:
@@ -155,9 +162,9 @@ def _callback_inputs_for_output(
 
 def test_portfolio_is_a_ui_view_and_filter_without_changing_the_core_registry() -> None:
     assert [field.key for field in FILTER_DIMENSION_FIELDS] == [
-        "portfolio",
         "activity",
         "signoffgroup",
+        "portfolio",
         "category",
         "subcategory",
     ]
@@ -225,6 +232,142 @@ def test_filtered_cache_distinguishes_include_and_exclude_generations() -> None:
     assert excluded["portfolio"].tolist() == ["BOOK-B"]
 
 
+def test_risk_promotion_is_recomputed_after_position_filters() -> None:
+    """A globally promoted exposure can fall below threshold in one view."""
+
+    raw = _raw_risk_frame()
+    raw["Risk"] = [600.0, 600.0]
+    raw["dRisk"] = [0.0, 0.0]
+    raw["PL"] = [0.0, 0.0]
+    cache = _RiskDataCache(prepare_risk_data(raw), revision=7)
+
+    global_view = cache.filtered(None, "IR", "delta", ["Risk"], {})
+    book_view = cache.filtered(
+        None,
+        "IR",
+        "delta",
+        ["Risk"],
+        {"portfolio": ["BOOK-A"]},
+    )
+
+    assert global_view["risk"].sum() == 1_200.0
+    assert global_view["display bucket"].eq("USD-SOFR").all()
+    assert global_view["promotion reason"].eq("Big Risk").all()
+    assert book_view["risk"].sum() == 600.0
+    assert book_view["display bucket"].eq("Other").all()
+    assert book_view["promotion reason"].eq("").all()
+
+
+def test_risk_filter_owner_applies_pending_saved_view_without_losing_manual_edits(
+    monkeypatch,
+) -> None:
+    app = build_app(refresh_manager=_warm_manager())
+    metadata = next(
+        item
+        for item in app.callback_map.values()
+        if any(
+            output.component_id == DIMENSION_FILTER_IDS["activity"]
+            and output.component_property == "value"
+            for output in _callback_outputs(item)
+        )
+    )
+    callback = metadata["callback"].__wrapped__
+    assert (
+        RISK_SAVED_VIEW_CONTROLS.applied_request_id,
+        "data",
+    ) in {(item["id"], item["property"]) for item in metadata["state"]}
+    view = SavedFilterView(
+        identifier="morning--0123456789ab",
+        scope="risk",
+        name="Morning",
+        filters={
+            "activity": ("1111",),
+            "signoffgroup": ("SOG-A",),
+            "portfolio": ("BOOK-A",),
+            "category": ("Core",),
+            "subcategory": ("Rates",),
+        },
+        exclude_selected=True,
+    )
+    request = saved_view_apply_request(
+        view,
+        base_filters={field.key: [] for field in FILTER_DIMENSION_FIELDS},
+        base_exclude_selected=False,
+    )
+    monkeypatch.setattr(
+        events_module,
+        "ctx",
+        SimpleNamespace(triggered_id=RISK_SAVED_VIEW_CONTROLS.apply_request_id),
+    )
+
+    result = callback(
+        1,
+        request,
+        *([[]] * len(FILTER_DIMENSION_FIELDS)),
+        [],
+        None,
+    )
+
+    assert result[1::2][:5] == (
+        ["1111"],
+        ["SOG-A"],
+        ["BOOK-A"],
+        ["Core"],
+        ["Rates"],
+    )
+    assert result[-1] == ["exclude"]
+
+    # Dash may coalesce the request Store and a financial revision update, in
+    # which case triggered_id is the revision. The pending request still owns
+    # the unchanged base controls and must not be stranded forever.
+    monkeypatch.setattr(
+        events_module,
+        "ctx",
+        SimpleNamespace(triggered_id="data-revision-store"),
+    )
+    coalesced = callback(
+        2,
+        request,
+        *([[]] * len(FILTER_DIMENSION_FIELDS)),
+        [],
+        None,
+    )
+    assert coalesced[1::2][:5] == result[1::2][:5]
+    assert coalesced[-1] == ["exclude"]
+
+    manual = [[] for _field in FILTER_DIMENSION_FIELDS]
+    manual[2] = ["BOOK-B"]
+    superseded = callback(3, request, *manual, [], None)
+    assert superseded[5] == ["BOOK-B"]
+    assert superseded[-1] == []
+
+    acknowledged = callback(
+        4,
+        request,
+        *([[]] * len(FILTER_DIMENSION_FIELDS)),
+        [],
+        request["request_id"],
+    )
+    assert acknowledged[1::2][:5] == ([], [], [], [], [])
+    assert acknowledged[-1] == []
+
+
+def test_risk_filter_values_and_mode_have_one_callback_owner() -> None:
+    app = build_app(refresh_manager=_warm_manager())
+    governed = {
+        *((component_id, "value") for component_id in DIMENSION_FILTER_IDS.values()),
+        ("risk-filter-exclude-selected", "value"),
+    }
+    owners = {identity: 0 for identity in governed}
+    for metadata in app.callback_map.values():
+        for output in _callback_outputs(metadata):
+            identity = (str(output.component_id), output.component_property)
+            if identity in owners:
+                owners[identity] += 1
+
+    assert set(owners.values()) == {1}
+
+
 def test_portfolio_is_rendered_as_a_filter_and_a_view_by_dimension() -> None:
     prepared = prepare_risk_data(_raw_risk_frame())
     layout = build_layout(prepared, _snapshot(), refresh_enabled=True)
@@ -239,6 +382,13 @@ def test_portfolio_is_rendered_as_a_filter_and_a_view_by_dimension() -> None:
         item
         for item in components
         if isinstance(item, dcc.Checklist) and item.id == "risk-filter-exclude-selected"
+    )
+    filter_row = next(
+        item
+        for item in components
+        if isinstance(item, html.Div)
+        and {"controls", "filter-controls"}
+        <= set(str(getattr(item, "className", "")).split())
     )
     aggregate_dimension = next(
         item
@@ -259,6 +409,13 @@ def test_portfolio_is_rendered_as_a_filter_and_a_view_by_dimension() -> None:
         {"label": "Exclude selected values", "value": "exclude"}
     ]
     assert exclude_mode.value == []
+    assert [control.children[0].children for control in filter_row.children] == [
+        "Activity",
+        "Signoff Group",
+        "Portfolio",
+        "Category",
+        "Sub Category",
+    ]
     for selector in (aggregate_dimension, table_dimension):
         assert {option["value"] for option in selector.options} >= {"portfolio"}
         assert selector.value == "activity"

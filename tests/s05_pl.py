@@ -7,6 +7,7 @@ import pytest
 
 from core.s04_pl import (
     ADJUSTMENT,
+    BOOK,
     CONCERTO_FIELD,
     HISTORICAL_PL_COLUMNS,
     HISTO_TYPE,
@@ -16,6 +17,10 @@ from core.s04_pl import (
     PL_SEND_COLUMNS,
     PLSendValidationError,
     PREDICTED_TYPE,
+    PRODUCT,
+    RISK_GREEK,
+    RISK_TYPE,
+    UNDERLYING,
     apply_adjustment_overlay,
     build_pl_send_base,
     build_saved_pl_frame,
@@ -95,14 +100,14 @@ def _history_leaf(root, market_date: str, *, duplicate: bool = False):
     leaf = root / year / f"{month}-{day}"
     leaf.mkdir(parents=True)
     histo_rows = [
-        ["BOOK_A", "irdeltaeffect", 10.0],
-        ["BOOK_B", "fxdeltaeffect", -4.0],
+        ["IR", "Delta", "EUR", "XVA", "BOOK_A", 10.0],
+        ["FX", "Delta", "EUR/USD", "Hedges", "BOOK_B", -4.0],
     ]
     if duplicate:
         histo_rows.append(histo_rows[0])
     predicted_rows = [
-        ["BOOK_A", "irdeltaeffect", 9.5],
-        ["BOOK_B", "fxdeltaeffect", -3.5],
+        ["IR", "Delta", "EUR", "XVA", "BOOK_A", 9.5],
+        ["FX", "Delta", "EUR/USD", "Hedges", "BOOK_B", -3.5],
     ]
     pd.DataFrame(histo_rows, columns=HISTORY_FILE_COLUMNS).to_csv(
         leaf / "histo.csv", index=False
@@ -165,7 +170,7 @@ def test_pl_history_loads_strict_actual_and_predicted_date_partitions(tmp_path) 
     actual = history.loc[
         history[HISTORY_TYPE].eq(HISTO_TYPE)
         & history["Market Date"].eq("2026-08-15")
-        & history["Portfolio"].eq("BOOK_A")
+        & history[BOOK].eq("BOOK_A")
     ]
     assert actual.iloc[0]["PL"] == 10.0
 
@@ -199,11 +204,9 @@ def test_pl_history_reuses_unchanged_csvs_and_invalidates_on_file_change(
     assert 1_234_567.0 in refreshed["PL"].tolist()
 
 
-def test_pl_history_promotes_legacy_actual_only_source() -> None:
-    history = load_pl_history(_historical_pl())
-
-    assert list(history.columns) == list(PL_HISTORY_COLUMNS)
-    assert history[HISTORY_TYPE].eq(HISTO_TYPE).all()
+def test_pl_history_rejects_legacy_source_without_hierarchy_identity() -> None:
+    with pytest.raises(PLSendValidationError, match="paired P&L history requires"):
+        load_pl_history(_historical_pl())
 
 
 def test_pl_history_requires_both_named_files_in_every_date_partition(
@@ -230,15 +233,15 @@ def test_pl_history_rejects_leaf_schema_drift_and_duplicate_grain(tmp_path) -> N
     root = tmp_path / "histo"
     leaf = _history_leaf(root, "2026-08-15")
     pd.DataFrame(
-        [["BOOK_A", 10.0, "irdeltaeffect"]],
-        columns=["Portfolio", "PL", CONCERTO_FIELD],
+        [["IR", "Delta", "EUR", "XVA", 10.0, "BOOK_A"]],
+        columns=[RISK_TYPE, RISK_GREEK, UNDERLYING, PRODUCT, "PL", BOOK],
     ).to_csv(leaf / "predicted.csv", index=False)
     with pytest.raises(PLSendValidationError, match="exactly these columns in order"):
         load_pl_history(root)
 
     other_root = tmp_path / "duplicate-histo"
     _history_leaf(other_root, "2026-08-15", duplicate=True)
-    with pytest.raises(PLSendValidationError, match="duplicate Portfolio"):
+    with pytest.raises(PLSendValidationError, match="duplicate history identity"):
         load_pl_history(other_root)
 
 

@@ -44,12 +44,23 @@ from core.s08_stock import (
     summarize_visible_stock_hierarchy,
 )
 from .s02_constants import FILTER_DIMENSION_FIELDS
+from .s11_saved_views import (
+    SavedFilterViewControls,
+    build_saved_filter_view_bar,
+)
 
 
 STOCK_FILTER_FIELDS = FILTER_DIMENSION_FIELDS
 STOCK_FILTER_IDS = {
     field.key: f"stock-{field.dash_filter_id}" for field in STOCK_FILTER_FIELDS
 }
+STOCK_SAVED_VIEW_CONTROLS = SavedFilterViewControls(
+    scope="stock",
+    prefix="stock",
+    fields=STOCK_FILTER_FIELDS,
+    filter_ids=STOCK_FILTER_IDS,
+    exclude_id="stock-filter-exclude-selected",
+)
 STOCK_HIERARCHY_METRICS = (
     PRIOR_QUANTITY_COLUMN,
     CURRENT_QUANTITY_COLUMN,
@@ -760,7 +771,7 @@ def build_stock_page_from_data(
                     html.H3("Stacked Stock", className="static-data-page-title"),
                     html.P(
                         "Activity → Promotion Bucket → Group (Temporary Fixture) → CPTY → CRDS. "
-                        "The temporary Group is currency-based; promotion uses absolute current market value at the preserved comparison-row identity.",
+                        "The temporary Group is currency-based; promotion uses absolute net current market value at the displayed Stock-name identity after filters. Every level is ordered by absolute current Stock descending.",
                         id="stock-hierarchy-rule-note",
                         className="static-data-page-note",
                     ),
@@ -836,7 +847,7 @@ def build_stock_page_placeholder(
                 html.H3("Stacked Stock", className="static-data-page-title"),
                 html.P(
                     "Activity → Promotion Bucket → Group (Temporary Fixture) → CPTY → CRDS. "
-                    "The temporary Group is currency-based; promotion uses absolute current market value at the preserved comparison-row identity.",
+                    "The temporary Group is currency-based; promotion uses absolute net current market value at the displayed Stock-name identity after filters. Every level is ordered by absolute current Stock descending.",
                     id="stock-hierarchy-rule-note",
                     className="static-data-page-note",
                 ),
@@ -937,11 +948,18 @@ def build_stock_page_shell(
                         ],
                         className="control-field",
                     ),
-                    html.Button(
-                        "Compare dates",
-                        id="stock-compare-button",
-                        n_clicks=0,
-                        className="refresh-button",
+                    html.Div(
+                        [
+                            html.Label("Compare", htmlFor="stock-compare-button"),
+                            html.Button(
+                                "Compare dates",
+                                id="stock-compare-button",
+                                n_clicks=0,
+                                type="button",
+                                className="refresh-button stock-compare-button",
+                            ),
+                        ],
+                        className="control-field stock-compare-action",
                     ),
                     html.Div(
                         [
@@ -968,13 +986,17 @@ def build_stock_page_shell(
                 ],
                 className="controls top-controls",
             ),
+            build_saved_filter_view_bar(STOCK_SAVED_VIEW_CONTROLS),
             html.Div(
                 [
                     html.Div(
                         "Leave blank to include all values. Stock filters are independent from Risk filters.",
                         className="filter-note",
                     ),
-                    html.Div(filter_controls, className="controls"),
+                    html.Div(
+                        filter_controls,
+                        className="controls filter-controls",
+                    ),
                     dcc.Checklist(
                         id="stock-filter-exclude-selected",
                         options=[
@@ -1110,6 +1132,7 @@ def build_stock_page_from_sources(
 __all__ = [
     "STOCK_FILTER_FIELDS",
     "STOCK_FILTER_IDS",
+    "STOCK_SAVED_VIEW_CONTROLS",
     "STOCK_HIERARCHY_TOGGLE_TYPE",
     "StockPageData",
     "build_stock_hierarchy",

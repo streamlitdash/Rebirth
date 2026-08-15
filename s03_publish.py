@@ -33,7 +33,15 @@ RUNTIME_DIRECTORIES = (
     "pages",
     "ui",
 )
-IGNORED_NAMES = ("__pycache__", "_disabled", "*.pyc", "*.pyo", "*.log")
+IGNORED_NAMES = (
+    "__pycache__",
+    "_disabled",
+    "*.pyc",
+    "*.pyo",
+    "*.log",
+    ".write.lock",
+    ".*.tmp",
+)
 
 
 def _require_file(relative_path: str) -> Path:

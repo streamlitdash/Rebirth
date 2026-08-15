@@ -22,6 +22,7 @@ from ui.s05_staticdata import (
     build_static_data_page,
     build_static_data_table,
 )
+from ui.s06_plview import PL_FILTER_FIELDS
 from ui.s07_events import STARTUP_COORDINATOR_CONFIG_KEY, StartupCoordinator
 from ui.s09_factory import build_app
 
@@ -653,7 +654,14 @@ def test_risk_and_pnl_navigation_share_one_prepared_frame_per_revision(
     _native_page(app, "/")
     _native_page(app, "/pnl")
     aggregate = _callback_for_output(app, "pnl-aggregate-pl-grid", "children")
-    aggregate("activity", manager.health.revision, [], [])
+    aggregate(
+        "activity",
+        manager.health.revision,
+        [],
+        *([[]] * len(PL_FILTER_FIELDS)),
+        [],
+        [],
+    )
 
     assert calls == 1
 

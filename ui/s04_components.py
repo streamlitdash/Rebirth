@@ -64,6 +64,10 @@ from .s02_constants import (
     get_active_groups,
 )
 from .s01_contracts import ControlSnapshotProtocol, RefreshSnapshotProtocol
+from .s11_saved_views import (
+    SavedFilterViewControls,
+    build_saved_filter_view_bar,
+)
 
 
 _DETAIL_LOGGER = logging.getLogger(__name__)
@@ -75,6 +79,13 @@ DETAIL_TENOR_VIEW_LABELS = {
     "option": "Tenor Option line",
     "surface": "Surface",
 }
+RISK_SAVED_VIEW_CONTROLS = SavedFilterViewControls(
+    scope="risk",
+    prefix="risk",
+    fields=FILTER_DIMENSION_FIELDS,
+    filter_ids=DIMENSION_FILTER_IDS,
+    exclude_id="risk-filter-exclude-selected",
+)
 
 
 def _active_groups_for_frame(
@@ -3389,14 +3400,20 @@ def build_risk_date_editor(
         suggested_source_date = (
             pd.Timestamp(record["Suggested Risk Date"]).date().isoformat()
         )
-        age_label = str(int(record["Age"]))
-        if bool(record.get("Age Defaulted", False)):
-            age_label += " (default)"
+        age = int(record["Age"])
+        age_defaulted = bool(record.get("Age Defaulted", False))
+        age_label = f"{age} (T-1 fallback)" if age_defaulted else str(age)
+        age_title = (
+            "RiskChecker did not report this Risk Type / Risk Greek pair; "
+            "Cube uses Age 0, the business day before the market date."
+            if age_defaulted
+            else f"RiskChecker explicitly reported Age {age}."
+        )
         rows.append(
             html.Tr(
                 [
                     html.Td(source_type, className="status-source"),
-                    html.Td(age_label),
+                    html.Td(age_label, title=age_title),
                     html.Td(suggested_source_date),
                     html.Td(effective, className="applied-risk-date"),
                     html.Td(
@@ -3610,7 +3627,9 @@ def build_risk_date_editor(
                     html.Summary("Risk readiness", className="nested-status-summary"),
                     html.Div(
                         "Age 0 uses the business day before the market date; Age 1 uses two business days before it. "
-                        "Force all risk or a per-source override is absolute. Edit the draft, then choose Apply.",
+                        "T-1 fallback appears only when RiskChecker omits a configured pair; Cube keeps that product "
+                        "at Age 0 instead of silently dropping it. Force all risk or a per-source override is absolute. "
+                        "Edit the draft, then choose Apply.",
                         className="status-panel-note",
                     ),
                     html.Div(
@@ -4673,13 +4692,19 @@ def build_layout(
             )
             if refresh_enabled
             else None,
+            build_saved_filter_view_bar(RISK_SAVED_VIEW_CONTROLS)
+            if refresh_enabled
+            else None,
             html.Div(
                 [
                     html.Div(
                         "Leave blank to include all values. Risk filters are independent from Stock filters.",
                         className="filter-note",
                     ),
-                    html.Div(dimension_filter_controls, className="controls"),
+                    html.Div(
+                        dimension_filter_controls,
+                        className="controls filter-controls",
+                    ),
                     dcc.Checklist(
                         id="risk-filter-exclude-selected",
                         options=[
@@ -5053,6 +5078,7 @@ def build_layout(
 
 
 __all__ = [
+    "RISK_SAVED_VIEW_CONTROLS",
     "build_aggregate_pl_table",
     "build_alt_risk_table",
     "build_columns",

@@ -2,14 +2,28 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 
 import pandas as pd
 from dash import dash_table, dcc, html
-from core.s04_pl import HISTORY_TYPE, PL_HISTORY_COLUMNS
+from core.s04_pl import (
+    BOOK,
+    HISTO_TYPE,
+    PREDICTED_TYPE,
+    PRODUCT,
+    RISK_GREEK,
+    RISK_TYPE,
+    UNDERLYING,
+)
 
-from .s02_constants import DEFAULT_VIEW_DIMENSION, VIEW_DIMENSION_FIELDS
+from .s02_constants import (
+    DEFAULT_VIEW_DIMENSION,
+    FILTER_DIMENSION_FIELDS,
+    FILTER_DIMENSION_ORDER,
+    VIEW_DIMENSION_FIELDS,
+)
 from .s04_components import build_aggregate_pl_table, build_cube_loader
+from .s11_saved_views import SavedFilterViewControls
 
 
 DISPLAY_COLUMNS = (
@@ -24,6 +38,49 @@ DISPLAY_COLUMNS = (
 
 GRID_ROW_ID = "id"
 PL_AGGREGATE_TOGGLE_TYPE = "pnl-aggregate-row-toggle"
+PL_FILTER_ORDER = FILTER_DIMENSION_ORDER
+PL_FILTER_FIELDS = FILTER_DIMENSION_FIELDS
+PL_FILTER_IDS = {field.key: f"pnl-{field.key}-filter" for field in PL_FILTER_FIELDS}
+PL_SAVED_VIEW_CONTROLS = SavedFilterViewControls(
+    scope="pnl",
+    prefix="pnl",
+    fields=PL_FILTER_FIELDS,
+    filter_ids=PL_FILTER_IDS,
+    exclude_id="pnl-filter-exclude-selected",
+)
+HISTORY_HIERARCHY_COLUMNS = (
+    RISK_TYPE,
+    RISK_GREEK,
+    UNDERLYING,
+    PRODUCT,
+    BOOK,
+)
+HISTORY_VALUE_COLUMNS = (HISTO_TYPE, PREDICTED_TYPE)
+
+
+def pl_filter_map(
+    values: Sequence[Sequence[str] | None],
+) -> dict[str, list[str]]:
+    """Normalize P&L-local reporting filters without sharing Risk/Stock state."""
+    if len(values) != len(PL_FILTER_FIELDS):
+        raise ValueError(
+            f"Expected {len(PL_FILTER_FIELDS)} P&L filters; found {len(values)}"
+        )
+    return {
+        field.key: [str(value) for value in (selected or []) if str(value).strip()]
+        for field, selected in zip(PL_FILTER_FIELDS, values, strict=True)
+    }
+
+
+def pl_filter_options(frame: pd.DataFrame) -> dict[str, list[dict[str, str]]]:
+    """Return stable options for each independent P&L reporting filter."""
+    return {
+        field.key: [
+            {"label": value, "value": value}
+            for value in sorted(frame[field.key].dropna().astype(str).unique())
+        ]
+        for field in PL_FILTER_FIELDS
+    }
 
 
 def _walk_components(component: object) -> Iterable[object]:
@@ -44,7 +101,7 @@ def build_pl_aggregate_table(
     dimension: str,
     open_risk_types: list[str] | None,
 ) -> html.Div:
-    """Render Aggregate P&L with page-owned, collision-free toggle IDs."""
+    """Render Aggregate P&L with page-owned, collision-free chevron IDs."""
     table = build_aggregate_pl_table(frame, dimension, open_risk_types)
     for component in _walk_components(table):
         component_id = getattr(component, "id", None)
@@ -62,16 +119,16 @@ def build_pl_aggregate_table(
 
 def _pl_aggregate_section(
     initial_frame: pd.DataFrame | None = None,
-) -> html.Details:
-    """Build the P&L page's independent mapped Aggregate P&L section."""
+) -> html.Section:
+    """Build an always-visible, P&L-local mapped Aggregate P&L section."""
     view_dimension_options = [
         {"label": field.label, "value": field.key} for field in VIEW_DIMENSION_FIELDS
     ]
-    return html.Details(
+    return html.Section(
         [
-            html.Summary(
+            html.H2(
                 "Aggregate P&L",
-                className="aux-summary aggregate-pl-summary",
+                className="aux-summary aggregate-pl-summary pnl-static-heading",
             ),
             html.Div(
                 [
@@ -112,8 +169,50 @@ def _pl_aggregate_section(
                 className="aggregate-pl-panel",
             ),
         ],
-        open=True,
-        className="aux-details aggregate-pl-details",
+        className="aux-details aggregate-pl-details pnl-always-open-section",
+    )
+
+
+def _pl_filter_bar(initial_frame: pd.DataFrame | None = None) -> html.Div:
+    """Build the independent five-field P&L filter row in its requested order."""
+    options = (
+        pl_filter_options(initial_frame)
+        if initial_frame is not None and not initial_frame.empty
+        else {field.key: [] for field in PL_FILTER_FIELDS}
+    )
+    controls = [
+        html.Div(
+            [
+                html.Label(field.label, htmlFor=PL_FILTER_IDS[field.key]),
+                dcc.Dropdown(
+                    id=PL_FILTER_IDS[field.key],
+                    options=options[field.key],
+                    value=[],
+                    multi=True,
+                    placeholder=f"All {field.label.casefold()} values",
+                ),
+            ],
+            className="control-field",
+        )
+        for field in PL_FILTER_FIELDS
+    ]
+    return html.Div(
+        [
+            html.Div(
+                "Leave blank to include all values. P&L filters are independent "
+                "from Risk and Stock filters.",
+                className="filter-note",
+            ),
+            html.Div(controls, className="controls pnl-filter-controls"),
+            dcc.Checklist(
+                id="pnl-filter-exclude-selected",
+                options=[{"label": "Exclude selected values", "value": "exclude"}],
+                value=[],
+                className="risk-filter-mode",
+            ),
+        ],
+        id="pnl-filter-bar",
+        className="dimension-filter-bar top-controls",
     )
 
 
@@ -206,24 +305,24 @@ def _preview_table() -> dash_table.DataTable:
 
 
 def _historical_table() -> dash_table.DataTable:
-    """Build the interactive actual/predicted raw-detail table."""
+    """Build the fully expanded, cell-selectable P&L history hierarchy."""
     return dash_table.DataTable(
         id="pl-history-grid",
         columns=[
             {
                 "name": column,
                 "id": column,
-                **({"type": "numeric"} if column == "PL" else {}),
+                **({"type": "numeric"} if column in HISTORY_VALUE_COLUMNS else {}),
             }
-            for column in PL_HISTORY_COLUMNS
+            for column in (*HISTORY_HIERARCHY_COLUMNS, *HISTORY_VALUE_COLUMNS)
         ],
         data=[],
         editable=False,
-        filter_action="native",
-        sort_action="native",
-        sort_mode="multi",
-        page_action="native",
-        page_size=25,
+        filter_action="none",
+        sort_action="none",
+        page_action="none",
+        virtualization=True,
+        cell_selectable=True,
         fixed_rows={"headers": True},
         style_table={"overflowX": "auto", "maxHeight": "560px"},
         style_header={
@@ -240,19 +339,46 @@ def _historical_table() -> dash_table.DataTable:
             "fontSize": "13px",
             "padding": "8px 10px",
             "textAlign": "left",
+            "width": "160px",
             "minWidth": "140px",
+            "maxWidth": "220px",
             "whiteSpace": "nowrap",
         },
         style_cell_conditional=[
             {
-                "if": {"column_id": "PL"},
+                "if": {"column_id": list(HISTORY_VALUE_COLUMNS)},
                 "fontWeight": "850",
                 "fontVariantNumeric": "tabular-nums",
                 "textAlign": "right",
-            }
+                "backgroundColor": "#FFFFE0",
+                "cursor": "pointer",
+            },
+            {
+                "if": {"column_id": RISK_TYPE},
+                "fontWeight": "850",
+                "backgroundColor": "#C4DEF5",
+            },
         ],
         style_data_conditional=[
-            {"if": {"filter_query": "{PL} < 0", "column_id": "PL"}, "color": "#B42318"}
+            *[
+                {
+                    "if": {
+                        "filter_query": f"{{{column}}} < 0",
+                        "column_id": column,
+                    },
+                    "color": "#B42318",
+                }
+                for column in HISTORY_VALUE_COLUMNS
+            ],
+            {
+                "if": {"state": "active"},
+                "boxShadow": "inset 0 0 0 2px #111111",
+            },
+            {
+                "if": {"state": "selected"},
+                "backgroundColor": "#EAF2FA",
+                "boxShadow": "inset 0 0 0 1px #111111",
+            },
         ],
     )
 
@@ -734,65 +860,64 @@ def build_pl_send_sections() -> list[html.Div | html.Details]:
             ),
             html.Div(
                 [
+                    html.P(
+                        "Every hierarchy level is already visible: Risk Type → Risk "
+                        "Greek → Underlying → Product → Book. Select a Histo or "
+                        "Predicted number to plot that exact daily series. Files are "
+                        "read from histo/YYYY/MM-DD/{histo,predicted}.csv.",
+                        className="pl-editor-guide",
+                    ),
+                    html.Div(
+                        _historical_table(),
+                        className="pl-send-table pl-history-hierarchy-table",
+                    ),
+                    html.Div(
+                        "Open Histo P&L to load its validated hierarchy.",
+                        id="pl-history-status",
+                        className="pl-send-status",
+                        role="status",
+                    ),
                     html.Div(
                         [
                             html.Div(
                                 [
-                                    html.Label(
-                                        "Portfolio / Book",
-                                        htmlFor="pl-history-portfolio-filter",
+                                    html.Button(
+                                        "1W",
+                                        id="pl-history-range-1w",
+                                        n_clicks=0,
+                                        className="pl-history-range-button",
                                     ),
-                                    dcc.Dropdown(
-                                        id="pl-history-portfolio-filter",
-                                        options=[],
-                                        value=[],
-                                        multi=True,
-                                        placeholder="All portfolios",
+                                    html.Button(
+                                        "MTD",
+                                        id="pl-history-range-mtd",
+                                        n_clicks=0,
+                                        className="pl-history-range-button",
+                                    ),
+                                    html.Button(
+                                        "YTD",
+                                        id="pl-history-range-ytd",
+                                        n_clicks=0,
+                                        className="pl-history-range-button",
+                                    ),
+                                    html.Button(
+                                        "All",
+                                        id="pl-history-range-all",
+                                        n_clicks=0,
+                                        className="pl-history-range-button is-active",
                                     ),
                                 ],
-                                className="pl-editor-filter",
+                                className="pl-history-range-presets",
                             ),
-                            html.Div(
-                                [
-                                    html.Label(
-                                        "ConcertoField",
-                                        htmlFor="pl-history-concerto-filter",
-                                    ),
-                                    dcc.Dropdown(
-                                        id="pl-history-concerto-filter",
-                                        options=[],
-                                        value=[],
-                                        multi=True,
-                                        placeholder="All Concerto fields",
-                                    ),
-                                ],
-                                className="pl-editor-filter",
-                            ),
-                            html.Div(
-                                [
-                                    html.Label(
-                                        HISTORY_TYPE,
-                                        htmlFor="pl-history-type-filter",
-                                    ),
-                                    dcc.Dropdown(
-                                        id="pl-history-type-filter",
-                                        options=[],
-                                        value=[],
-                                        multi=True,
-                                        placeholder="Histo and Predicted",
-                                    ),
-                                ],
-                                className="pl-editor-filter",
+                            dcc.DatePickerRange(
+                                id="pl-history-date-range",
+                                minimum_nights=0,
+                                display_format="YYYY-MM-DD",
+                                clearable=True,
+                                start_date_placeholder_text="Start date",
+                                end_date_placeholder_text="End date",
                             ),
                         ],
-                        className="pl-editor-toolbar",
-                    ),
-                    html.P(
-                        "Compare validated Histo and Predicted daily P&L at Market "
-                        "Date + P&L Type + Portfolio + ConcertoField grain. The "
-                        "selectors apply to both the chart and the raw-detail table. "
-                        "Files are read from histo/YYYY/MM-DD/{histo,predicted}.csv.",
-                        className="pl-editor-guide",
+                        className="pl-history-range-toolbar",
                     ),
                     dcc.Loading(
                         dcc.Graph(
@@ -800,7 +925,7 @@ def build_pl_send_sections() -> list[html.Div | html.Details]:
                             figure={
                                 "data": [],
                                 "layout": {
-                                    "title": "Historical vs predicted P&L",
+                                    "title": "Select a Histo or Predicted table cell",
                                     "xaxis": {"title": "Market Date"},
                                     "yaxis": {"title": "P&L"},
                                 },
@@ -812,15 +937,13 @@ def build_pl_send_sections() -> list[html.Div | html.Details]:
                         delay_show=120,
                     ),
                     html.Div(
-                        _historical_table(),
-                        className="pl-send-table",
-                    ),
-                    html.Div(
-                        "Open Histo P&L to load its validated rows.",
-                        id="pl-history-status",
+                        "Select a numeric hierarchy cell to plot its daily series.",
+                        id="pl-history-plot-status",
                         className="pl-send-status",
                         role="status",
                     ),
+                    dcc.Store(id="pl-history-range-store", data={"preset": "all"}),
+                    dcc.Store(id="pl-history-selection-store", data={}),
                 ],
                 className="pl-send-panel",
             ),
@@ -841,7 +964,7 @@ def build_pl_send_sections() -> list[html.Div | html.Details]:
         id="pl-workflow-state",
         hidden=True,
     )
-    return [state, preview, by_sog, by_portfolio, save, history]
+    return [state, by_sog, by_portfolio, save, preview, history]
 
 
 def build_pl_page(
@@ -849,6 +972,7 @@ def build_pl_page(
     start_initial_load: bool = False,
     send_workflow_available: bool = True,
     initial_aggregate_frame: pd.DataFrame | None = None,
+    saved_view_bar: object | None = None,
 ) -> html.Main:
     """Build the native P&L page and its independent Aggregate P&L state."""
     workflow_sections = (
@@ -875,12 +999,12 @@ def build_pl_page(
                     if start_initial_load
                     else None
                 ),
-                dcc.Store(id="pnl-aggregate-open-risk-types", data=[]),
                 (
                     dcc.Store(id="pl-adjustment-revision-store", data=0)
                     if send_workflow_available
                     else None
                 ),
+                dcc.Store(id="pnl-aggregate-open-risk-types", data=[]),
                 html.H1("P&L Sender", className="static-data-page-title"),
                 html.P(
                     (
@@ -893,6 +1017,8 @@ def build_pl_page(
                     ),
                     className="static-data-page-note",
                 ),
+                saved_view_bar,
+                _pl_filter_bar(initial_aggregate_frame),
                 _pl_aggregate_section(initial_aggregate_frame),
                 *workflow_sections,
             ],
@@ -906,8 +1032,16 @@ def build_pl_page(
 __all__ = [
     "DISPLAY_COLUMNS",
     "GRID_ROW_ID",
+    "HISTORY_HIERARCHY_COLUMNS",
+    "HISTORY_VALUE_COLUMNS",
     "PL_AGGREGATE_TOGGLE_TYPE",
+    "PL_FILTER_FIELDS",
+    "PL_FILTER_IDS",
+    "PL_FILTER_ORDER",
+    "PL_SAVED_VIEW_CONTROLS",
     "build_pl_aggregate_table",
     "build_pl_page",
     "build_pl_send_sections",
+    "pl_filter_map",
+    "pl_filter_options",
 ]

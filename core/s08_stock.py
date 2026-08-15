@@ -50,6 +50,11 @@ STOCK_HIERARCHY_COLUMNS: Final = (
     "CPTY",
     "CRDS",
 )
+STOCK_PROMOTION_IDENTITY_COLUMNS: Final = tuple(
+    column
+    for column in STOCK_HIERARCHY_COLUMNS
+    if column != STOCK_PROMOTION_BUCKET_COLUMN
+)
 STOCK_HIERARCHY_DEPTH_COLUMN: Final = "Hierarchy Depth"
 STOCK_HIERARCHY_LEVEL_COLUMN: Final = "Hierarchy Level"
 STOCK_HIERARCHY_LABEL_COLUMN: Final = "Hierarchy Label"
@@ -121,9 +126,11 @@ def prepare_stock_hierarchy(
     and deterministically groups by Currency.  This makes the temporary rule
     visible instead of inventing an unexplained financial identity.
 
-    Promotion is evaluated at the stable Stock comparison-row identity using
-    absolute *current* market value. Rows exactly at the threshold are
-    promoted; removed rows with no current leg fall into ``Other``.
+    Promotion is evaluated at the displayed Stock-name identity using the
+    absolute net *current* market value across the already-filtered rows. Rows
+    exactly at the threshold are promoted; removed identities with no current
+    leg fall into ``Other``. This keeps one displayed name in one bucket even
+    when it is represented by several Portfolio or Instrument rows.
     """
 
     if not isinstance(mapped_stock, pd.DataFrame):
@@ -141,15 +148,25 @@ def prepare_stock_hierarchy(
     prepared[STOCK_TEMPORARY_GROUP_COLUMN] = "Temporary currency group · " + prepared[
         "Currency"
     ].astype(str)
-    current_market_value = pd.to_numeric(
+    prepared["_promotion_current_market_value"] = pd.to_numeric(
         prepared[CURRENT_MARKET_VALUE_COLUMN], errors="coerce"
     )
-    promoted = current_market_value.notna() & current_market_value.abs().ge(threshold)
+    promotion_market_value = prepared.groupby(
+        list(STOCK_PROMOTION_IDENTITY_COLUMNS),
+        dropna=False,
+        sort=False,
+    )["_promotion_current_market_value"].transform(
+        lambda values: values.sum(min_count=1)
+    )
+    promoted = promotion_market_value.notna() & promotion_market_value.abs().ge(
+        threshold
+    )
     prepared[STOCK_PROMOTION_BUCKET_COLUMN] = np.where(
         promoted,
         "Promoted",
         "Other",
     )
+    prepared.drop(columns="_promotion_current_market_value", inplace=True)
     return prepared
 
 
@@ -169,6 +186,23 @@ def _stock_hierarchy_metrics(frame: pd.DataFrame) -> dict[str, float | int]:
         CURRENT_MARKET_VALUE_COLUMN: current_market_value,
         MARKET_VALUE_CHANGE_COLUMN: current_market_value - prior_market_value,
     }
+
+
+def _ordered_stock_hierarchy_children(
+    scope: pd.DataFrame,
+    level: str,
+) -> list[tuple[str, pd.DataFrame]]:
+    """Rank visible children by absolute net current Stock, descending."""
+
+    string_values = scope[level].astype(str)
+    children: list[tuple[str, pd.DataFrame, float]] = []
+    for value in string_values.loc[scope[level].notna()].drop_duplicates().tolist():
+        child = scope.loc[string_values.eq(value)]
+        current_stock = child[CURRENT_MARKET_VALUE_COLUMN].sum(min_count=1)
+        magnitude = 0.0 if pd.isna(current_stock) else abs(float(current_stock))
+        children.append((str(value), child, magnitude))
+    children.sort(key=lambda item: (-item[2], item[0].casefold()))
+    return [(value, child) for value, child, _magnitude in children]
 
 
 def summarize_stock_hierarchy(
@@ -224,13 +258,7 @@ def summarize_stock_hierarchy(
         if depth >= len(STOCK_HIERARCHY_COLUMNS):
             return
         level = STOCK_HIERARCHY_COLUMNS[depth]
-        values = scope[level].dropna().astype(str).unique().tolist()
-        if level == STOCK_PROMOTION_BUCKET_COLUMN:
-            values.sort(key=lambda value: (value == "Other", value.casefold()))
-        else:
-            values.sort(key=str.casefold)
-        for value in values:
-            child = scope.loc[scope[level].astype(str).eq(value)]
+        for value, child in _ordered_stock_hierarchy_children(scope, level):
             child_path = (*path, value)
             append_scope(
                 child,
@@ -318,14 +346,7 @@ def summarize_visible_stock_hierarchy(
         if depth >= len(STOCK_HIERARCHY_COLUMNS):
             return
         level = STOCK_HIERARCHY_COLUMNS[depth]
-        string_values = scope[level].astype(str)
-        values = string_values.dropna().unique().tolist()
-        if level == STOCK_PROMOTION_BUCKET_COLUMN:
-            values.sort(key=lambda value: (value == "Other", value.casefold()))
-        else:
-            values.sort(key=str.casefold)
-        for value in values:
-            child = scope.loc[string_values.eq(value)]
+        for value, child in _ordered_stock_hierarchy_children(scope, level):
             child_path = (*path, value)
             append_scope(
                 child,
@@ -555,6 +576,7 @@ __all__ = [
     "STOCK_IDENTITY_COLUMNS",
     "STOCK_NUMERIC_COLUMNS",
     "STOCK_PROMOTION_BUCKET_COLUMN",
+    "STOCK_PROMOTION_IDENTITY_COLUMNS",
     "STOCK_PROMOTION_THRESHOLD_DEFAULT",
     "STOCK_TEMPORARY_GROUP_COLUMN",
     "STOCK_TEXT_COLUMNS",

@@ -21,7 +21,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 import pandas as pd
 from dash import ALL, MATCH, Dash, Input, Output, State, ctx, dcc, html, no_update
-from dash.exceptions import PreventUpdate
+from dash.exceptions import MissingCallbackContextException, PreventUpdate
 from core.s02_pipeline import RefreshInProgressError, StaleRefreshError
 
 from .s03_aggregate import (
@@ -36,6 +36,7 @@ from .s03_aggregate import (
     selected_underlying_sort_metric,
 )
 from .s04_components import (
+    RISK_SAVED_VIEW_CONTROLS,
     build_aggregate_pl_table,
     build_alt_risk_table,
     build_credit_multi_table,
@@ -57,6 +58,11 @@ from .s04_components import (
     QUICK_SEARCH_INDEX_OPTIONS,
     QUICK_RISK_PIVOT_LIMIT,
     QUICK_MARKET_DEFAULT_INDEX,
+)
+from .s11_saved_views import (
+    saved_view_request_id,
+    saved_view_request_matches_base,
+    saved_view_request_values,
 )
 from .s02_constants import (
     CREDIT_MEASURES,
@@ -1609,11 +1615,53 @@ def register_callbacks(
                 Output(component_id, "value"),
             )
         ],
+        Output("risk-filter-exclude-selected", "value"),
         Input("data-revision-store", "data"),
+        Input(RISK_SAVED_VIEW_CONTROLS.apply_request_id, "data"),
         *[State(component_id, "value") for component_id in dimension_filter_ids],
+        State("risk-filter-exclude-selected", "value"),
+        State(RISK_SAVED_VIEW_CONTROLS.applied_request_id, "data"),
     )
-    def update_dimension_filters(_revision, *selected_values):
+    def update_dimension_filters(_revision, saved_view_request, *values):
         frame = cache.current(refresh_manager)
+        selected_values = values[: len(dimension_filter_ids)]
+        exclude_value = values[len(dimension_filter_ids)]
+        applied_saved_view_request = values[len(dimension_filter_ids) + 1]
+        try:
+            saved_view_triggered = (
+                ctx.triggered_id == RISK_SAVED_VIEW_CONTROLS.apply_request_id
+            )
+        except (LookupError, MissingCallbackContextException):
+            saved_view_triggered = False
+
+        request_id = saved_view_request_id(saved_view_request)
+        saved_view_pending = bool(
+            request_id and request_id != applied_saved_view_request
+        )
+        request_matches_base = False
+        if saved_view_pending:
+            try:
+                request_matches_base = saved_view_request_matches_base(
+                    saved_view_request,
+                    RISK_SAVED_VIEW_CONTROLS,
+                    selected_values,
+                    exclude_value,
+                )
+            except ValueError:
+                request_matches_base = False
+        apply_pending = saved_view_pending and (
+            saved_view_triggered or request_matches_base
+        )
+        if apply_pending:
+            try:
+                requested = saved_view_request_values(
+                    saved_view_request,
+                    RISK_SAVED_VIEW_CONTROLS,
+                )
+            except ValueError:
+                requested = None
+            if requested is not None:
+                selected_values, exclude_value = requested
 
         def options_and_valid(column, selected):
             available = ordered_unique(frame, column)
@@ -1628,7 +1676,7 @@ def register_callbacks(
         ):
             options, valid = options_and_valid(field.key, selected)
             result.extend((options, valid))
-        return tuple(result)
+        return (*result, exclude_value or [])
 
     app.clientside_callback(
         """

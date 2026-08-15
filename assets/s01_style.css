@@ -776,6 +776,49 @@ details > summary::-webkit-details-marker { display: none; }
   background: var(--surface);
 }
 
+.controls.filter-controls {
+  grid-template-columns: repeat(5, minmax(120px, 1fr));
+}
+
+.controls.pnl-filter-controls {
+  grid-template-columns: repeat(5, minmax(120px, 1fr));
+}
+
+.saved-filter-view-bar {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.2fr) minmax(210px, 1fr) auto minmax(260px, 1.4fr);
+  align-items: end;
+  gap: 12px 14px;
+  margin: 14px 0 -1px;
+  padding: 14px 16px;
+  border: 1px solid var(--outline);
+  border-radius: var(--radius);
+  background: var(--surface-soft);
+}
+
+.saved-view-actions { display: flex; align-items: center; gap: 8px; }
+.saved-view-actions .refresh-button,
+.stock-compare-button {
+  min-height: 39px;
+  padding: 8px 14px;
+  border: 1px solid var(--outline-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.saved-view-save-button { background: var(--text) !important; color: var(--surface) !important; }
+.saved-view-delete-button:disabled { cursor: not-allowed; opacity: 0.45; }
+.saved-view-name-field input { width: 100%; min-height: 39px; }
+.saved-view-copy { align-self: center; min-width: 0; }
+.saved-view-status { color: var(--text); font-size: 12px; font-weight: 750; }
+.saved-view-persistence-note { margin-top: 3px; color: var(--text-muted); font-size: 10px; line-height: 1.35; }
+.stock-compare-action { align-self: end; }
+.stock-compare-button { width: 100%; }
+
 .filter-heading { grid-column: 1 / -1; display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 .filter-title { color: var(--text); font-size: 14px; font-weight: 850; }
 .filter-note { color: var(--text-muted); font-size: 12px; }
@@ -1151,6 +1194,13 @@ body.is-range-selecting :is(.risk-table, .cell-selection-table) * { cursor: cell
 .pl-editor-statuses,
 .pl-send-status { color: var(--text-muted); font-size: 12px; line-height: 1.45; }
 
+.pnl-always-open-section > .pnl-static-heading { margin: 0; padding: 13px 18px; border-bottom: 1px solid var(--outline); }
+.pl-history-hierarchy-table { margin-top: 12px; }
+.pl-history-range-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 16px; margin: 16px 0 6px; }
+.pl-history-range-presets { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.pl-history-range-button { min-height: 34px; padding: 6px 13px; border: 1px solid var(--outline-strong); border-radius: 7px; background: var(--surface); color: var(--text); font-size: 12px; font-weight: 800; cursor: pointer; }
+.pl-history-range-button.is-active { background: var(--text); color: var(--surface); }
+
 .pl-adjustment-toggle { margin-bottom: 8px; font-size: 12px; font-weight: 800; }
 .pl-adjustment-toggle label { display: inline-flex !important; align-items: center; gap: 8px; color: var(--text); cursor: pointer; }
 .pl-adjustment-toggle input[type="checkbox"] { appearance: none; position: relative; width: 32px; height: 18px; margin: 0; border: 1px solid #9BAAAE; border-radius: 999px; background: #E6E9ED; cursor: pointer; }
@@ -1334,6 +1384,8 @@ body.is-pl-datatable-range-dragging * { cursor: cell !important; user-select: no
   .section-heading { grid-column: 1; }
   .table-dimension-control { justify-content: flex-start; }
   .controls { grid-template-columns: repeat(2, minmax(180px, 1fr)); }
+  .saved-filter-view-bar { grid-template-columns: repeat(2, minmax(220px, 1fr)); }
+  .saved-view-copy { grid-column: 1 / -1; }
   .risk-table { min-width: 980px; }
   .detail-grid { grid-template-columns: 1fr; }
 }
@@ -1352,6 +1404,10 @@ body.is-pl-datatable-range-dragging * { cursor: cell !important; user-select: no
   .cube-nav-link.app-nav-link { flex: 0 0 auto; }
   .app-shell { padding: 10px 10px 28px; }
   .controls { grid-template-columns: 1fr; padding: 13px; }
+  .controls.filter-controls,
+  .controls.pnl-filter-controls,
+  .saved-filter-view-bar { grid-template-columns: 1fr; }
+  .saved-view-copy { grid-column: 1; }
   .control-field-wide { grid-column: auto; }
   .filter-heading,
   .aggregate-pl-header,

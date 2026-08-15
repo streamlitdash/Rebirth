@@ -29,6 +29,8 @@ from core.s08_stock import (
     PRIOR_QUANTITY_COLUMN,
     QUANTITY_CHANGE_COLUMN,
     STOCK_CHANGE_COLUMN,
+    STOCK_HIERARCHY_DEPTH_COLUMN,
+    STOCK_HIERARCHY_LABEL_COLUMN,
     STOCK_HIERARCHY_LEVEL_COLUMN,
     STOCK_HIERARCHY_PATH_COLUMN,
     STOCK_HIERARCHY_POSITION_COUNT_COLUMN,
@@ -44,6 +46,7 @@ from core.s08_stock import (
     summarize_stock_hierarchy,
     summarize_visible_stock_hierarchy,
 )
+from core.s09_saved_views import SavedFilterView
 from feeds.s01_sources import build_production_refresh_manager
 from pages import PAGE_SERVICES_CONFIG_KEY
 from pages.stock import layout as stock_page_layout
@@ -66,6 +69,7 @@ from ui.s10_stock import (
     stock_hierarchy_path_token,
     toggle_stock_hierarchy_open_tokens,
 )
+from ui.s11_saved_views import saved_view_apply_request
 
 
 def _stock(rows: list[list[object]] | None = None) -> pd.DataFrame:
@@ -200,6 +204,18 @@ def _callback_for_input(app, component_id: str):
     )
 
 
+def _callback_for_output(app, component_id: str, component_property: str):
+    return next(
+        metadata["callback"].__wrapped__
+        for metadata in app.callback_map.values()
+        if any(
+            output.component_id == component_id
+            and output.component_property == component_property
+            for output in _callback_outputs(metadata)
+        )
+    )
+
+
 def _callback_outputs(metadata: dict) -> list[object]:
     output = metadata["output"]
     return list(output) if isinstance(output, (list, tuple)) else [output]
@@ -319,6 +335,117 @@ def test_stock_comparison_mapping_and_filters_are_or_within_and_across() -> None
     assert excluded["CRDS"].tolist() == ["CRDS-2", "CRDS-3"]
     with pytest.raises(ValueError, match="Unknown Stock"):
         filter_stock_comparison(mapped, {"risk-only-filter": ["x"]})
+
+
+def test_stock_promotion_runs_on_the_filtered_comparison_shape() -> None:
+    """A promoted source row cannot leak into a lower-value filtered view."""
+
+    current = _stock(
+        [
+            ["CRDS-HIGH", "CPTY-A", "BOOK_A", "EQ-A", "USD", 1.0, 60_000.0],
+            ["CRDS-LOW", "CPTY-B", "BOOK_B", "EQ-B", "USD", 1.0, 20_000.0],
+        ]
+    )
+    prior = current.copy()
+    prior["Market Value"] = 0.0
+    mapped = map_stock_comparison_portfolios(current, prior, _config())
+
+    global_hierarchy = summarize_stock_hierarchy(mapped, 50_000.0)
+    filtered = filter_stock_comparison(mapped, {"activity": ["Hedge"]})
+    filtered_hierarchy = summarize_stock_hierarchy(filtered, 50_000.0)
+
+    global_paths = set(global_hierarchy[STOCK_HIERARCHY_PATH_COLUMN])
+    filtered_paths = set(filtered_hierarchy[STOCK_HIERARCHY_PATH_COLUMN])
+    assert ("Macro", "Promoted") in global_paths
+    assert filtered[CURRENT_MARKET_VALUE_COLUMN].sum() == 20_000.0
+    assert ("Hedge", "Promoted") not in filtered_paths
+    assert ("Hedge", "Other") in filtered_paths
+    assert all("CRDS-HIGH" not in path for path in filtered_paths)
+
+
+def test_stock_promotion_aggregates_filtered_rows_at_displayed_name_identity() -> None:
+    """Several Portfolio rows for one visible name share one promotion bucket."""
+
+    current = _stock(
+        [
+            ["CRDS-1", "CPTY-A", "BOOK_A", "EQ-A", "USD", 1.0, 30_000.0],
+            ["CRDS-1", "CPTY-A", "BOOK_B", "EQ-B", "USD", 1.0, 30_000.0],
+        ]
+    )
+    prior = current.copy()
+    prior["Market Value"] = 0.0
+    config = _config(
+        [
+            ["BOOK_A", "XVA", "Macro", "SOG-A", "Core", "Rates"],
+            ["BOOK_B", "XVA", "Macro", "SOG-A", "Core", "Rates"],
+        ]
+    )
+    mapped = map_stock_comparison_portfolios(current, prior, config)
+
+    prepared = prepare_stock_hierarchy(mapped, 50_000.0)
+    assert prepared[CURRENT_MARKET_VALUE_COLUMN].tolist() == [30_000.0, 30_000.0]
+    assert prepared[STOCK_PROMOTION_BUCKET_COLUMN].tolist() == [
+        "Promoted",
+        "Promoted",
+    ]
+
+    hierarchy = summarize_stock_hierarchy(mapped, 50_000.0)
+    visible_leaf = hierarchy.loc[
+        hierarchy[STOCK_HIERARCHY_PATH_COLUMN].map(
+            lambda path: (
+                path
+                == (
+                    "Macro",
+                    "Promoted",
+                    "Temporary currency group · USD",
+                    "CPTY-A",
+                    "CRDS-1",
+                )
+            )
+        )
+    ].iloc[0]
+    assert visible_leaf[CURRENT_MARKET_VALUE_COLUMN] == 60_000.0
+    assert not any(
+        path[:2] == ("Macro", "Other")
+        for path in hierarchy[STOCK_HIERARCHY_PATH_COLUMN]
+    )
+
+
+def test_stock_hierarchy_orders_absolute_current_stock_after_filtering() -> None:
+    current = _stock(
+        [
+            ["CRDS-A", "CPTY-A", "BOOK_A", "EQ-A", "USD", 1.0, 70_000.0],
+            ["CRDS-B", "CPTY-B", "BOOK_B", "EQ-B", "USD", 1.0, -65_000.0],
+            ["CRDS-C", "CPTY-C", "BOOK_C", "EQ-C", "USD", 1.0, -60_000.0],
+        ]
+    )
+    prior = current.copy()
+    prior["Market Value"] = 0.0
+    config = _config(
+        [
+            ["BOOK_A", "XVA", "Macro", "SOG-A", "Core", "Rates"],
+            ["BOOK_B", "XVA", "Macro", "SOG-A", "Core", "Rates"],
+            ["BOOK_C", "XVA", "Hedge", "SOG-A", "Core", "Rates"],
+        ]
+    )
+    mapped = map_stock_comparison_portfolios(current, prior, config)
+
+    def activity_order(frame: pd.DataFrame) -> list[str]:
+        hierarchy = summarize_stock_hierarchy(frame, 50_000.0)
+        return hierarchy.loc[
+            hierarchy[STOCK_HIERARCHY_DEPTH_COLUMN].eq(1),
+            STOCK_HIERARCHY_LABEL_COLUMN,
+        ].tolist()
+
+    # Macro nets to +5k globally, so Hedge's 60k absolute Stock ranks first.
+    assert activity_order(mapped) == ["Hedge", "Macro"]
+
+    # Removing BOOK_B changes Macro to +70k and therefore recomputes its rank.
+    filtered = filter_stock_comparison(
+        mapped,
+        {"portfolio": ["BOOK_A", "BOOK_C"]},
+    )
+    assert activity_order(filtered) == ["Macro", "Hedge"]
 
 
 def test_stock_promotion_and_hierarchy_preserve_identity_and_totals() -> None:
@@ -645,7 +772,11 @@ def test_10k_cached_hierarchy_expand_does_not_resend_source_rows(
             triggered=[{"value": 1}],
         ),
     )
-    hierarchy_callback = _callback_for_input(app, STOCK_FILTER_IDS["activity"])
+    hierarchy_callback = _callback_for_output(
+        app,
+        "stock-hierarchy-view",
+        "children",
+    )
     expanded = hierarchy_callback(
         [],
         [],
@@ -691,9 +822,33 @@ def test_stock_filter_ids_and_store_are_independent_from_risk() -> None:
         for component in _walk(shell)
         if getattr(component, "id", None) == "stock-promotion-threshold"
     )
+    filter_row = next(
+        component
+        for component in _walk(shell)
+        if isinstance(component, html.Div)
+        and {"controls", "filter-controls"}
+        <= set(str(getattr(component, "className", "")).split())
+    )
+    compare_action = next(
+        component
+        for component in _walk(shell)
+        if isinstance(component, html.Div)
+        and "stock-compare-action"
+        in set(str(getattr(component, "className", "")).split())
+    )
     assert threshold.value == STOCK_PROMOTION_THRESHOLD_DEFAULT
     assert threshold.min == 0
     assert threshold.debounce is True
+    assert compare_action.children[0].children == "Compare"
+    assert compare_action.children[1].id == "stock-compare-button"
+    assert compare_action.children[1].type == "button"
+    assert [control.children[0].children for control in filter_row.children] == [
+        "Activity",
+        "Signoff Group",
+        "Portfolio",
+        "Category",
+        "Sub Category",
+    ]
     assert "dimension-filter-store" not in ids
     assert not (set(DIMENSION_FILTER_IDS.values()) & ids)
 
@@ -1109,6 +1264,125 @@ def test_newer_date_intent_supersedes_a_blocked_stock_load() -> None:
     ]
 
 
+def test_pending_saved_stock_view_survives_a_busy_load_and_applies_on_retry() -> None:
+    load_started = Event()
+    release_load = Event()
+    calls: list[pd.Timestamp] = []
+
+    def stock_source(stock_date: pd.Timestamp) -> pd.DataFrame:
+        calls.append(stock_date)
+        if stock_date == pd.Timestamp("2026-08-14") and not load_started.is_set():
+            load_started.set()
+            if not release_load.wait(timeout=3):
+                raise TimeoutError("test did not release the blocked Stock load")
+        return _stock()
+
+    app = build_app(
+        refresh_manager=build_production_refresh_manager(),
+        stock_source=stock_source,
+        stock_portfolio_source=lambda _date: _config(),
+    )
+    callback = _callback_for_input(app, "stock-load-trigger")
+    old_result: list[tuple] = []
+
+    thread = Thread(
+        target=lambda: old_result.append(
+            callback(
+                1,
+                "0",
+                0,
+                -1,
+                None,
+                "2026-08-14",
+                "2026-08-13",
+                [],
+                *([[]] * len(STOCK_FILTER_FIELDS)),
+                "saved-view-retry",
+            )
+        )
+    )
+    thread.start()
+    assert load_started.wait(timeout=3)
+
+    target_filters = {field.key: [] for field in STOCK_FILTER_FIELDS}
+    target_filters["activity"] = ("Macro",)
+    view = SavedFilterView(
+        identifier="macro--0123456789ab",
+        scope="stock",
+        name="Macro",
+        filters=target_filters,
+        exclude_selected=False,
+    )
+    request = saved_view_apply_request(
+        view,
+        base_filters={field.key: [] for field in STOCK_FILTER_FIELDS},
+        base_exclude_selected=False,
+    )
+    busy = callback(
+        1,
+        "0",
+        0,
+        request,
+        -1,
+        None,
+        "2026-08-14",
+        "2026-08-13",
+        [],
+        *([[]] * len(STOCK_FILTER_FIELDS)),
+        "saved-view-retry",
+        None,
+    )
+    assert busy[:3] == (no_update, no_update, no_update)
+    assert busy[3] is False
+
+    release_load.set()
+    thread.join(timeout=3)
+    assert not thread.is_alive()
+    assert len(old_result) == 1
+    assert all(value is no_update for value in old_result[0])
+
+    retried = callback(
+        2,
+        "0",
+        0,
+        request,
+        -1,
+        None,
+        "2026-08-14",
+        "2026-08-13",
+        [],
+        *([[]] * len(STOCK_FILTER_FIELDS)),
+        "saved-view-retry",
+        None,
+    )
+    assert retried[1] == 0
+    assert retried[3] is True
+    assert retried[5] == ["Macro"]
+    assert retried[14] == []
+    assert calls == [pd.Timestamp("2026-08-14"), pd.Timestamp("2026-08-13")]
+
+    later_manual_filters = [
+        ["Hedge"] if field.key == "activity" else [] for field in STOCK_FILTER_FIELDS
+    ]
+    superseded = callback(
+        3,
+        "0",
+        0,
+        request,
+        retried[1],
+        retried[2],
+        "2026-08-14",
+        "2026-08-13",
+        [],
+        *later_manual_filters,
+        "saved-view-retry",
+        None,
+    )
+    assert superseded[0] is no_update
+    assert superseded[5] is no_update
+    assert superseded[14] is no_update
+
+
 def test_stock_enabled_callback_map_has_single_output_owners() -> None:
     app = build_app(
         refresh_manager=build_production_refresh_manager(),
@@ -1181,10 +1455,14 @@ def test_stock_filter_callback_uses_cache_only_and_updates_visible_counts(
         "filter-cache",
     )
     assert calls == 2
-    filter_callback = _callback_for_input(app, STOCK_FILTER_IDS["activity"])
+    filter_callback = _callback_for_output(
+        app,
+        "stock-hierarchy-view",
+        "children",
+    )
     rows, mapped, unmapped, store, open_paths, hierarchy = filter_callback(
-        [],
         ["Macro"],
+        [],
         [],
         [],
         [],
@@ -1227,8 +1505,8 @@ def test_stock_filter_callback_uses_cache_only_and_updates_visible_counts(
         ),
     )
     expanded = filter_callback(
-        [],
         ["Macro"],
+        [],
         [],
         [],
         [],
@@ -1254,8 +1532,8 @@ def test_stock_filter_callback_uses_cache_only_and_updates_visible_counts(
         ),
     )
     excluded_rows, *_rest = filter_callback(
-        [],
         ["Macro"],
+        [],
         [],
         [],
         [],
@@ -1280,8 +1558,8 @@ def test_stock_filter_callback_uses_cache_only_and_updates_visible_counts(
     source_panel, source_state, source_label, source_open = source_callback(
         1,
         loaded[2],
-        [],
         ["Macro"],
+        [],
         [],
         [],
         [],
@@ -1494,8 +1772,8 @@ def test_refresh_commit_reloads_selected_dates_and_preserves_filters() -> None:
         "2026-08-14",
         "2026-08-13",
         [],
-        [],
         ["Macro"],
+        [],
         [],
         [],
         [],
@@ -1512,8 +1790,8 @@ def test_refresh_commit_reloads_selected_dates_and_preserves_filters() -> None:
         "2026-08-14",
         "2026-08-13",
         [],
-        [],
         ["Macro"],
+        [],
         [],
         [],
         [],
@@ -1523,7 +1801,7 @@ def test_refresh_commit_reloads_selected_dates_and_preserves_filters() -> None:
     assert refreshed[1] == 1
     assert refreshed[2]["current_date"] == "2026-08-14"
     assert refreshed[2]["prior_date"] == "2026-08-13"
-    assert refreshed[7] == ["Macro"]  # Activity value follows its options output.
+    assert refreshed[5] == ["Macro"]  # Activity value follows its options output.
     assert calls[-3:] == [
         ("stock", pd.Timestamp("2026-08-14")),
         ("stock", pd.Timestamp("2026-08-13")),

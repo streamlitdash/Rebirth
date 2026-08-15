@@ -1390,21 +1390,6 @@
     const startRefreshProgress = (mode) => {
       const panel = document.getElementById("refresh-progress");
       if (!panel) return;
-      // The Python busy Store is authoritative at completion, but Dash holds
-      // callbacks downstream of a long-running Output until that request
-      // returns. Disable page-local date actions synchronously so a second
-      // Apply cannot be queued while the first transaction is in flight.
-      const setProps = window.dash_clientside?.set_props;
-      ["force-risk-apply-button", "force-risk-cancel-button"].forEach((id) => {
-        const action = document.getElementById(id);
-        if (!action) return;
-        try {
-          if (typeof setProps === "function") setProps(id, { disabled: true });
-          else action.disabled = true;
-        } catch (_error) {
-          action.disabled = true;
-        }
-      });
       setGlobalLoaderVisible(true);
       clearRefreshProgressTimers();
       const reloadAll = mode === "reload";
@@ -1524,6 +1509,27 @@
         initialErrorText: (refreshErrorNode()?.textContent || "").trim(),
         initialStatusText: (refreshStatusNode()?.textContent || "").trim(),
       };
+      // This listener runs in the capture phase. Disabling Apply here used to
+      // mutate the click target before Dash's own handler received the same
+      // event. The progress hero would open, but the n_clicks request could be
+      // lost, leaving no callback transition capable of closing it. Defer the
+      // lock until the click has fully propagated; the Python busy Store
+      // remains authoritative for the rest of the transaction.
+      const stateForDateActionLock = refreshProgressState;
+      setTimeout(() => {
+        if (refreshProgressState !== stateForDateActionLock) return;
+        const setProps = window.dash_clientside?.set_props;
+        ["force-risk-apply-button", "force-risk-cancel-button"].forEach((id) => {
+          const action = document.getElementById(id);
+          if (!action) return;
+          try {
+            if (typeof setProps === "function") setProps(id, { disabled: true });
+            else action.disabled = true;
+          } catch (_error) {
+            action.disabled = true;
+          }
+        });
+      }, 0);
       syncRefreshLifecycleNodes();
       const updateElapsed = () => {
         if (elapsed && refreshProgressState) {

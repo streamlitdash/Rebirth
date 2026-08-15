@@ -102,6 +102,7 @@ tooling exceptions.
 | `s06_cashflow.py` | Framework-independent Intraday Cashflows schema, date normalization, connector protocol, and validation. |
 | `s07_reporting.py` | Exact CSV validation and post-P&L attachment of `Reported Underlying`. |
 | `s08_stock.py` | Strict dated Stock comparison, Stock-local filtering, and authoritative `many_to_one` Portfolio mapping. |
+| `s09_saved_views.py` | Validated page-scoped saved-filter JSON with deterministic reads, atomic writes, and cross-worker locking. |
 
 ### `feeds/` and `adapters/`
 
@@ -144,6 +145,7 @@ as an unsafe one-line switch. There are no separate `_disabled` source folders.
 | `s08_plevents.py` | Adjustment editors, send/write actions, and Histo/Predicted callbacks. |
 | `s09_factory.py` | Dash/Flask construction, native Dash Pages registration, shared shell, health, and progress endpoints. |
 | `s10_stock.py` | Dated Stock comparison controls, independent filters, promotion stack, source table, and replaceable source composition. |
+| `s11_saved_views.py` | Reusable saved-view bar, request stores, validation helpers, and callback registration without duplicate filter outputs. |
 
 ### `pages/`
 
@@ -166,19 +168,20 @@ while tests and hosted workers can construct more than one app factory.
   selection, clipboard copying, selection dismissal, and progress polling.
 - `assets/s03_select.js` keeps native Dash DataTable selections stable.
 - `data/s01_*.csv` through `s09_*.csv` are explicit fake inputs;
-  `data/histo/` contains paired fake Histo/Predicted P&L partitions.
+  `data/histo/` contains paired fake Histo/Predicted P&L partitions, and
+  `data/saved_views/` is the runtime-local saved-filter root.
 - `tools/s01_fixtures.py` deterministically rebuilds and validates fake data.
 - `tools/s02_manual.py` creates the diagrams and this manual's PDF.
 - Tests are uniquely numbered from `s01_schema.py` through
-  `s22_disabled_pipeline.py`:
+  `s24_saved_views.py`:
   schema, checker/dates, adapters, MarketBook, P&L/storage, UI, integration,
   cashflow contract, feed cache, lazy P&L/factory behavior, targeted snapshot
   reads, deterministic fixture generation, cold-start ownership/watchdog, then
   the Plotly deployment bundle and entrypoint, reporting-identity mapping,
   supplied-risk overlays, shared refresh ownership, Stock, the isolated New
   Positions blotter contract, page-local Risk filtering, and exact isolation of
-  inline recovered private connector blocks, and the inline recovered pipeline
-  contracts.
+  inline recovered private connector blocks, the inline recovered pipeline
+  contracts, refresh/date lifecycle contracts, and saved filter views.
 
 | Test file | Main boundary proved |
 |---|---|
@@ -204,6 +207,8 @@ while tests and hosted workers can construct more than one app factory.
 | `tests/s20_risk_filters.py` | Portfolio View-by/filter support, Risk-local include/exclude semantics, consumer wiring, and Stock-state isolation. |
 | `tests/s21_disabled_connectors.py` | Inline switch markers, recovered symbols, comment-only isolation, adjacency, and continued fake-CSV registration. |
 | `tests/s22_disabled_pipeline.py` | Inline recovered pipeline markers plus proof that the validated CSV-compatible formulas/date contract remain active. |
+| `tests/s23_refresh_dates.py` | Force-date click-order lifecycle contract and explicit RiskChecker fallback-age display. |
+| `tests/s24_saved_views.py` | Page-scoped JSON validation, atomic/concurrent writes, safe names, request stores, and filter-output ownership. |
 
 ## What happens on startup
 
@@ -658,15 +663,16 @@ Dash DataTables.
 
 Portfolio is a first-class governed UI reporting dimension as well as the
 position key.
-`ui/s02_constants.py::PORTFOLIO_UI_FIELD` puts it first in both
+`ui/s02_constants.py::PORTFOLIO_UI_FIELD` adds it to both
 `VIEW_DIMENSION_FIELDS` and `FILTER_DIMENSION_FIELDS` without duplicating
 Portfolio inside the core Portfolio-metadata registry. It therefore appears in
 View-by controls such as the Risk table and Aggregate P&L alongside Product,
 Activity, Signoff Group, Category, and Sub Category. Activity remains the
 default View-by choice.
 
-The Risk filter bar contains Portfolio, Activity, Signoff Group, Category, and
-Sub Category. Values are ORed within one selected field and populated fields
+The Risk filter bar is one five-column desktop row in this exact order:
+Activity, Signoff Group, Portfolio, Category, and Sub Category. Values are ORed
+within one selected field and populated fields
 are ANDed across fields; blank selections are unrestricted. Its page-local
 **Exclude selected values** checkbox is unchecked by default:
 
@@ -679,8 +685,19 @@ that checkbox. The reporting filters and mode feed Aggregate P&L, Top Book,
 Risk Explorer and its detail, and Quick Risk. Unmapped Books can use only the
 Portfolio subset because unmapped rows have no governed reporting metadata.
 
-Risk and Stock use separate IDs, stores, and Exclude checkboxes. Navigating or
-filtering one page therefore does not alter the other page's selections.
+Risk, Stock, and P&L use separate IDs, stores, and Exclude checkboxes.
+Navigating or filtering one page therefore does not alter either other page's
+selections.
+
+Each page also has an independent saved-view bar immediately above its filters.
+**Save New** records the five selections plus include/exclude mode as validated
+JSON under `data/saved_views/<page>/`; choosing it submits a small component
+request to the page's existing sole filter-output callback, so saved views do
+not introduce duplicate Dash output owners. Names are normalized and path-safe,
+writes are atomic, and a short filesystem lock serializes workers. Plotly's app
+filesystem is runtime-local, however: saved views may be lost after a restart
+or redeploy. Move this repository boundary to an approved durable database or
+object store when cross-deploy persistence is required.
 
 ## Risk Explorer and detail charts
 
@@ -780,17 +797,23 @@ interaction rather than the read-only table selection engine.
 
 The governed send workflow lives on the native `/pnl` page. It is no longer
 mounted inside Risk, and its sections remain independent top-level disclosures
-rather than one nested parent:
+rather than one nested parent. Aggregate P&L is always visible; its Risk Type
+rows use page-local chevrons to reveal or hide the corresponding Risk Greek
+rows. Its independent filter row is Activity, Signoff Group, Portfolio,
+Category, then Sub Category, with include/exclude mode and P&L-scoped saved
+views:
 
-1. **P&L Preview** — aggregated base rows with optional adjustment overlay.
-2. **SOG P&L** — filter by SignoffGroup, edit governed rows, save
+1. **SOG P&L** — filter by SignoffGroup, edit governed rows, save
    adjustments, then call `send_sog_pl`.
-3. **Portfolio P&L** — filter one Portfolio, edit governed rows, save
+2. **Portfolio P&L** — filter one Portfolio, edit governed rows, save
    adjustments, then call `send_portfolio_pl`.
-4. **Write PL to S3** — build the full raw output plus separately flagged
+3. **Write PL to S3** — build the full raw output plus separately flagged
    adjustment rows, call a configured `write_pl` function, and download CSV.
-5. **Histo P&L** — lazily validate, filter, chart, and tabulate paired actual and
-   predicted daily P&L.
+4. **P&L Preview** — aggregated base rows with optional adjustment overlay.
+5. **Histo P&L** — show a fully expanded Risk Type → Risk Greek → Underlying →
+   Product → Book table. Selecting a Histo or Predicted numeric cell plots that
+   exact daily hierarchy series with 1W, MTD, YTD, All, and explicit date-range
+   controls.
 
 The former user-facing Raw Data disclosure has been removed. **Aggregate P&L**
 and **Unmapped Books** remain on the native Risk page; the Preview, SOG,
@@ -808,13 +831,14 @@ histo/
 ```
 
 Every date leaf must contain exactly both files. Each CSV has exact ordered
-columns `Portfolio, ConcertoField, PL`, with one row per Portfolio +
-ConcertoField and finite numeric P&L. The directory supplies `Market Date`; the
+columns `Risk Type, Risk Greek, Underlying, Product, Book, PL`, with one finite
+numeric P&L per full hierarchy leaf. The directory supplies `Market Date`; the
 filename supplies `P&L Type` (`Histo` or `Predicted`). The combined loader
-therefore validates uniqueness at Market Date + P&L Type + Portfolio +
-ConcertoField grain before the page plots solid Histo and dashed Predicted
-series. A legacy single CSV with `Market Date, Portfolio, ConcertoField, PL`
-remains readable as Histo-only data during migration.
+therefore validates uniqueness at Market Date + P&L Type + Risk Type + Risk
+Greek + Underlying + Product + Book grain. The older Portfolio + ConcertoField
+shape is not silently promoted because it cannot truthfully reconstruct the
+new hierarchy identities; `load_historical_pl` remains available only to
+callers that explicitly retain that separate legacy contract.
 
 The checked-in SOG and Portfolio sender boundaries reject delivery with an
 explicit fixture-mode error, so the demo cannot falsely claim that rows reached
@@ -1039,7 +1063,7 @@ mapping lookup. A duplicate Portfolio authority fails; an unmapped Stock row is
 retained with `Portfolio Mapped = False` and `Unmapped` governance metadata.
 
 Stock has its own prefixed filter controls and store, independent of Risk state:
-Portfolio, Activity, Signoff Group, Category, and Sub Category. Multiple values
+Activity, Signoff Group, Portfolio, Category, and Sub Category. Multiple values
 are ORed within one field and populated fields are ANDed across fields. With
 **Exclude selected values** unchecked, selected values are included; checking
 it complements every populated field and ANDs those complements. The server
@@ -1117,7 +1141,7 @@ page copies or second content router. Its prefix-safe routes are:
 | Path | Page-owned content |
 |---|---|
 | `/` | Risk dashboard, including Aggregate P&L and Unmapped Books. |
-| `/pnl` | Aggregate P&L plus Preview, SOG/Portfolio editing and sending, Write PL, and Histo P&L. |
+| `/pnl` | Always-open filtered Aggregate P&L plus SOG/Portfolio editing and sending, Write PL, Preview, and cell-selectable Histo P&L. |
 | `/stock` | A lazy Activity → Promotion → temporary Group → CPTY → CRDS stack over the filtered two-date comparison. |
 | `/static-data` | The Statics fixture/static CSV selector and table. |
 | `/404` | Native fallback for unknown paths. |
@@ -1239,7 +1263,7 @@ makes demo entities obvious without corrupting the schemas being demonstrated.
 | `data/s07_thresholds.csv` | 16 | one Risk Type + Risk Greek with positive PL/Risk/dRisk limits. |
 | `data/s08_concerto.csv` | 16 | one Risk Type + Risk Greek mapped to exactly one ConcertoField. |
 | `data/s09_reported.csv` | 4 | unique Risk Type + Risk Greek + Underlying sources mapped to Reported Underlying; multiple sources may share one target. |
-| `data/histo/<YYYY>/<MM-DD>/{histo,predicted}.csv` | 48 | four paired daily partitions; each file has six unique Portfolio + ConcertoField rows and exact `Portfolio, ConcertoField, PL` columns. |
+| `data/histo/<YYYY>/<MM-DD>/{histo,predicted}.csv` | 48 | four paired daily partitions; each file has six unique Risk Type + Risk Greek + Underlying + Product + Book rows and exact hierarchy-plus-PL columns. |
 
 The separate fake Intraday Cashflows connector returns four rows with exact
 columns `Cashflow ID`, `Cashflow Time`, `Value Date`, `Portfolio`,
@@ -1312,6 +1336,7 @@ the committed prior snapshot remains readable while the next one is built.
 | `CONCERTO_MAPPING_PATH` | `data/s08_concerto.csv` | Governed P&L-send mapping. |
 | `PL_ADJUSTMENT_PATH` | `adjustments` | Adjustment root. |
 | `PL_LOCAL_FALLBACK_PATH` | `saved_pl` | Local Write P&L fallback. |
+| `SAVED_FILTER_VIEWS_PATH` | `data/saved_views` | Runtime-local root for validated Risk, Stock, and P&L saved-filter JSON. |
 | `GUNICORN_TIMEOUT_SECONDS` | `300` | Gunicorn request timeout. |
 
 ## Publish to Plotly Cloud
@@ -1442,7 +1467,12 @@ docstrings and type hints are the source of truth.
 - `compare_stock_snapshots` owns the strict full-outer dated comparison;
   `map_stock_comparison_portfolios` attaches governed Portfolio metadata; and
   `filter_stock_comparison` applies Stock-local include/exclude filters without
-  mutating the cached comparison.
+  mutating the cached comparison. Stock hierarchy siblings are ranked from the
+  filtered frame by descending absolute net current Stock, with labels used
+  only to break equal-value ties.
+- `SavedFilterViewRepository` owns validated page-scoped JSON, safe names,
+  deterministic reads, atomic replacement, and cross-worker write locking. It
+  stores filters only—never financial DataFrames or browser-global state.
 
 ### UI
 
@@ -1461,6 +1491,9 @@ docstrings and type hints are the source of truth.
   `build_risk_checker_inventory` performs the lazy inventory render.
 - `build_initial_load_layout` is the first paint; `build_layout` is the full
   Risk page.
+- `build_saved_filter_view_bar`, `register_saved_filter_view_callbacks`, and
+  `saved_view_request_values` provide reusable page-local saved filters while
+  leaving dropdown values with each page's existing sole callback owner.
 - `build_intraday_cashflows_page` renders only already-validated cashflow data.
 - `StartupCoordinator` owns the background revision-1 worker;
   `register_callbacks` owns Risk/search/date/cashflow interaction.

@@ -25,6 +25,7 @@ from dash import (
 )
 from flask import jsonify, request
 from dash.exceptions import MissingCallbackContextException
+from core.s09_saved_views import SavedFilterViewRepository
 
 from pages import PAGE_SERVICES_CONFIG_KEY
 from pages.not_found_404 import layout as not_found_page_layout
@@ -41,6 +42,7 @@ from .s07_events import (
     register_callbacks,
 )
 from .s04_components import (
+    RISK_SAVED_VIEW_CONTROLS,
     build_initial_load_layout,
     build_layout,
     build_shared_refresh_shell,
@@ -50,12 +52,14 @@ from .s08_plevents import (
     register_pl_aggregate_callbacks,
     register_pl_send_callbacks,
 )
-from .s06_plview import build_pl_page
+from .s06_plview import PL_SAVED_VIEW_CONTROLS, build_pl_page
+from .s02_constants import FILTER_DIMENSION_FIELDS
 from .s01_contracts import RefreshManagerProtocol
 from .s10_stock import (
     STOCK_FILTER_FIELDS,
     STOCK_FILTER_IDS,
     STOCK_HIERARCHY_TOGGLE_TYPE,
+    STOCK_SAVED_VIEW_CONTROLS,
     StockPageData,
     build_stock_hierarchy_panel_with_state,
     build_stock_page_from_data,
@@ -73,6 +77,13 @@ from .s10_stock import (
     stock_filter_options,
     stock_summary_text,
     toggle_stock_hierarchy_open_tokens,
+)
+from .s11_saved_views import (
+    build_saved_filter_view_bar,
+    register_saved_filter_view_callbacks,
+    saved_view_request_id,
+    saved_view_request_matches_base,
+    saved_view_request_values,
 )
 
 
@@ -189,6 +200,7 @@ def build_app(
     pl_send_config: PLSendConfig | None = None,
     stock_source: Any | None = None,
     stock_portfolio_source: Any | None = None,
+    saved_view_root: str | Path | None = None,
     dash_kwargs: Mapping[str, Any] | None = None,
 ) -> Dash:
     """Create the Dash app from static data or a server-side refresh manager."""
@@ -205,6 +217,12 @@ def build_app(
         raise ValueError(
             "Stock requires both stock_source and stock_portfolio_source, or neither"
         )
+    saved_view_repository = SavedFilterViewRepository(
+        saved_view_root
+        if saved_view_root is not None
+        else Path(__file__).resolve().parent.parent / "data" / "saved_views",
+        tuple(field.key for field in FILTER_DIMENSION_FIELDS),
+    )
     stock_load_lock = Lock()
     stock_cached_pages: dict[tuple[int, str, str, str], StockPageData] = {}
     stock_intent_lock = Lock()
@@ -479,6 +497,7 @@ def build_app(
                 start_initial_load=start_initial_load,
                 send_workflow_available=pl_send_config is not None,
                 initial_aggregate_frame=initial_aggregate_frame,
+                saved_view_bar=build_saved_filter_view_bar(PL_SAVED_VIEW_CONTROLS),
             )
         return html.Main(
             [
@@ -663,10 +682,26 @@ def build_app(
             app,
             refresh_manager,
             prepared_frame_loader=prepared_committed_dashboard,
+            saved_view_controls=PL_SAVED_VIEW_CONTROLS,
+        )
+        register_saved_filter_view_callbacks(
+            app,
+            saved_view_repository,
+            RISK_SAVED_VIEW_CONTROLS,
+        )
+        register_saved_filter_view_callbacks(
+            app,
+            saved_view_repository,
+            PL_SAVED_VIEW_CONTROLS,
         )
     if refresh_manager is not None and pl_send_config is not None:
         register_pl_send_callbacks(app, refresh_manager, pl_send_config)
     if stock_source is not None and stock_portfolio_source is not None:
+        register_saved_filter_view_callbacks(
+            app,
+            saved_view_repository,
+            STOCK_SAVED_VIEW_CONTROLS,
+        )
 
         def committed_stock_revision() -> int:
             try:
@@ -679,7 +714,7 @@ def build_app(
                 return 0
 
         def stock_filter_outputs():
-            return [
+            outputs = [
                 output
                 for field in STOCK_FILTER_FIELDS
                 for output in (
@@ -687,6 +722,8 @@ def build_app(
                     Output(STOCK_FILTER_IDS[field.key], "value"),
                 )
             ]
+            outputs.append(Output("stock-filter-exclude-selected", "value"))
+            return outputs
 
         def stock_filter_states():
             return [
@@ -729,7 +766,7 @@ def build_app(
                 no_update,
                 None,
                 not retryable,
-                *([no_update] * (2 * len(STOCK_FILTER_FIELDS))),
+                *([no_update] * ((2 * len(STOCK_FILTER_FIELDS)) + 1)),
             )
 
         def claim_stock_intent(request_scope: object) -> tuple[str, int]:
@@ -755,7 +792,7 @@ def build_app(
         def stale_stock_result():
             """Ignore a response superseded by newer date intent in the browser."""
 
-            return (no_update,) * (4 + (2 * len(STOCK_FILTER_FIELDS)))
+            return (no_update,) * (5 + (2 * len(STOCK_FILTER_FIELDS)))
 
         def render_stock_result(
             page_data: StockPageData,
@@ -775,6 +812,7 @@ def build_app(
             filter_payload: list[Any] = []
             for field in STOCK_FILTER_FIELDS:
                 filter_payload.extend((options[field.key], valid[field.key]))
+            filter_payload.append(list(exclude_value or []))
             return page.children, filter_payload
 
         def load_stock_revision(
@@ -785,6 +823,8 @@ def build_app(
             selected_filter_values: Sequence[Sequence[str] | None],
             exclude_value: Sequence[str] | None,
             request_scope: object,
+            *,
+            force_render: bool = False,
         ):
             """Coalesce dated loads and retain retryability after failures."""
 
@@ -808,6 +848,7 @@ def build_app(
                 loaded_revision == committed_revision
                 and stock_cache_key(loaded_dates) == key
                 and key in stock_cached_pages
+                and not force_render
             ):
                 finish_stock_intent(scope, intent_sequence)
                 return (
@@ -815,7 +856,7 @@ def build_app(
                     no_update,
                     no_update,
                     True,
-                    *([no_update] * (2 * len(STOCK_FILTER_FIELDS))),
+                    *([no_update] * ((2 * len(STOCK_FILTER_FIELDS)) + 1)),
                 )
             if not stock_load_lock.acquire(blocking=False):
                 return (
@@ -823,7 +864,7 @@ def build_app(
                     no_update,
                     no_update,
                     False,
-                    *([no_update] * (2 * len(STOCK_FILTER_FIELDS))),
+                    *([no_update] * ((2 * len(STOCK_FILTER_FIELDS)) + 1)),
                 )
             try:
                 page_data = stock_cached_pages.get(key)
@@ -879,6 +920,7 @@ def build_app(
             Input("stock-load-trigger", "n_intervals"),
             Input("refresh-commit-revision", "children"),
             Input("stock-compare-button", "n_clicks"),
+            Input(STOCK_SAVED_VIEW_CONTROLS.apply_request_id, "data"),
             State("stock-loaded-revision", "data"),
             State("stock-loaded-dates", "data"),
             State("stock-current-date", "date"),
@@ -886,23 +928,74 @@ def build_app(
             State("stock-filter-exclude-selected", "value"),
             *stock_filter_states(),
             State("stock-request-scope", "data"),
+            State(STOCK_SAVED_VIEW_CONTROLS.applied_request_id, "data"),
             prevent_initial_call=True,
         )
         def coordinate_stock_load(
             _ticks,
             _committed_revision,
             _compare_clicks,
-            loaded_revision,
-            loaded_dates,
-            current_date,
-            prior_date,
-            exclude_value,
-            *filter_values_and_scope,
+            *callback_values,
         ):
             """Own mount, Compare, retry, and financial-commit Stock loads."""
 
+            # The optional fallback keeps direct-library callers from before
+            # saved views source-compatible; Dash always supplies the request
+            # Input in the new callback graph.
+            legacy_value_count = 6 + len(STOCK_FILTER_FIELDS)
+            if len(callback_values) == legacy_value_count:
+                saved_view_request = None
+                state_values = callback_values
+                applied_saved_view_request = None
+            else:
+                saved_view_request = callback_values[0]
+                state_values = callback_values[1:-1]
+                applied_saved_view_request = callback_values[-1]
+            (
+                loaded_revision,
+                loaded_dates,
+                current_date,
+                prior_date,
+                exclude_value,
+                *filter_values_and_scope,
+            ) = state_values
+
             selected_filter_values = filter_values_and_scope[: len(STOCK_FILTER_FIELDS)]
             request_scope = filter_values_and_scope[-1]
+            try:
+                saved_view_triggered = (
+                    ctx.triggered_id == STOCK_SAVED_VIEW_CONTROLS.apply_request_id
+                )
+            except (LookupError, MissingCallbackContextException):
+                saved_view_triggered = False
+            request_id = saved_view_request_id(saved_view_request)
+            saved_view_pending = bool(
+                request_id and request_id != applied_saved_view_request
+            )
+            request_matches_base = False
+            if saved_view_pending:
+                try:
+                    request_matches_base = saved_view_request_matches_base(
+                        saved_view_request,
+                        STOCK_SAVED_VIEW_CONTROLS,
+                        selected_filter_values,
+                        exclude_value,
+                    )
+                except ValueError:
+                    request_matches_base = False
+            apply_pending = saved_view_pending and (
+                saved_view_triggered or request_matches_base
+            )
+            if apply_pending:
+                try:
+                    requested = saved_view_request_values(
+                        saved_view_request,
+                        STOCK_SAVED_VIEW_CONTROLS,
+                    )
+                except ValueError:
+                    requested = None
+                if requested is not None:
+                    selected_filter_values, exclude_value = requested
             return load_stock_revision(
                 current_date,
                 prior_date,
@@ -911,6 +1004,7 @@ def build_app(
                 selected_filter_values,
                 exclude_value,
                 request_scope,
+                force_render=apply_pending,
             )
 
         @app.callback(

@@ -73,6 +73,11 @@ def create_app(settings: RuntimeSettings | None = None):
         Path("data/histo"),
         root=project_root,
     )
+    saved_view_path = resolve_data_path(
+        os.getenv("SAVED_FILTER_VIEWS_PATH"),
+        Path("data/saved_views"),
+        root=project_root,
+    )
 
     pl_send_config = PLSendConfig(
         mapping_source=mapping_path,
@@ -87,6 +92,7 @@ def create_app(settings: RuntimeSettings | None = None):
         pl_send_config=pl_send_config,
         stock_source=get_stock,
         stock_portfolio_source=get_portfolio_config,
+        saved_view_root=saved_view_path,
         dash_kwargs=settings.dash_kwargs,
     )
 

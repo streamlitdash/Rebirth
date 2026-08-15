@@ -16,9 +16,24 @@ VIEW_DIMENSION_FIELDS = (
     PORTFOLIO_UI_FIELD,
     *(field for field in PORTFOLIO_FIELDS if "view_dimension" in field.roles),
 )
-FILTER_DIMENSION_FIELDS = (
-    PORTFOLIO_UI_FIELD,
-    *(field for field in PORTFOLIO_FIELDS if "filter_dimension" in field.roles),
+_FILTER_FIELD_BY_KEY = {
+    field.key: field
+    for field in (
+        PORTFOLIO_UI_FIELD,
+        *(field for field in PORTFOLIO_FIELDS if "filter_dimension" in field.roles),
+    )
+}
+FILTER_DIMENSION_ORDER = (
+    "activity",
+    "signoffgroup",
+    "portfolio",
+    "category",
+    "subcategory",
+)
+if set(_FILTER_FIELD_BY_KEY) != set(FILTER_DIMENSION_ORDER):
+    raise RuntimeError("Filter dimension order must cover every governed filter field")
+FILTER_DIMENSION_FIELDS = tuple(
+    _FILTER_FIELD_BY_KEY[key] for key in FILTER_DIMENSION_ORDER
 )
 VIEW_DIMENSIONS = tuple(field.key for field in VIEW_DIMENSION_FIELDS)
 FILTER_COLUMNS = [field.key for field in FILTER_DIMENSION_FIELDS]
@@ -243,6 +258,7 @@ __all__ = [
     "EXPANDABLE_METRICS",
     "FILTER_DIMENSION_FIELDS",
     "FILTER_COLUMNS",
+    "FILTER_DIMENSION_ORDER",
     "GRID_METRIC_COLUMNS",
     "IR_GREEK_FAMILIES",
     "META_COLUMNS",

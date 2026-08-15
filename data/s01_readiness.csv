@@ -1,5 +1,6 @@
 Risk Type,Risk Greek,Age
 FX,Delta,0
+FX,Gamma,0
 FX,Vega,0
 IR,Delta,0
 IR,Gamma,0

@@ -197,9 +197,6 @@ UNMAPPED_PORTFOLIO = "BOOK_UNMAPPED"
 RISK_PORTFOLIOS = tuple(row[0] for row in MAPPED_PORTFOLIOS) + (UNMAPPED_PORTFOLIO,)
 
 AGE_ONE_SOURCE_TYPES = frozenset({"ir/inflationvega", "credit/vega", "commo/vega"})
-# A known pair is intentionally absent.  It proves the pipeline's specified
-# behavior: missing readiness rows are completed with Age 0, not dropped.
-READINESS_OMITTED_PAIR = ("FX", "Gamma")
 CREDIT_FACTORS = {
     "SP01": 1.0,
     "PSP01": 0.82,
@@ -433,7 +430,6 @@ def build_datasets() -> dict[str, list[dict[str, str]]]:
             "Age": "1" if product.source_type in AGE_ONE_SOURCE_TYPES else "0",
         }
         for product in PRODUCT_SPECS_BY_SOURCE_TYPE.values()
-        if (product.risk_type, product.risk_greek) != READINESS_OMITTED_PAIR
     ]
     checker = [
         {
@@ -562,8 +558,8 @@ def validate_datasets(datasets: Mapping[str, Sequence[Mapping[str, str]]]) -> No
     readiness = datasets["s01_readiness.csv"]
     readiness_pairs = [(row["Risk Type"], row["Risk Greek"]) for row in readiness]
     _require(
-        set(readiness_pairs) == expected_pairs - {READINESS_OMITTED_PAIR},
-        "Readiness must omit exactly its documented default-Age test pair",
+        set(readiness_pairs) == expected_pairs,
+        "Readiness pair coverage is incomplete",
     )
     _require(len(readiness_pairs) == len(set(readiness_pairs)), "Readiness duplicates")
     _require(all(row["Age"] in {"0", "1"} for row in readiness), "Age must be 0 or 1")
