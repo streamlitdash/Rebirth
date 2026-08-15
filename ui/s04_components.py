@@ -4467,6 +4467,11 @@ def build_layout(
                 id="data-revision-store",
                 data=initial_snapshot.revision if initial_snapshot is not None else 0,
             ),
+            html.Span(
+                initial_snapshot.revision if initial_snapshot is not None else 0,
+                id="refresh-commit-revision",
+                hidden=True,
+            ),
             # Backend-affecting settings mirror the one process-wide committed
             # snapshot. They are intentionally memory stores: opening a stale
             # browser must never overwrite shared financial data. AutoPL is

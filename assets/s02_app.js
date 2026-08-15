@@ -1003,18 +1003,22 @@
     };
 
     const syncCommittedDataRevision = (progress) => {
-      if (
-        !progress
-        || progress.running
-        || refreshProgressState?.mode === "bootstrap"
-      ) return false;
-      const revision = normalizedRevision(progress.revision);
-      const store = document.getElementById("data-revision-store");
+      if (refreshProgressState?.mode === "bootstrap") return false;
+      const commitNode = document.getElementById("refresh-commit-revision");
+      const progressRevision = progress?.running === false
+        ? normalizedRevision(progress.revision)
+        : null;
+      const commitRevision = normalizedRevision(commitNode?.textContent);
+      const candidates = [progressRevision, commitRevision]
+        .filter((value) => value !== null);
+      const revision = candidates.length ? Math.max(...candidates) : null;
       const setProps = window.dash_clientside?.set_props;
+      // dcc.Store renders no DOM node; its colocated commit signal is the
+      // mount sentinel before addressing the Store through Dash's registry.
       if (
         revision === null
+        || !commitNode
         || revision <= renderedDataRevisionFloor()
-        || !store
         || typeof setProps !== "function"
       ) return false;
       try {

@@ -2428,7 +2428,11 @@ def register_callbacks(
             )
 
         @app.callback(
-            Output("data-revision-store", "data"),
+            # Keep the long financial request outside the live-data callback
+            # graph. Browser progress publishes the committed revision only
+            # after the manager's atomic transaction finishes, so readers can
+            # continue interacting with the previous immutable snapshot.
+            Output("refresh-commit-revision", "children"),
             Output(REFRESH_RESULT_STORE_ID, "data"),
             Output("refresh-status", "children"),
             Output("error-log", "children"),

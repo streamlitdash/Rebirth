@@ -296,6 +296,18 @@ def test_browser_progress_copy_never_claims_an_unconfirmed_refresh() -> None:
         'refreshProgressState?.mode === "bootstrap"'
         in source[revision_sync : revision_sync + 500]
     )
+    revision_sync_source = source[revision_sync : revision_sync + 1_300]
+    assert (
+        'const commitNode = document.getElementById("refresh-commit-revision")'
+        in revision_sync_source
+    )
+    assert "normalizedRevision(commitNode?.textContent)" in revision_sync_source
+    assert "progress?.running === false" in revision_sync_source
+    assert "|| !commitNode" in revision_sync_source
+    assert "Math.max" in revision_sync_source
+    assert 'document.getElementById("data-revision-store")' not in (
+        revision_sync_source
+    )
     assert "const claimSessionReload" in source
     assert "dashIsLoading() || Date.now() < handoffDeadline" in source
     assert "cube-bootstrap-ready-reload:${bootId}:${revision}" in source
@@ -349,13 +361,15 @@ def test_warm_manager_keeps_the_shell_recovery_callback_registered() -> None:
     assert "raw-data-summary" not in ids
 
 
-def test_refresh_pipeline_only_runs_for_explicit_financial_actions() -> None:
-    app = build_app(refresh_manager=build_production_refresh_manager())
+def test_long_financial_callback_cannot_own_live_revision() -> None:
+    manager = build_production_refresh_manager()
+    manager.refresh(force_risk=True, force_pl=True)
+    app = build_app(refresh_manager=manager)
     metadata = next(
         metadata
         for metadata in app.callback_map.values()
         if any(
-            output.component_id == "data-revision-store"
+            output.component_id == "refresh-commit-revision"
             for output in _callback_outputs(metadata)
         )
     )
@@ -379,6 +393,17 @@ def test_refresh_pipeline_only_runs_for_explicit_financial_actions() -> None:
         "data",
     ) in outputs
     assert ("perspective-risk-cube-risk-checker-v1", "data") in outputs
+    assert ("refresh-commit-revision", "children") in outputs
+    assert ("data-revision-store", "data") not in outputs
+
+    layout = app.layout() if callable(app.layout) else app.layout
+    commit_revision = next(
+        item
+        for item in _walk(layout)
+        if getattr(item, "id", None) == "refresh-commit-revision"
+    )
+    assert commit_revision.hidden is True
+    assert commit_revision.children == manager.health.revision
 
 
 def test_composed_app_defaults_to_one_second_risk_product_hold(monkeypatch) -> None:
@@ -411,7 +436,8 @@ def test_every_callback_output_has_one_nonduplicate_owner() -> None:
     }
     assert duplicates == {}
     assert len(owners[("risk-grid", "children")]) == 1
-    assert len(owners[("data-revision-store", "data")]) == 1
+    assert ("data-revision-store", "data") not in owners
+    assert len(owners[("refresh-commit-revision", "children")]) == 1
     assert len(owners[("cube-page-container", "children")]) == 1
     assert len(owners[("app-page-container", "children")]) == 1
     assert ("cube-page-container", "style") not in owners
