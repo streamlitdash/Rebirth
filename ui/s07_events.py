@@ -44,7 +44,7 @@ from .s04_components import (
     build_layout,
     build_quick_market_result,
     build_quick_search_pivot,
-    build_raw_data_table,
+    build_operating_date_content,
     build_risk_checker_inventory,
     build_risk_date_editor,
     build_risk_table,
@@ -64,7 +64,6 @@ from .s02_constants import (
     DIMENSION_FILTER_IDS,
     EXPANDABLE_METRICS,
     FILTER_DIMENSION_FIELDS,
-    IR_GREEK_FAMILIES,
     METRIC_COLUMNS,
     PLOT_METRICS,
     RISK_TYPE_ORDER,
@@ -83,8 +82,6 @@ VIEW_DATE_STORE_ID = "perspective-risk-cube-view-date-v1"
 AUTO_REFRESH_STORE_ID = "perspective-risk-cube-auto-refresh-v1"
 COMMODITY_MARKET_STORE_ID = "perspective-risk-cube-commodity-market-v1"
 RISK_CHECKER_STORE_ID = "perspective-risk-cube-risk-checker-v1"
-PREFERENCE_HYDRATED_STORE_ID = "preference-hydrated-store"
-PREFERENCE_HYDRATION_INTERVAL_ID = "preference-hydration-trigger"
 FORCE_DRAFT_STORE_ID = "force-risk-draft-store"
 FORCE_RENDER_STORE_ID = "force-risk-render-store"
 REFRESH_RESULT_STORE_ID = "refresh-result-store"
@@ -1097,7 +1094,6 @@ def _next_counter(value: Any) -> int:
 
 def _refresh_status(
     snapshot: RefreshSnapshotProtocol,
-    automatic_enabled: bool,
 ) -> tuple[str, str, str]:
     refreshed_at = snapshot.refreshed_at.strftime("%H:%M:%S UTC")
     status_frame = snapshot.risk_status
@@ -1106,9 +1102,7 @@ def _refresh_status(
     )
     forced = int(status_frame["Force Risk"].astype(bool).sum())
     status = (
-        f"Last success {refreshed_at} · Automatic refresh "
-        f"{'On' if automatic_enabled else 'Off'} · "
-        f"T-1 risk {t_minus_one} · Forced risk {forced}"
+        f"Last success {refreshed_at} · T-1 risk {t_minus_one} · Forced risk {forced}"
     )
     if snapshot.errors:
         return (
@@ -1258,31 +1252,6 @@ def register_callbacks(
                         keep_polling=True,
                     )
             raise PreventUpdate
-
-    @app.callback(
-        Output("cube-page-container", "style"),
-        Output("static-data-page-container", "style"),
-        Output("cube-nav-link", "className"),
-        Output("static-data-nav-link", "className"),
-        Input("app-location", "pathname"),
-    )
-    def route_page(pathname):
-        normalized = str(pathname or route_prefix).rstrip("/")
-        show_static_data = normalized.endswith("/static-data")
-        return (
-            {"display": "none"} if show_static_data else {},
-            {} if show_static_data else {"display": "none"},
-            (
-                "app-nav-link cube-nav-link"
-                if show_static_data
-                else "app-nav-link cube-nav-link is-active"
-            ),
-            (
-                "app-nav-link cube-nav-link is-active"
-                if show_static_data
-                else "app-nav-link cube-nav-link"
-            ),
-        )
 
     @app.callback(
         Output("dimension-filter-store", "data"),
@@ -1710,10 +1679,6 @@ def register_callbacks(
         Output("risk-grid", "children"),
         Output("alt-risk-grid", "children"),
         Output("detail-panel", "children"),
-        Output("unmapped-books-details", "open"),
-        Output("unmapped-books-grid", "children"),
-        Output("raw-data-details", "open"),
-        Output("raw-data-grid", "children"),
         Input("risk-type-tabs", "value"),
         Input("ir-family-tabs", "value"),
         Input("data-revision-store", "data"),
@@ -1731,8 +1696,6 @@ def register_callbacks(
         Input("plot-measure", "value"),
         Input("plot-component", "value"),
         Input("detail-tenor-view", "value"),
-        Input("unmapped-books-summary", "n_clicks"),
-        Input("raw-data-summary", "n_clicks"),
         Input("dimension-filter-values-store", "data"),
         Input("promotion-toggle-store", "data"),
         Input("region-toggle-store", "data"),
@@ -1741,8 +1704,6 @@ def register_callbacks(
         State("expanded-metrics", "value"),
         State("risk-view-context-store", "data"),
         State("selected-cell-store", "data"),
-        State("unmapped-books-details", "open"),
-        State("raw-data-details", "open"),
     )
     def reduce_and_render_risk_view(
         active_risk_type,
@@ -1762,8 +1723,6 @@ def register_callbacks(
         plot_measure,
         plot_component,
         tenor_view,
-        _unmapped_summary_clicks,
-        _raw_summary_clicks,
         dimension_values,
         promotion_enabled,
         region_enabled,
@@ -1772,8 +1731,6 @@ def register_callbacks(
         current_expanded_metrics,
         previous_context,
         current_selection,
-        unmapped_is_open,
-        raw_is_open,
     ):
         """Atomically reduce an interaction and return its visible table.
 
@@ -1838,10 +1795,6 @@ def register_callbacks(
         )
         should_render_table = False
         should_render_detail = False
-        unmapped_open_update = no_update
-        unmapped_grid_update = no_update
-        raw_open_update = no_update
-        raw_grid_update = no_update
 
         if triggered & context_inputs or not isinstance(previous_context, Mapping):
             frame = cache.current(refresh_manager)
@@ -1879,10 +1832,6 @@ def register_callbacks(
             updates[6] = context
             should_render_table = True
             should_render_detail = True
-            unmapped_open_update = False
-            unmapped_grid_update = None
-            raw_open_update = False
-            raw_grid_update = None
 
         elif triggered & view_inputs:
             effective_selection = None
@@ -2045,50 +1994,6 @@ def register_callbacks(
                 updates[8] = component
                 should_render_detail = True
 
-            elif ctx.triggered_id == "unmapped-books-summary":
-                unmapped_open_update = not bool(unmapped_is_open)
-                if unmapped_open_update:
-                    frame = (
-                        refresh_manager.read_frame("unmapped_frame").frame
-                        if refresh_manager is not None
-                        else pd.DataFrame()
-                    )
-                    if "Risk Type" in frame:
-                        frame = frame.loc[frame["Risk Type"].eq(active_risk_type)]
-                    if active_risk_type == "IR" and "Risk Greek" in frame:
-                        allowed = IR_GREEK_FAMILIES.get(
-                            normalized_ir_family or "delta",
-                            IR_GREEK_FAMILIES["delta"],
-                        )
-                        frame = frame.loc[frame["Risk Greek"].isin(allowed)]
-                    if effective_splits and "Split" in frame:
-                        frame = frame.loc[frame["Split"].isin(effective_splits)]
-                    unmapped_grid_update = build_unmapped_books_table(frame)
-                else:
-                    unmapped_grid_update = None
-
-            elif ctx.triggered_id == "raw-data-summary":
-                raw_open_update = not bool(raw_is_open)
-                if raw_open_update:
-                    frame = (
-                        refresh_manager.read_frame("combined_pl").frame
-                        if refresh_manager is not None
-                        else pd.DataFrame()
-                    )
-                    if "Risk Type" in frame:
-                        frame = frame.loc[frame["Risk Type"].eq(active_risk_type)]
-                    if active_risk_type == "IR" and "Risk Greek" in frame:
-                        allowed = IR_GREEK_FAMILIES.get(
-                            normalized_ir_family or "delta",
-                            IR_GREEK_FAMILIES["delta"],
-                        )
-                        frame = frame.loc[frame["Risk Greek"].isin(allowed)]
-                    if effective_splits and "Split" in frame:
-                        frame = frame.loc[frame["Split"].isin(effective_splits)]
-                    raw_grid_update = build_raw_data_table(frame)
-                else:
-                    raw_grid_update = None
-
             elif "plot-measure.value" in triggered:
                 effective_plot_measure = (
                     plot_measure if plot_measure in DETAIL_COMPONENTS else "risk"
@@ -2164,11 +2069,31 @@ def register_callbacks(
             main_grid,
             alt_grid,
             detail_panel,
-            unmapped_open_update,
-            unmapped_grid_update,
-            raw_open_update,
-            raw_grid_update,
         )
+
+    @app.callback(
+        Output("unmapped-books-details", "open"),
+        Output("unmapped-books-grid", "children"),
+        Input("unmapped-books-summary", "n_clicks"),
+        Input("data-revision-store", "data"),
+        State("unmapped-books-details", "open"),
+        prevent_initial_call=True,
+    )
+    def render_unmapped_books(_summary_clicks, _revision, is_open):
+        """Load the complete unmapped-book inventory only while it is open."""
+        open_update = (
+            not bool(is_open)
+            if ctx.triggered_id == "unmapped-books-summary"
+            else bool(is_open)
+        )
+        if not open_update:
+            return False, None
+        frame = (
+            refresh_manager.read_frame("unmapped_frame").frame
+            if refresh_manager is not None
+            else pd.DataFrame()
+        )
+        return True, build_unmapped_books_table(frame)
 
     if refresh_manager is not None:
 
@@ -2405,17 +2330,6 @@ def register_callbacks(
             )
 
         @app.callback(
-            Output(COMMODITY_MARKET_STORE_ID, "data"),
-            Input("commo-market-toggle", "n_clicks"),
-            State(COMMODITY_MARKET_STORE_ID, "data"),
-            prevent_initial_call=True,
-        )
-        def toggle_commodity_market(n_clicks, stored_value):
-            if not n_clicks:
-                raise PreventUpdate
-            return not commodity_market_enabled(stored_value)
-
-        @app.callback(
             Output("commo-market-toggle", "children"),
             Output("commo-market-toggle", "title"),
             Output("commo-market-toggle", "aria-pressed"),
@@ -2431,17 +2345,6 @@ def register_callbacks(
                 str(enabled).lower(),
                 f"data-source-toggle {'is-on' if enabled else 'is-off'}",
             )
-
-        @app.callback(
-            Output(RISK_CHECKER_STORE_ID, "data"),
-            Input("risk-checker-toggle", "n_clicks"),
-            State(RISK_CHECKER_STORE_ID, "data"),
-            prevent_initial_call=True,
-        )
-        def toggle_risk_checker(n_clicks, stored_value):
-            if not n_clicks:
-                raise PreventUpdate
-            return not risk_checker_enabled(stored_value)
 
         # Promotion toggle callbacks
         @app.callback(
@@ -2525,20 +2428,6 @@ def register_callbacks(
             )
 
         @app.callback(
-            Output(PREFERENCE_HYDRATED_STORE_ID, "data"),
-            Input(PREFERENCE_HYDRATION_INTERVAL_ID, "n_intervals"),
-            # Both components are inserted dynamically with the full layout.
-            # Allow Dash's first call; the interval may already be at tick 1
-            # by the time the new dependency graph is mounted.
-            prevent_initial_call=False,
-        )
-        def release_preference_hydration(n_intervals):
-            """Release one combined preference restore after local stores mount."""
-            if int(n_intervals or 0) <= 0:
-                raise PreventUpdate
-            return True
-
-        @app.callback(
             Output("data-revision-store", "data"),
             Output(REFRESH_RESULT_STORE_ID, "data"),
             Output("refresh-status", "children"),
@@ -2546,23 +2435,17 @@ def register_callbacks(
             Output("error-log", "className"),
             Output(FORCE_STORE_ID, "data"),
             Output(VIEW_DATE_STORE_ID, "data"),
+            Output(COMMODITY_MARKET_STORE_ID, "data"),
+            Output(RISK_CHECKER_STORE_ID, "data"),
             Input("auto-refresh-interval", "n_intervals"),
             Input("refresh-portfolios-button", "n_clicks"),
             Input("refresh-pl-button", "n_clicks"),
             Input("reload-risk-button", "n_clicks"),
             Input("force-risk-apply-button", "n_clicks"),
-            Input(FORCE_STORE_ID, "modified_timestamp"),
-            Input(VIEW_DATE_STORE_ID, "modified_timestamp"),
-            Input(COMMODITY_MARKET_STORE_ID, "modified_timestamp"),
-            Input(RISK_CHECKER_STORE_ID, "modified_timestamp"),
-            Input(AUTO_REFRESH_STORE_ID, "modified_timestamp"),
-            Input(PREFERENCE_HYDRATED_STORE_ID, "data"),
+            Input("commo-market-toggle", "n_clicks"),
+            Input("risk-checker-toggle", "n_clicks"),
             State(FORCE_DRAFT_STORE_ID, "data"),
-            State(FORCE_STORE_ID, "data"),
-            State(VIEW_DATE_STORE_ID, "data"),
             State(AUTO_REFRESH_STORE_ID, "data"),
-            State(COMMODITY_MARKET_STORE_ID, "data"),
-            State(RISK_CHECKER_STORE_ID, "data"),
             State(REFRESH_RESULT_STORE_ID, "data"),
             running=[
                 (Output("refresh-portfolios-button", "disabled"), True, False),
@@ -2577,7 +2460,7 @@ def register_callbacks(
                     "refresh-status",
                 ),
             ],
-            prevent_initial_call=False,
+            prevent_initial_call=True,
         )
         def refresh_pipeline(
             _auto_intervals,
@@ -2585,18 +2468,10 @@ def register_callbacks(
             _pl_clicks,
             _risk_clicks,
             _apply_clicks,
-            _forced_modified,
-            _view_modified,
-            _commodity_modified,
-            _checker_modified,
-            _auto_modified,
-            preferences_hydrated,
+            _commodity_clicks,
+            _checker_clicks,
             draft_state,
-            saved_dates,
-            saved_view_date,
             auto_refresh_state,
-            commodity_market_state,
-            risk_checker_state,
             refresh_result_counter,
         ):
             triggered_ids = {
@@ -2612,31 +2487,22 @@ def register_callbacks(
             current_applied = snapshot_forced_dates(current_snapshot)
             current_view_date = snapshot_forced_view_date(current_snapshot)
             current_revision = current_snapshot.revision
-            commodity_enabled = commodity_market_enabled(commodity_market_state)
-            checker_enabled = risk_checker_enabled(risk_checker_state)
+            committed_commodity = bool(current_snapshot.commodity_market_enabled)
+            committed_checker = bool(current_snapshot.risk_checker_enabled)
+            commodity_enabled = (
+                not committed_commodity
+                if "commo-market-toggle" in triggered_ids
+                else committed_commodity
+            )
+            checker_enabled = (
+                not committed_checker
+                if "risk-checker-toggle" in triggered_ids
+                else committed_checker
+            )
             applying = "force-risk-apply-button" in triggered_ids
-            backend_preference_ids = {
-                FORCE_STORE_ID,
-                VIEW_DATE_STORE_ID,
-                COMMODITY_MARKET_STORE_ID,
-                RISK_CHECKER_STORE_ID,
-            }
-            preference_signal_ids = backend_preference_ids | {
-                AUTO_REFRESH_STORE_ID,
-                PREFERENCE_HYDRATED_STORE_ID,
-            }
-            preference_signal = not triggered_ids or bool(
-                triggered_ids & preference_signal_ids
-            )
-            waiting_for_preference_hydration = (
-                not bool(preferences_hydrated) and preference_signal
-            )
-            hydrating = bool(preferences_hydrated) and preference_signal
             apply_result: ForceApplyResult | None = None
 
             try:
-                if waiting_for_preference_hydration:
-                    raise PreventUpdate
                 if applying:
                     requested = draft_forced_dates(
                         draft_state, fallback=current_applied
@@ -2660,6 +2526,8 @@ def register_callbacks(
                             "error-log has-errors",
                             no_update,
                             no_update,
+                            committed_commodity,
+                            committed_checker,
                         )
                     if (
                         requested == current_applied
@@ -2718,72 +2586,15 @@ def register_callbacks(
                         reason="automatic 15-minute refresh",
                         expected_revision=current_revision,
                     )
-                elif hydrating:
-                    # The mount barrier exists only for browser-local AutoPL.
-                    # Force dates, view date, Commo and RiskChecker are seeded
-                    # from the committed process-wide snapshot and may change
-                    # backend state only after an explicit control action.
-                    if (
-                        not triggered_ids
-                        or PREFERENCE_HYDRATED_STORE_ID in triggered_ids
-                        or not bool(triggered_ids & backend_preference_ids)
-                    ):
-                        status_text, error_text, error_class = _refresh_status(
-                            current_snapshot,
-                            auto_refresh_enabled(auto_refresh_state),
-                        )
-                        return (
-                            no_update,
-                            no_update,
-                            status_text,
-                            error_text,
-                            error_class,
-                            no_update,
-                            no_update,
-                        )
-                    try:
-                        requested = normalize_forced_dates(saved_dates)
-                        requested_view = normalize_view_date(saved_view_date)
-                    except (TypeError, ValueError):
-                        return (
-                            no_update,
-                            no_update,
-                            no_update,
-                            "⚠ Saved date settings were invalid and were reset to the last successful settings.",
-                            "error-log has-errors",
-                            current_applied,
-                            current_view_date,
-                        )
-                    backend_preferences_changed = (
-                        requested != current_applied
-                        or requested_view != current_view_date
-                        or commodity_enabled
-                        != bool(current_snapshot.commodity_market_enabled)
-                        or checker_enabled
-                        != bool(current_snapshot.risk_checker_enabled)
-                    )
-                    # A store can fire again after the manager has already
-                    # committed the same explicit action. Avoid a duplicate
-                    # transaction when every backend setting already matches.
-                    if not backend_preferences_changed:
-                        status_text, error_text, error_class = _refresh_status(
-                            current_snapshot,
-                            auto_refresh_enabled(auto_refresh_state),
-                        )
-                        return (
-                            no_update,
-                            no_update,
-                            status_text,
-                            error_text,
-                            error_class,
-                            no_update,
-                            no_update,
-                        )
+                elif (
+                    "commo-market-toggle" in triggered_ids
+                    or "risk-checker-toggle" in triggered_ids
+                ):
                     apply_result = apply_force_dates(
                         refresh_manager,
-                        requested,
+                        current_applied,
                         reason="dashboard settings updated",
-                        view_date=requested_view,
+                        view_date=current_view_date,
                         commodity_market=commodity_enabled,
                         risk_checker=checker_enabled,
                         expected_revision=current_revision,
@@ -2802,6 +2613,8 @@ def register_callbacks(
                     "error-log",
                     no_update,
                     no_update,
+                    committed_commodity,
+                    committed_checker,
                 )
             except StaleRefreshError:
                 return (
@@ -2812,6 +2625,8 @@ def register_callbacks(
                     "error-log has-errors",
                     no_update,
                     no_update,
+                    committed_commodity,
+                    committed_checker,
                 )
             except (TypeError, ValueError):
                 return (
@@ -2822,6 +2637,8 @@ def register_callbacks(
                     "error-log has-errors",
                     no_update,
                     no_update,
+                    committed_commodity,
+                    committed_checker,
                 )
             except Exception as error:
                 incident_id = uuid.uuid4().hex[:10]
@@ -2838,19 +2655,24 @@ def register_callbacks(
                     "error-log has-errors",
                     no_update,
                     no_update,
+                    committed_commodity,
+                    committed_checker,
                 )
 
             cache.replace(snapshot)
-            status_text, error_text, error_class = _refresh_status(
-                snapshot,
-                auto_refresh_enabled(auto_refresh_state),
-            )
+            status_text, error_text, error_class = _refresh_status(snapshot)
             if (
                 apply_result is not None
                 and not apply_result.committed
                 and not snapshot.errors
             ):
-                error_text = "⚠ Force dates were not committed; the last successful dates remain applied."
+                error_text = (
+                    "⚠ Date settings were not committed; the last successful "
+                    "settings remain applied."
+                    if applying
+                    else "⚠ Dashboard settings were not committed; the last "
+                    "successful settings remain applied."
+                )
                 error_class = "error-log has-errors"
 
             persisted = (
@@ -2870,7 +2692,17 @@ def register_callbacks(
                     if applying and apply_result is not None and apply_result.committed
                     else no_update
                 ),
+                bool(snapshot.commodity_market_enabled),
+                bool(snapshot.risk_checker_enabled),
             )
+
+        @app.callback(
+            Output("operating-date-banner", "children"),
+            Input("data-revision-store", "data"),
+        )
+        def sync_operating_dates(_revision):
+            """Keep the prominent dates aligned with the committed snapshot."""
+            return build_operating_date_content(refresh_manager.snapshot)
 
         @app.callback(
             Output(FORCE_DRAFT_STORE_ID, "data"),

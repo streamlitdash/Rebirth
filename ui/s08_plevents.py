@@ -10,6 +10,7 @@ from threading import RLock
 from typing import Callable
 
 import pandas as pd
+import plotly.graph_objects as go
 from dash import Dash, Input, Output, Patch, State, ctx, dcc, no_update
 from dash.exceptions import PreventUpdate
 from core.s01_schema import PORTFOLIO_MAPPED_COLUMN, PORTFOLIO_METADATA_COLUMNS
@@ -18,7 +19,9 @@ from core.s04_pl import (
     MARKET_DATE,
     PL,
     CONCERTO_FIELD,
+    HISTORICAL_PL_COLUMNS,
     PL_SEND_COLUMNS,
+    PLSendValidationError,
     PORTFOLIO,
     RISK_GREEK,
     RISK_TYPE,
@@ -27,6 +30,7 @@ from core.s04_pl import (
     build_pl_send_base,
     build_saved_pl_frame,
     collapse_pl_send_rows,
+    load_historical_pl,
     load_plsend_mapping,
     load_portfolio_governance,
 )
@@ -105,6 +109,8 @@ class PLSendConfig:
     # Production boundary for writing the complete PL frame to site-owned s3.
     # The market date is ISO formatted and revision is the committed snapshot.
     write_pl: WritePLFunction | None = None
+    # Optional daily history source at Market Date + Portfolio + ConcertoField grain.
+    history_source: str | Path | pd.DataFrame | None = None
 
 
 def _governance(snapshot) -> pd.DataFrame:
@@ -129,6 +135,64 @@ def _display_records(frame: pd.DataFrame) -> list[dict[str, object]]:
         lambda value: _CHECKED if bool(value) else _UNCHECKED
     )
     return display.to_dict("records")
+
+
+def _historical_pl_figure(frame: pd.DataFrame) -> go.Figure:
+    """Plot one trace per governed Portfolio/ConcertoField history series."""
+    figure = go.Figure()
+    if frame.empty:
+        figure.add_annotation(
+            text="No historical P&L rows match the selected filters.",
+            x=0.5,
+            y=0.5,
+            xref="paper",
+            yref="paper",
+            showarrow=False,
+        )
+    else:
+        for (portfolio, concerto_field), rows in frame.groupby(
+            [PORTFOLIO, CONCERTO_FIELD],
+            sort=True,
+        ):
+            ordered = rows.sort_values(MARKET_DATE, kind="stable")
+            figure.add_trace(
+                go.Scatter(
+                    x=ordered[MARKET_DATE],
+                    y=ordered[PL],
+                    mode="lines+markers",
+                    name=f"{portfolio} · {concerto_field}",
+                    customdata=ordered[[PORTFOLIO, CONCERTO_FIELD]].to_numpy(),
+                    hovertemplate=(
+                        "Market Date %{x}<br>Portfolio %{customdata[0]}<br>"
+                        "ConcertoField %{customdata[1]}<br>P&L %{y:,.2f}<extra></extra>"
+                    ),
+                )
+            )
+    figure.update_layout(
+        title="Historical P&L by Portfolio and ConcertoField",
+        xaxis_title="Market Date",
+        yaxis_title="P&L",
+        hovermode="x unified",
+        legend_title="Portfolio · ConcertoField",
+        margin={"l": 70, "r": 30, "t": 60, "b": 70},
+        template="plotly_white",
+    )
+    figure.update_xaxes(type="date", automargin=True)
+    figure.update_yaxes(automargin=True, tickformat=",.2f", zeroline=True)
+    return figure
+
+
+def _history_filter_values(value: object) -> list[str]:
+    if isinstance(value, (list, tuple, set)):
+        return [str(item) for item in value if str(item).strip()]
+    if value in (None, ""):
+        return []
+    return [str(value)]
+
+
+def _history_options(frame: pd.DataFrame, column: str) -> list[dict[str, str]]:
+    values = sorted(frame[column].astype(str).unique().tolist())
+    return [{"label": value, "value": value} for value in values]
 
 
 def _domain_frame(records: list[dict[str, object]] | None) -> pd.DataFrame:
@@ -571,12 +635,11 @@ def register_pl_send_callbacks(
     refresh_manager: RefreshManagerProtocol,
     config: PLSendConfig,
 ) -> None:
-    """Register the four PL-send sections against the committed manager snapshot."""
+    """Register independently lazy P&L sections and governed send actions."""
 
     @app.callback(
         Output("pl-send-preview-grid", "data"),
         Output("pl-send-preview-status", "children"),
-        Input("pl-workflow-summary", "n_clicks"),
         Input("pl-preview-summary", "n_clicks"),
         Input("data-revision-store", "data"),
         Input("pl-include-adjustments", "value"),
@@ -584,14 +647,13 @@ def register_pl_send_callbacks(
         prevent_initial_call=True,
     )
     def refresh_pl_send(
-        workflow_clicks,
         summary_clicks,
         _revision,
         include_values,
         _adjustment_revision,
     ):
-        if not int(workflow_clicks or 0) % 2 or not int(summary_clicks or 0) % 2:
-            return [], "Open Preview PL to load its current rows."
+        if not int(summary_clicks or 0) % 2:
+            return [], "Open P&L Preview to load its current rows."
         snapshot = refresh_manager.pl_snapshot
         include_adjustments = "include" in (include_values or [])
         effective, _mapping, _governance_frame = _effective_rows(
@@ -617,7 +679,6 @@ def register_pl_send_callbacks(
             Output(store_id, "data"),
             Output(filter_id, "options"),
             Output(filter_id, "value"),
-            Input("pl-workflow-summary", "n_clicks"),
             Input(summary_id, "n_clicks"),
             Input("data-revision-store", "data"),
             Input(toggle_id, "value"),
@@ -626,14 +687,13 @@ def register_pl_send_callbacks(
             prevent_initial_call=True,
         )
         def refresh_effective_store(
-            workflow_clicks,
             summary_clicks,
             _revision,
             include_values,
             section_revision,
             selected_scope,
         ):
-            if not int(workflow_clicks or 0) % 2 or not int(summary_clicks or 0) % 2:
+            if not int(summary_clicks or 0) % 2:
                 return {}, no_update, no_update
             snapshot = refresh_manager.pl_snapshot
             effective, _mapping, _governance_frame = _effective_rows(
@@ -674,6 +734,68 @@ def register_pl_send_callbacks(
         filter_id="pl-send-portfolio-filter",
         scope_column=PORTFOLIO,
     )
+
+    @app.callback(
+        Output("pl-history-portfolio-filter", "options"),
+        Output("pl-history-concerto-filter", "options"),
+        Output("pl-history-chart", "figure"),
+        Output("pl-history-grid", "data"),
+        Output("pl-history-status", "children"),
+        Input("pl-history-summary", "n_clicks"),
+        Input("pl-history-portfolio-filter", "value"),
+        Input("pl-history-concerto-filter", "value"),
+        prevent_initial_call=True,
+    )
+    def render_historical_pl(summary_clicks, selected_portfolios, selected_fields):
+        if not int(summary_clicks or 0) % 2:
+            return (
+                [],
+                [],
+                _historical_pl_figure(pd.DataFrame(columns=HISTORICAL_PL_COLUMNS)),
+                [],
+                "Open Histo Data to load its validated rows.",
+            )
+        if config.history_source is None:
+            return (
+                [],
+                [],
+                _historical_pl_figure(pd.DataFrame(columns=HISTORICAL_PL_COLUMNS)),
+                [],
+                "No historical P&L source is configured.",
+            )
+        try:
+            history = load_historical_pl(config.history_source)
+        except (PLSendValidationError, TypeError) as exc:
+            return (
+                [],
+                [],
+                _historical_pl_figure(pd.DataFrame(columns=HISTORICAL_PL_COLUMNS)),
+                [],
+                f"Historical P&L could not be loaded: {exc}",
+            )
+
+        portfolio_options = _history_options(history, PORTFOLIO)
+        concerto_options = _history_options(history, CONCERTO_FIELD)
+        scoped = history
+        portfolios = _history_filter_values(selected_portfolios)
+        concerto_fields = _history_filter_values(selected_fields)
+        if portfolios:
+            scoped = scoped.loc[scoped[PORTFOLIO].isin(portfolios)]
+        if concerto_fields:
+            scoped = scoped.loc[scoped[CONCERTO_FIELD].isin(concerto_fields)]
+        scoped = scoped.reset_index(drop=True)
+        series_count = scoped[[PORTFOLIO, CONCERTO_FIELD]].drop_duplicates().shape[0]
+        status = (
+            f"Showing {len(scoped):,} of {len(history):,} validated daily rows across "
+            f"{series_count:,} Portfolio + ConcertoField series."
+        )
+        return (
+            portfolio_options,
+            concerto_options,
+            _historical_pl_figure(scoped),
+            scoped.to_dict("records"),
+            status,
+        )
 
     def register_editor(
         *,

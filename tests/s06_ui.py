@@ -11,7 +11,6 @@ from dash import dash_table, dcc, html
 
 from ui.s04_components import (
     QUICK_SEARCH_HIERARCHY_DEPTH,
-    build_raw_data_table,
     build_quick_market_result,
     build_quick_market_search,
     build_quick_search,
@@ -554,7 +553,7 @@ def test_small_detail_table_only_shows_meaningful_tenor_axes() -> None:
     ]
 
 
-def test_raw_and_unmapped_inspectors_expose_tenor_ranks() -> None:
+def test_unmapped_inspector_exposes_tenor_ranks() -> None:
     row = {
         "Portfolio": "BOOK-A",
         "Risk Type": "IR",
@@ -575,13 +574,13 @@ def test_raw_and_unmapped_inspectors_expose_tenor_ranks() -> None:
         "Tenor Option Order",
     }
 
-    assert expected <= set(_table_headers(build_unmapped_books_table(frame)))
-    raw_table = next(
+    table = next(
         item
-        for item in _walk(build_raw_data_table(frame))
+        for item in _walk(build_unmapped_books_table(frame))
         if isinstance(item, dash_table.DataTable)
     )
-    assert expected <= {column["id"] for column in raw_table.columns}
+    assert expected <= {column["id"] for column in table.columns}
+    assert table.page_size == 25
 
 
 def test_semantic_total_rows_are_bold_divided_across_the_full_row() -> None:

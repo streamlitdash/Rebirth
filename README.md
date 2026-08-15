@@ -586,9 +586,11 @@ The top strip is the first application section:
 - **AutoPL** controls the 15-minute automatic P&L refresh.
 - The moon/sun button is right-aligned and changes only theme state.
 
-The status sentence reports last success, AutoPL state, the number of unforced
-Age-0/T-1 sources, and the number of forced sources. During a call, the hero
-shows the actual function, Source Type, Underlying, and loop position.
+The status sentence reports last success, the number of unforced Age-0/T-1
+sources, and the number of forced sources. The AutoPL switch itself shows its
+browser-local state. During a call, the hero shows the actual function, Source
+Type, Underlying, and loop position while the last committed snapshot remains
+usable.
 
 ## Visual rules
 
@@ -705,15 +707,22 @@ interaction rather than the read-only table selection engine.
 
 ## P&L workflow and adjustments
 
-One parent **PL** disclosure contains four ordered sections:
+The P&L workflow is a set of independent top-level disclosures rather than one
+nested parent:
 
-1. **Preview PL** — aggregated base rows with optional adjustment overlay.
-2. **Send SOG PL** — filter by SignoffGroup, edit governed rows, save
+1. **P&L Preview** — aggregated base rows with optional adjustment overlay.
+2. **SOG P&L** — filter by SignoffGroup, edit governed rows, save
    adjustments, then call `send_sog_pl`.
-3. **Send Portfolio PL** — filter one Portfolio, edit governed rows, save
+3. **Portfolio P&L** — filter one Portfolio, edit governed rows, save
    adjustments, then call `send_portfolio_pl`.
 4. **Write PL to S3** — build the full raw output plus separately flagged
    adjustment rows, call a configured `write_pl` function, and download CSV.
+5. **Histo Data** — lazily validate and chart daily P&L from a CSV at exact
+   Market Date + Portfolio + ConcertoField grain.
+
+The user-facing Raw Data disclosure has been removed. Aggregate P&L remains an
+independent top-level view, and Unmapped Books is the final disclosure on the
+page.
 
 The checked-in SOG and Portfolio sender boundaries reject delivery with an
 explicit fixture-mode error, so the demo cannot falsely claim that rows reached
@@ -733,13 +742,12 @@ def write_pl(rows: pd.DataFrame, market_date: str, revision: int) -> None:
     my_s3_writer.put_csv(rows, date=market_date, revision=revision)
 ```
 
-The workflow is genuinely lazy. The outer **PL** disclosure and the Preview,
-SOG, and Portfolio child disclosures each have a native odd/even click gate.
-Effective rows, dropdown scopes, and editable stores are created only when both
-the outer disclosure and that child are open. Closing the parent clears/ignores
-those hidden payloads, so a risk revision does not serialize three extra copies
-of P&L. If `build_app` receives no `PLSendConfig`, the factory omits the entire
-workflow and its stores/callbacks; it does not render inert controls.
+The workflow is genuinely lazy. Preview, SOG, Portfolio, and Histo Data each
+have their own native odd/even click gate. Effective rows, dropdown scopes,
+editable stores, and historical CSV rows are created only when their disclosure
+is open, so a risk revision does not serialize hidden copies of P&L. If
+`build_app` receives no `PLSendConfig`, the factory omits the workflow and its
+stores/callbacks; it does not render inert controls.
 
 Each editable row is governed:
 
@@ -1095,7 +1103,8 @@ the committed prior snapshot remains readable while the next one is built.
 | `DASH_JUPYTERHUB_MODE` | `proxy` | `proxy` or `service`. |
 | `CUBE_STARTUP_TIMEOUT_SECONDS` | `2400` | Non-destructive startup watchdog. |
 | `CUBE_MARKET_TIMEZONE` | `Europe/London` | IANA trading timezone used to derive the manager's system date and passed to the fake status boundary. |
-| `RISK_PRODUCT_DELAY_SECONDS` | `0` | Optional operator-visible hold; keep zero for speed. |
+| `RISK_PRODUCT_DELAY_SECONDS` | `1` | Operator-visible hold after each post-startup Risk/dRisk product; initial startup remains undelayed. |
+| `PL_HISTORICAL_PATH` | `data/s10_historical_pl.csv` | CSV history keyed by Market Date, Portfolio, and ConcertoField. |
 | `CONCERTO_MAPPING_PATH` | `data/s08_concerto.csv` | Governed P&L-send mapping. |
 | `PL_ADJUSTMENT_PATH` | `adjustments` | Adjustment root. |
 | `PL_LOCAL_FALLBACK_PATH` | `saved_pl` | Local Write P&L fallback. |
@@ -1237,13 +1246,12 @@ docstrings and type hints are the source of truth.
 - `build_intraday_cashflows_page` renders only already-validated cashflow data.
 - `StartupCoordinator` owns the background revision-1 worker;
   `register_callbacks` owns Risk/search/date/cashflow interaction.
-- `build_pl_send_sections` builds the four P&L disclosures;
+- `build_pl_send_sections` builds the five P&L disclosures;
   `PLSendConfig` supplies their external boundaries, and
   `register_pl_send_callbacks` owns lazy loading, editing, save, send, and write
   actions.
-- `build_app` creates Flask/Dash routes, headers, health/progress, both pages, and
-  all callback registration. It includes P&L only when a `PLSendConfig` is
-  present.
+- `build_app` creates Flask/Dash routes, headers, health/progress, and one active
+  page body at a time. It includes P&L only when a `PLSendConfig` is present.
 
 ## Deliberate rules versus replaceable examples
 

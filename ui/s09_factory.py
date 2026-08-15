@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 import pandas as pd
-from dash import Dash, dcc, html
+from dash import Dash, Input, Output, State, dcc, html, no_update
 from flask import jsonify, request
 
 from .s03_aggregate import prepare_risk_data
@@ -117,9 +117,9 @@ def build_app(
         risk_data = prepare_risk_data(data)
 
     dash_options = dict(dash_kwargs or {})
-    if refresh_manager is not None:
-        # The complete dashboard is inserted only after revision 1 commits.
-        dash_options["suppress_callback_exceptions"] = True
+    # Only the active URL's page body is mounted. Page-specific callback
+    # targets therefore enter and leave the layout as navigation occurs.
+    dash_options["suppress_callback_exceptions"] = True
     app = Dash(
         __name__,
         assets_folder=str(Path(__file__).resolve().parent.parent / "assets"),
@@ -237,6 +237,15 @@ def build_app(
     stage_delays = refresh_manager.stage_delays if refresh_manager is not None else None
     cube_href = request_prefix
     static_data_href = f"{request_prefix.rstrip('/')}/static-data"
+    cube_path = cube_href.rstrip("/") or "/"
+    static_data_path = static_data_href.rstrip("/") or "/"
+
+    def normalize_browser_path(pathname: object) -> str:
+        """Return one exact browser pathname without changing its prefix."""
+        value = str(pathname or cube_path).strip()
+        if not value.startswith("/"):
+            value = f"/{value}"
+        return value.rstrip("/") or "/"
 
     def current_cube_page():
         """Serve the shell cold and the complete dashboard after revision 1."""
@@ -273,11 +282,49 @@ def build_app(
             stage_delays=stage_delays,
         )
 
+    def cube_page_body(*, first_paint: bool = False) -> html.Main:
+        """Mount Risk under the startup callback's stable inner owner.
+
+        Every new browser gets the lightweight opening shell on its first
+        paint.  A warm manager replaces it from the committed snapshot on the
+        first interval tick; normal in-app navigation mounts the warm page
+        directly.
+        """
+        page = (
+            build_initial_load_layout(stage_delays=stage_delays)
+            if first_paint and refresh_manager is not None
+            else current_cube_page()
+        )
+        return html.Main(page, id="cube-page-container")
+
+    def not_found_page(pathname: str) -> html.Main:
+        """Return an explicit page for paths outside the configured catalogue."""
+        return html.Main(
+            html.Section(
+                [
+                    html.H1("Page not found"),
+                    html.P(
+                        f"Cube has no page at {pathname}.",
+                        className="static-data-page-note",
+                    ),
+                    dcc.Link(
+                        "Return to Risk",
+                        href=cube_href,
+                        className="app-nav-link cube-nav-link",
+                    ),
+                ],
+                id="not-found-page",
+                className="static-data-page",
+                role="alert",
+            ),
+            id="not-found-page-container",
+        )
+
     def serve_layout():
         """Build a request-fresh router so reconnecting browsers recover cleanly."""
         return html.Div(
             [
-                dcc.Location(id="app-location", refresh=False),
+                dcc.Location(id="app-location", refresh="callback-nav"),
                 html.Div(
                     id="backend-endpoints",
                     hidden=True,
@@ -303,7 +350,7 @@ def build_app(
                                     "Risk",
                                     href=cube_href,
                                     id="cube-nav-link",
-                                    className="app-nav-link cube-nav-link",
+                                    className="app-nav-link cube-nav-link is-active",
                                 ),
                                 dcc.Link(
                                     "Static Data",
@@ -318,11 +365,10 @@ def build_app(
                     ],
                     className="cube-app-header",
                 ),
-                html.Main(current_cube_page(), id="cube-page-container"),
-                html.Main(
-                    build_static_data_page(),
-                    id="static-data-page-container",
-                    style={"display": "none"},
+                dcc.Store(id="active-page-path", data=cube_path),
+                html.Div(
+                    cube_page_body(first_paint=True),
+                    id="app-page-container",
                 ),
             ],
             className="app-router-shell",
@@ -333,6 +379,42 @@ def build_app(
         if refresh_manager is not None and initial_snapshot is None
         else serve_layout()
     )
+
+    @app.callback(
+        Output("app-page-container", "children"),
+        Output("active-page-path", "data"),
+        Output("cube-nav-link", "className"),
+        Output("static-data-nav-link", "className"),
+        Input("app-location", "pathname"),
+        State("active-page-path", "data"),
+    )
+    def route_page(pathname, active_path):
+        """Mount exactly one page body for one exact, prefix-safe URL."""
+        selected_path = normalize_browser_path(pathname)
+        current_path = normalize_browser_path(active_path)
+        if selected_path == cube_path:
+            cube_class = "app-nav-link cube-nav-link is-active"
+            static_class = "app-nav-link cube-nav-link"
+        elif selected_path == static_data_path:
+            cube_class = "app-nav-link cube-nav-link"
+            static_class = "app-nav-link cube-nav-link is-active"
+        else:
+            cube_class = "app-nav-link cube-nav-link"
+            static_class = "app-nav-link cube-nav-link"
+
+        # The request-fresh layout already contains the root Risk page. Avoid
+        # replacing that tree on the initial Location callback: doing so would
+        # restart its intervals and remount the entire callback graph.
+        if selected_path == current_path:
+            return no_update, no_update, cube_class, static_class
+        if selected_path == cube_path:
+            page = cube_page_body()
+        elif selected_path == static_data_path:
+            page = build_static_data_page()
+        else:
+            page = not_found_page(selected_path)
+        return page, selected_path, cube_class, static_class
+
     register_callbacks(
         app,
         refresh_manager,

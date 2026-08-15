@@ -724,6 +724,9 @@
     };
 
     let uiHookTimer = null;
+    // Assigned by the refresh controller below. Keeping DOM discovery in the
+    // existing observer avoids adding another document-wide MutationObserver.
+    let syncRefreshLifecycleNodes = () => {};
     const syncUiHooks = () => {
       if (uiHookTimer) clearTimeout(uiHookTimer);
       uiHookTimer = setTimeout(() => {
@@ -745,22 +748,33 @@
     const uiHookObserver = new MutationObserver((mutations) => {
       let themeButtonAdded = false;
       let cubeAdded = false;
+      let refreshLifecycleChanged = false;
       const plotlyGraphsAdded = new Set();
       const inspectHook = (element) => {
         if (element.matches?.("#theme-toggle")) themeButtonAdded = true;
         if (element.matches?.(".cube-motion")) cubeAdded = true;
         if (element.matches?.(".js-plotly-plot")) plotlyGraphsAdded.add(element);
+        if (
+          element.matches?.("#refresh-status, #bootstrap-refresh-status, #refresh-progress")
+          || element.querySelector?.("#refresh-status, #bootstrap-refresh-status, #refresh-progress")
+        ) refreshLifecycleChanged = true;
       };
 
-      mutations.forEach((mutation) => Array.from(mutation.addedNodes).forEach((node) => {
-        if (node.nodeType !== 1) return;
-        inspectHook(node);
-        node.querySelectorAll?.("#theme-toggle, .cube-motion, .js-plotly-plot")
-          .forEach(inspectHook);
-      }));
+      mutations.forEach((mutation) => {
+        Array.from(mutation.addedNodes).forEach((node) => {
+          if (node.nodeType !== 1) return;
+          inspectHook(node);
+          node.querySelectorAll?.("#theme-toggle, .cube-motion, .js-plotly-plot")
+            .forEach(inspectHook);
+        });
+        Array.from(mutation.removedNodes).forEach((node) => {
+          if (node.nodeType === 1) inspectHook(node);
+        });
+      });
 
       if (themeButtonAdded) syncUiHooks();
       if (cubeAdded) scheduleCubeRegistration();
+      if (refreshLifecycleChanged) syncRefreshLifecycleNodes();
       if (plotlyGraphsAdded.size)
         schedulePlotlyTheme(activeTheme, plotlyGraphsAdded, 40);
     });
@@ -843,6 +857,9 @@
     let backendStartRequest = null;
     let backendStartNextAttempt = 0;
     let backendStartFailures = 0;
+    let refreshStatusObserver = null;
+    let observedRefreshStatusNode = null;
+    let lastPublishedDataRevision = 0;
     const BACKEND_PROGRESS_POLL_MS = 1000;
     const BACKEND_PROGRESS_REQUEST_TIMEOUT_MS = 30000;
     const BACKEND_PROGRESS_FAILURE_LIMIT = 2;
@@ -946,6 +963,66 @@
       progress.server_boot_id,
     ]) : "";
 
+    const normalizedRevision = (value) => {
+      if (
+        (typeof value !== "number" && typeof value !== "string")
+        || (typeof value === "string" && !value.trim())
+      ) return null;
+      const revision = Number(value);
+      return Number.isSafeInteger(revision) && revision >= 0 ? revision : null;
+    };
+
+    const renderedDataRevisionFloor = () => {
+      let floor = lastPublishedDataRevision;
+      const store = document.getElementById("data-revision-store");
+      [
+        store?.data,
+        store?.dataset?.revision,
+        store?.getAttribute?.("data-revision"),
+      ].forEach((value) => {
+        const revision = normalizedRevision(value);
+        if (revision !== null) floor = Math.max(floor, revision);
+      });
+      document.querySelectorAll("[data-risk-view-token]").forEach((node) => {
+        try {
+          const token = JSON.parse(node.dataset.riskViewToken || "{}");
+          const revision = normalizedRevision(token.data_revision);
+          if (revision !== null) floor = Math.max(floor, revision);
+        } catch (_error) {
+          // A malformed/stale table token must not block a newer valid revision.
+        }
+      });
+      document.querySelectorAll("[data-snapshot-revision]").forEach((node) => {
+        const revision = normalizedRevision(node.dataset.snapshotRevision);
+        if (revision !== null) floor = Math.max(floor, revision);
+      });
+      const baseline = normalizedRevision(refreshProgressState?.baselineRevision);
+      if (baseline !== null) floor = Math.max(floor, baseline);
+      lastPublishedDataRevision = Math.max(lastPublishedDataRevision, floor);
+      return floor;
+    };
+
+    const syncCommittedDataRevision = (progress) => {
+      if (!progress || progress.running) return false;
+      const revision = normalizedRevision(progress.revision);
+      const store = document.getElementById("data-revision-store");
+      const setProps = window.dash_clientside?.set_props;
+      if (
+        revision === null
+        || revision <= renderedDataRevisionFloor()
+        || !store
+        || typeof setProps !== "function"
+      ) return false;
+      try {
+        setProps("data-revision-store", { data: revision });
+        lastPublishedDataRevision = revision;
+        return true;
+      } catch (_error) {
+        // A transient Dash mount race must not poison backend progress polling.
+        return false;
+      }
+    };
+
     const requestBackendProgress = async (force = false) => {
       const now = Date.now();
       if (!force && now < backendProgressNextPoll) {
@@ -1010,6 +1087,7 @@
           backendProgressLastSuccessAt = Date.now();
           backendProgressNextPoll = Date.now() + BACKEND_PROGRESS_POLL_MS;
           lastBackendProgress = progress;
+          syncCommittedDataRevision(progress);
           return progress;
         } catch (error) {
           backendProgressFailures += 1;
@@ -1279,7 +1357,15 @@
       const riskProductDelay = Number(panel.dataset.riskProductDelay || 0);
       const title = document.getElementById("refresh-progress-title");
       const elapsed = document.getElementById("refresh-progress-elapsed");
-      if (title) title.textContent = bootstrap ? "Loading Cube data" : reloadAll ? "Reloading all risk" : portfolioOnly ? "Refreshing portfolios" : automatic ? "Automatic refresh" : "Refreshing P&L";
+      const operationTitle = bootstrap
+        ? "Loading Cube data"
+        : reloadAll ? "Reloading all risk"
+        : portfolioOnly ? "Refreshing portfolios"
+        : automatic ? "Automatic refresh"
+        : "Refreshing P&L";
+      if (title) title.textContent = bootstrap
+        ? operationTitle
+        : `${operationTitle} · Current snapshot remains usable`;
       panel.hidden = false;
       panel.classList.remove("is-complete", "is-error");
       panel.classList.add("is-running");
@@ -1333,8 +1419,13 @@
       const startedAt = Date.now();
       refreshProgressState = {
         mode,
+        panel,
         startedAt,
         sawRunning: false,
+        sawDashRunning: false,
+        dashCallbackComplete: false,
+        dashStatusNode: null,
+        followingExistingWriter: false,
         sawBackendRunning: false,
         sawBackendAttempt: false,
         baselineProgressKey: null,
@@ -1351,6 +1442,7 @@
         initialErrorText: (refreshErrorNode()?.textContent || "").trim(),
         initialStatusText: (refreshStatusNode()?.textContent || "").trim(),
       };
+      syncRefreshLifecycleNodes();
       const updateElapsed = () => {
         if (elapsed && refreshProgressState) {
           elapsed.textContent = `${Math.floor((Date.now() - startedAt) / 1000)}s elapsed`;
@@ -1458,15 +1550,120 @@
     if (!(hasNewError && state.mode === "bootstrap")) {
       setTimeout(() => {
         if (!refreshProgressState && panel) panel.hidden = true;
-      }, hasNewError ? 5000 : 1600);
+      }, hasNewError ? 5000 : 300);
     }
   };
+
+  const abandonRefreshProgress = (state) => {
+    if (!state || refreshProgressState !== state) return;
+    clearRefreshProgressTimers();
+    refreshProgressState = null;
+    setGlobalLoaderVisible(false);
+  };
+
+  const handleRefreshStatusTransition = (node) => {
+    const state = refreshProgressState;
+    if (!state || !node) return;
+    const running = node.classList.contains("is-refreshing");
+    if (running) {
+      state.sawDashRunning = true;
+      state.sawRunning = true;
+      state.dashCallbackComplete = false;
+      state.dashStatusNode = node;
+      return;
+    }
+    if (
+      state.mode === "bootstrap"
+      || !state.sawDashRunning
+      || state.dashStatusNode !== node
+      || state.dashCallbackComplete
+    ) return;
+
+    // Dash's `running` output is applied before the request and removed only
+    // after its response. Observing both class states closes the sub-second
+    // race where the one-second poll never sees a fast refresh in flight.
+    state.dashCallbackComplete = true;
+    const statusText = (node.textContent || "").trim();
+    state.followingExistingWriter = /already running; following its live progress/i
+      .test(statusText);
+    if (state.followingExistingWriter) {
+      // This callback has ended, but another browser/task still owns the
+      // financial writer. Keep following real backend progress without an
+      // invented timeout or an unconfirmed success state.
+      void requestBackendProgress(true).then((progress) => {
+        if (!refreshProgressState || refreshProgressState !== state) return;
+        if (progress?.running) {
+          state.sawBackendRunning = true;
+          state.sawBackendAttempt = true;
+          renderBackendProgress(progress);
+        } else if (progress) {
+          finishRefreshProgress();
+        }
+      });
+      return;
+    }
+
+    syncCommittedDataRevision(lastBackendProgress);
+    finishRefreshProgress();
+  };
+
+  const syncRefreshStatusObserver = () => {
+    const node = refreshStatusNode();
+    if (node === observedRefreshStatusNode) {
+      handleRefreshStatusTransition(node);
+      return;
+    }
+    refreshStatusObserver?.disconnect();
+    observedRefreshStatusNode = node;
+    refreshStatusObserver = null;
+    if (!node) return;
+    refreshStatusObserver = new MutationObserver((mutations) => {
+      if (mutations.some((mutation) => mutation.attributeName === "class")) {
+        const state = refreshProgressState;
+        const transitionedFromRunning = mutations.some((mutation) => (
+          /(^|\s)is-refreshing(?:\s|$)/.test(mutation.oldValue || "")
+        ));
+        if (state && transitionedFromRunning) {
+          state.sawDashRunning = true;
+          state.sawRunning = true;
+          state.dashStatusNode = node;
+        }
+        handleRefreshStatusTransition(node);
+      }
+    });
+    refreshStatusObserver.observe(node, {
+      attributes: true,
+      attributeFilter: ["class"],
+      attributeOldValue: true,
+    });
+    // Automatic refreshes can already be running when the poll first creates
+    // their progress state; seed that confirmed DOM state immediately.
+    handleRefreshStatusTransition(node);
+  };
+
+  syncRefreshLifecycleNodes = () => {
+    syncRefreshStatusObserver();
+    const state = refreshProgressState;
+    if (!state || state.panel?.isConnected) return;
+    const replacement = document.getElementById("refresh-progress");
+    if (state.mode === "bootstrap") {
+      // The cold shell is expected to be replaced by the validated layout.
+      // Preserve bootstrap recovery and follow the newly mounted panel.
+      if (replacement) state.panel = replacement;
+      return;
+    }
+    // A normal page unmount must not leave clocks, loaders, or stale state
+    // alive against a detached hero.
+    abandonRefreshProgress(state);
+  };
+  syncRefreshLifecycleNodes();
 
   let refreshProgressTickRunning = false;
   const refreshProgressPoll = setInterval(async () => {
     if (refreshProgressTickRunning) return;
     refreshProgressTickRunning = true;
     try {
+      syncRefreshLifecycleNodes();
       const running = refreshStatusNode()?.classList.contains("is-refreshing") || false;
       // Checking Dash's global loading tree is only useful during a
       // refresh attempt. In particular, an ordinary Risk Explorer
@@ -1605,7 +1802,12 @@
             }
           }
         }
-        if (!running && !dashLoading && (refreshProgressState.sawRunning || statusChanged)) {
+        if (
+          !refreshProgressState.followingExistingWriter
+          && !running
+          && !dashLoading
+          && (refreshProgressState.sawRunning || statusChanged)
+        ) {
           finishRefreshProgress();
         }
       }
@@ -2004,6 +2206,12 @@
     if (plotlyThemeTimer) clearTimeout(plotlyThemeTimer);
     if (uiHookTimer) clearTimeout(uiHookTimer);
     if (cubeHookTimer) clearTimeout(cubeHookTimer);
+    clearRefreshProgressTimers();
+    refreshProgressState = null;
+    setGlobalLoaderVisible(false);
+    refreshStatusObserver?.disconnect();
+    refreshStatusObserver = null;
+    observedRefreshStatusNode = null;
     clearInterval(refreshProgressPoll);
     riskGridObservers.forEach((observer) => observer.disconnect());
     riskGridObservers.clear();

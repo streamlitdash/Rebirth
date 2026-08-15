@@ -19,6 +19,7 @@ _STATIC_FILE_CATALOG = [
     {"label": "Top Thresholds", "value": "s07_thresholds.csv"},
     {"label": "Concerto Mapping", "value": "s08_concerto.csv"},
     {"label": "Reported Underlying Mapping", "value": "s09_reported.csv"},
+    {"label": "Historical P&L", "value": "s10_historical_pl.csv"},
 ]
 STATIC_FILE_OPTIONS = [
     option for option in _STATIC_FILE_CATALOG if (DATA_DIR / option["value"]).is_file()
@@ -165,7 +166,6 @@ def build_static_data_page() -> html.Div:
                 className="static-data-header",
             ),
             html.Div(
-                _build_static_data_table(STATIC_FILE_OPTIONS[0]["value"]),
                 id="static-data-table-container",
                 className="static-data-container",
             ),

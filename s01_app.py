@@ -46,7 +46,7 @@ def create_app(settings: RuntimeSettings | None = None):
     settings = settings or RuntimeSettings.from_env()
     manager = build_production_refresh_manager(
         stage_delays={
-            "risk_product": float(os.getenv("RISK_PRODUCT_DELAY_SECONDS", "0")),
+            "risk_product": float(os.getenv("RISK_PRODUCT_DELAY_SECONDS", "1")),
         }
     )
 
@@ -66,6 +66,11 @@ def create_app(settings: RuntimeSettings | None = None):
         Path("saved_pl"),
         root=project_root,
     )
+    historical_pl_path = resolve_data_path(
+        os.getenv("PL_HISTORICAL_PATH"),
+        Path("data/s10_historical_pl.csv"),
+        root=project_root,
+    )
 
     pl_send_config = PLSendConfig(
         mapping_source=mapping_path,
@@ -73,6 +78,7 @@ def create_app(settings: RuntimeSettings | None = None):
         saved_directory=saved_pl_path,
         send_sog_pl=send_sog_pl,
         send_portfolio_pl=send_portfolio_pl,
+        history_source=historical_pl_path,
     )
     return build_app(
         refresh_manager=manager,

@@ -8,12 +8,14 @@ import pytest
 from core.s04_pl import (
     ADJUSTMENT,
     CONCERTO_FIELD,
+    HISTORICAL_PL_COLUMNS,
     PL_SEND_COLUMNS,
     PLSendValidationError,
     apply_adjustment_overlay,
     build_pl_send_base,
     build_saved_pl_frame,
     empty_pl_send_frame,
+    load_historical_pl,
 )
 from core.s05_storage import AdjustmentPersistenceError, LocalCsvAdjustmentRepository
 
@@ -69,6 +71,68 @@ def _adjustments(*rows: tuple[str, float]) -> pd.DataFrame:
         for portfolio, value in rows
     ]
     return pd.DataFrame(records, columns=list(PL_SEND_COLUMNS))
+
+
+def _historical_pl() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            ["2026-07-19", "BOOK_B", "irdeltaeffect", -4.5],
+            ["2026-07-18", "BOOK_A", "irdeltaeffect", "10.25"],
+            ["2026-07-19", "BOOK_A", "fxdeltaeffect", 3.0],
+        ],
+        columns=list(HISTORICAL_PL_COLUMNS),
+    )
+
+
+def test_historical_pl_normalizes_and_sorts_the_exact_daily_grain(tmp_path) -> None:
+    source = tmp_path / "historical.csv"
+    _historical_pl().to_csv(source, index=False)
+
+    history = load_historical_pl(source)
+
+    assert list(history.columns) == list(HISTORICAL_PL_COLUMNS)
+    assert history[["Market Date", "Portfolio", CONCERTO_FIELD]].values.tolist() == [
+        ["2026-07-18", "BOOK_A", "irdeltaeffect"],
+        ["2026-07-19", "BOOK_A", "fxdeltaeffect"],
+        ["2026-07-19", "BOOK_B", "irdeltaeffect"],
+    ]
+    assert history["PL"].dtype == float
+
+
+def test_historical_pl_rejects_any_schema_drift() -> None:
+    wrong_order = _historical_pl()[["Portfolio", "Market Date", CONCERTO_FIELD, "PL"]]
+
+    with pytest.raises(PLSendValidationError, match="exactly these columns in order"):
+        load_historical_pl(wrong_order)
+
+
+def test_historical_pl_rejects_duplicate_daily_book_and_concerto_keys() -> None:
+    duplicate = pd.concat([_historical_pl(), _historical_pl().iloc[[0]]])
+
+    with pytest.raises(PLSendValidationError, match="duplicate Market Date"):
+        load_historical_pl(duplicate)
+
+
+@pytest.mark.parametrize(
+    ("column", "value", "message"),
+    [
+        ("Market Date", "not-a-date", "Market Date"),
+        ("Portfolio", "", "nonblank text"),
+        (CONCERTO_FIELD, None, "nonblank text"),
+        ("PL", float("inf"), "finite numbers"),
+        ("PL", True, "finite numbers"),
+    ],
+)
+def test_historical_pl_rejects_invalid_identity_and_values(
+    column: str,
+    value: object,
+    message: str,
+) -> None:
+    history = _historical_pl()
+    history.loc[0, column] = value
+
+    with pytest.raises(PLSendValidationError, match=message):
+        load_historical_pl(history)
 
 
 def test_pl_base_aggregates_each_portfolio_concerto_field_once() -> None:

@@ -3732,21 +3732,9 @@ def build_unmapped_books_table(frame: pd.DataFrame) -> html.Div:
     columns = list(
         dict.fromkeys(value for value in requested_columns if value in display_frame)
     )
-    rows = []
-    for record in display_frame[columns].to_dict("records"):
-        cells = []
-        for column in columns:
-            value = record[column]
-            if column in {"Risk", "dRisk", "PL"}:
-                cells.append(
-                    html.Td(
-                        format_number(value),
-                        className=f"detail-number {number_sign_class(value)}",
-                    )
-                )
-            else:
-                cells.append(html.Td(str(value)))
-        rows.append(html.Tr(cells))
+    table_frame = display_frame[columns].copy()
+    table_frame = table_frame.astype(object).where(pd.notna(table_frame), None)
+    numeric_columns = {"Tenor Swap Order", "Tenor Option Order", "Risk", "dRisk", "PL"}
     return html.Div(
         [
             html.Div(
@@ -3755,135 +3743,68 @@ def build_unmapped_books_table(frame: pd.DataFrame) -> html.Div:
                 className="unmapped-note",
             ),
             html.Div(
-                html.Table(
-                    [
-                        html.Thead(html.Tr([html.Th(column) for column in columns])),
-                        html.Tbody(rows),
+                dash_table.DataTable(
+                    id="unmapped-books-table",
+                    columns=[
+                        {
+                            "name": column,
+                            "id": column,
+                            **(
+                                {"type": "numeric", "format": {"specifier": ",.0f"}}
+                                if column in numeric_columns
+                                else {}
+                            ),
+                        }
+                        for column in columns
                     ],
-                    className="detail-table",
+                    data=table_frame.to_dict("records"),
+                    editable=False,
+                    filter_action="native",
+                    sort_action="native",
+                    sort_mode="multi",
+                    page_action="native",
+                    page_size=25,
+                    fixed_rows={"headers": True},
+                    style_table={"overflowX": "auto", "maxHeight": "520px"},
+                    style_header={
+                        "backgroundColor": "#F7F8FA",
+                        "color": "#111111",
+                        "fontWeight": "850",
+                    },
+                    style_cell={
+                        "backgroundColor": "#FFFFFF",
+                        "color": "#111111",
+                        "border": "1px solid #E2E6EA",
+                        "fontFamily": (
+                            '"Segoe UI Variable Text", "Segoe UI", Arial, sans-serif'
+                        ),
+                        "fontSize": "12px",
+                        "padding": "7px 9px",
+                        "textAlign": "left",
+                        "minWidth": "110px",
+                        "whiteSpace": "nowrap",
+                    },
+                    style_cell_conditional=[
+                        {
+                            "if": {"column_id": list(numeric_columns)},
+                            "fontVariantNumeric": "tabular-nums",
+                            "textAlign": "right",
+                        }
+                    ],
+                    style_data_conditional=[
+                        {
+                            "if": {
+                                "filter_query": f"{{{column}}} < 0",
+                                "column_id": column,
+                            },
+                            "color": "#B42318",
+                        }
+                        for column in ("Risk", "dRisk", "PL")
+                    ],
                 ),
                 className="unmapped-table-wrap",
             ),
         ]
-    )
-
-
-def build_raw_data_table(frame: pd.DataFrame) -> html.Div:
-    canonical_columns = [
-        "Source Type",
-        "Risk Date",
-        "Market Status",
-        "Risk Type",
-        "Risk Greek",
-        "Split",
-        "Display Bucket",
-        "Group",
-        "Underlying",
-        "Promotion Reason",
-        "Promotion Score",
-        "Risk Threshold",
-        "dRisk Threshold",
-        "PL Threshold",
-        "Tenor Swap",
-        "Tenor Swap Order",
-        "Tenor Option",
-        "Tenor Option Order",
-        "Portfolio",
-        *PORTFOLIO_METADATA_COLUMNS,
-        "Risk",
-        "dRisk",
-        "PL",
-        "Move",
-        "Current",
-        "Open",
-    ]
-    total_rows = len(frame)
-    raw = frame.head(5_000).copy()
-    columns = [column for column in canonical_columns if column in raw]
-    for column in ["Risk Date"]:
-        if column in raw:
-            raw[column] = pd.to_datetime(raw[column], errors="coerce").dt.strftime(
-                "%Y-%m-%d"
-            )
-    raw = raw[columns].replace({np.nan: None})
-    numeric_columns = [
-        column
-        for column in [
-            "Promotion Score",
-            "Risk Threshold",
-            "dRisk Threshold",
-            "PL Threshold",
-            "Tenor Swap Order",
-            "Tenor Option Order",
-            "Risk",
-            "dRisk",
-            "PL",
-            "Move",
-            "Current",
-            "Open",
-        ]
-        if column in raw
-    ]
-    return html.Div(
-        [
-            html.Div(
-                f"{total_rows:,} unaggregated rows. "
-                + (
-                    "For browser safety, the first 5,000 are loaded; use a server-side export for the complete dataset. "
-                    if total_rows > 5_000
-                    else ""
-                )
-                + "Use the column filters or sort controls to inspect this page.",
-                className="unmapped-note",
-            ),
-            dash_table.DataTable(
-                id="raw-data-table",
-                data=raw.to_dict("records"),
-                columns=[
-                    {
-                        "name": column,
-                        "id": column,
-                        "type": "numeric" if column in numeric_columns else "text",
-                    }
-                    for column in columns
-                ],
-                filter_action="native",
-                sort_action="native",
-                sort_mode="multi",
-                page_action="native",
-                page_size=30,
-                fixed_rows={"headers": True},
-                style_table={"overflowX": "auto", "maxHeight": "680px"},
-                style_header={
-                    "backgroundColor": "#eaf1fb",
-                    "color": "#172033",
-                    "fontSize": "12px",
-                    "fontWeight": "800",
-                    "border": "1px solid #cbd5e1",
-                },
-                style_cell={
-                    "fontFamily": "Inter, Segoe UI, Arial, sans-serif",
-                    "fontSize": "12px",
-                    "padding": "7px 9px",
-                    "minWidth": "105px",
-                    "maxWidth": "240px",
-                    "whiteSpace": "normal",
-                    "color": "#111827",
-                },
-                style_data_conditional=[
-                    {
-                        "if": {
-                            "filter_query": f"{{{column}}} < 0",
-                            "column_id": column,
-                        },
-                        "color": "#b91c1c",
-                        "fontWeight": "700",
-                    }
-                    for column in numeric_columns
-                ],
-            ),
-        ],
-        className="raw-data-panel",
     )
 
 
@@ -3960,6 +3881,66 @@ def _build_theme_toggle() -> html.Button:
     )
 
 
+def build_operating_date_content(
+    snapshot: RefreshSnapshotProtocol | None,
+) -> list[html.Div]:
+    """Return the prominent committed Market/Risk date cards."""
+    if snapshot is None:
+        market_date = "Loading…"
+        market_status = "Cold start"
+        grouped_risk_dates: list[tuple[str, list[str]]] = []
+    else:
+        market_date = pd.Timestamp(snapshot.market_date).date().isoformat()
+        market_status = str(snapshot.market_status)
+        grouped: dict[str, list[str]] = {}
+        for source_type, value in sorted(snapshot.risk_dates.items()):
+            date_value = pd.Timestamp(value).date().isoformat()
+            grouped.setdefault(date_value, []).append(str(source_type))
+        grouped_risk_dates = sorted(grouped.items(), reverse=True)
+
+    risk_values = (
+        [
+            html.Span(
+                [
+                    html.Strong(date_value, className="operating-date-value"),
+                    html.Small(
+                        f"{len(source_types)} source"
+                        + ("s" if len(source_types) != 1 else ""),
+                        className="operating-date-scope",
+                    ),
+                ],
+                className="operating-risk-date",
+                title=", ".join(source_types),
+            )
+            for date_value, source_types in grouped_risk_dates
+        ]
+        if grouped_risk_dates
+        else [
+            html.Strong(
+                "Loading…",
+                className="operating-date-value",
+            )
+        ]
+    )
+    return [
+        html.Div(
+            [
+                html.Span("MARKET DATE", className="operating-date-label"),
+                html.Strong(market_date, className="operating-date-value"),
+                html.Small(market_status, className="operating-date-scope"),
+            ],
+            className="operating-date-card operating-market-date",
+        ),
+        html.Div(
+            [
+                html.Span("RISK DATES", className="operating-date-label"),
+                html.Div(risk_values, className="operating-risk-date-values"),
+            ],
+            className="operating-date-card",
+        ),
+    ]
+
+
 def _build_refresh_controls(
     initial_snapshot: RefreshSnapshotProtocol | None,
     *,
@@ -3992,9 +3973,9 @@ def _build_refresh_controls(
     if initial_snapshot is not None:
         refreshed_at = initial_snapshot.refreshed_at.strftime("%H:%M:%S UTC")
         status_text = (
-            f"Last success {refreshed_at} · Automatic refresh On · "
+            f"Last success {refreshed_at} · "
             f"T-1 risk {int(((initial_snapshot.risk_status['Age'] == 0) & ~initial_snapshot.risk_status['Force Risk'].astype(bool)).sum())} · "
-            f"Forced risk {int((initial_snapshot.risk_status['Force Risk'].astype(bool)).sum())} · "
+            f"Forced risk {int((initial_snapshot.risk_status['Force Risk'].astype(bool)).sum())}"
         )
         status_class = "refresh-status"
     elif initial_error:
@@ -4008,86 +3989,97 @@ def _build_refresh_controls(
         [
             html.Div(
                 [
-                    html.Button(
-                        "Refresh Portfolios",
-                        id=f"{id_prefix}refresh-portfolios-button",
-                        n_clicks=0,
-                        disabled=controls_disabled,
-                        className="refresh-portfolios-button",
-                        title="Reload the portfolio mapping only",
-                        type="button",
+                    html.Div(
+                        [
+                            html.Button(
+                                "Refresh Portfolios",
+                                id=f"{id_prefix}refresh-portfolios-button",
+                                n_clicks=0,
+                                disabled=controls_disabled,
+                                className="refresh-portfolios-button",
+                                title="Reload the portfolio mapping only",
+                                type="button",
+                            ),
+                            html.Button(
+                                "Refresh Risk",
+                                id=f"{id_prefix}reload-risk-button",
+                                n_clicks=0,
+                                disabled=controls_disabled,
+                                className="reload-risk-button",
+                                title="Refresh Risk (Shift+F8)",
+                                type="button",
+                                **{"aria-keyshortcuts": "Shift+F8"},
+                            ),
+                            html.Button(
+                                "Refresh PL",
+                                id=f"{id_prefix}refresh-pl-button",
+                                n_clicks=0,
+                                disabled=controls_disabled,
+                                className="refresh-pl-button",
+                                title="Refresh PL (Shift+F9)",
+                                type="button",
+                                **{"aria-keyshortcuts": "Shift+F9"},
+                            ),
+                            html.Button(
+                                "Commo",
+                                id=f"{id_prefix}commo-market-toggle",
+                                n_clicks=0,
+                                disabled=controls_disabled,
+                                className=(
+                                    "data-source-toggle is-on"
+                                    if commodity_enabled
+                                    else "data-source-toggle is-off"
+                                ),
+                                title=(
+                                    "Commodity market data is On"
+                                    if commodity_enabled
+                                    else "Commodity market data is Off"
+                                ),
+                                type="button",
+                                **{"aria-pressed": str(commodity_enabled).lower()},
+                            ),
+                            html.Button(
+                                "RiskChecker",
+                                id=f"{id_prefix}risk-checker-toggle",
+                                n_clicks=0,
+                                disabled=controls_disabled,
+                                className=(
+                                    "data-source-toggle is-on"
+                                    if checker_enabled
+                                    else "data-source-toggle is-off"
+                                ),
+                                title=(
+                                    "Risk checker is On"
+                                    if checker_enabled
+                                    else "Risk checker is Off"
+                                ),
+                                type="button",
+                                **{"aria-pressed": str(checker_enabled).lower()},
+                            ),
+                            html.Button(
+                                "AutoPL",
+                                id=f"{id_prefix}auto-refresh-toggle",
+                                n_clicks=0,
+                                disabled=controls_disabled,
+                                className="data-source-toggle auto-refresh-toggle is-on",
+                                title="Automatic 15-minute P&L refresh is On. Activate to turn it Off.",
+                                type="button",
+                                **{"aria-label": "AutoPL", "aria-pressed": "true"},
+                            ),
+                            theme_toggle,
+                        ],
+                        className="refresh-control-actions",
+                        role="group",
+                        **{"aria-label": "Dashboard controls"},
                     ),
-                    html.Button(
-                        "Refresh Risk",
-                        id=f"{id_prefix}reload-risk-button",
-                        n_clicks=0,
-                        disabled=controls_disabled,
-                        className="reload-risk-button",
-                        title="Refresh Risk (Shift+F8)",
-                        type="button",
-                        **{"aria-keyshortcuts": "Shift+F8"},
+                    html.Div(
+                        build_operating_date_content(initial_snapshot),
+                        id=f"{id_prefix}operating-date-banner",
+                        className="operating-date-banner",
+                        **{"aria-label": "Committed market and risk dates"},
                     ),
-                    html.Button(
-                        "Refresh PL",
-                        id=f"{id_prefix}refresh-pl-button",
-                        n_clicks=0,
-                        disabled=controls_disabled,
-                        className="refresh-pl-button",
-                        title="Refresh PL (Shift+F9)",
-                        type="button",
-                        **{"aria-keyshortcuts": "Shift+F9"},
-                    ),
-                    html.Button(
-                        "Commo",
-                        id=f"{id_prefix}commo-market-toggle",
-                        n_clicks=0,
-                        disabled=controls_disabled,
-                        className=(
-                            "data-source-toggle is-on"
-                            if commodity_enabled
-                            else "data-source-toggle is-off"
-                        ),
-                        title=(
-                            "Commodity market data is On"
-                            if commodity_enabled
-                            else "Commodity market data is Off"
-                        ),
-                        type="button",
-                        **{"aria-pressed": str(commodity_enabled).lower()},
-                    ),
-                    html.Button(
-                        "Riskchecker",
-                        id=f"{id_prefix}risk-checker-toggle",
-                        n_clicks=0,
-                        disabled=controls_disabled,
-                        className=(
-                            "data-source-toggle is-on"
-                            if checker_enabled
-                            else "data-source-toggle is-off"
-                        ),
-                        title=(
-                            "Risk checker is On"
-                            if checker_enabled
-                            else "Risk checker is Off"
-                        ),
-                        type="button",
-                        **{"aria-pressed": str(checker_enabled).lower()},
-                    ),
-                    html.Button(
-                        "AutoPL",
-                        id=f"{id_prefix}auto-refresh-toggle",
-                        n_clicks=0,
-                        disabled=controls_disabled,
-                        className="data-source-toggle auto-refresh-toggle is-on",
-                        title="Automatic 15-minute P&L refresh is On. Activate to turn it Off.",
-                        type="button",
-                        **{"aria-label": "AutoPL", "aria-pressed": "true"},
-                    ),
-                    theme_toggle,
                 ],
-                className="refresh-control-actions",
-                role="group",
-                **{"aria-label": "Dashboard controls"},
+                className="refresh-control-topline",
             ),
             html.Div(
                 status_text,
@@ -4193,6 +4185,10 @@ def _build_refresh_progress(
                 className="refresh-function-live refresh-product-card",
                 role="status",
                 **{"aria-live": "polite", "aria-atomic": "true"},
+            ),
+            html.P(
+                "The current committed snapshot stays usable while a staged refresh runs; refresh controls are locked until it finishes.",
+                className="refresh-progress-note",
             ),
             html.Ol(
                 [
@@ -4492,16 +4488,6 @@ def build_layout(
                 id="perspective-risk-cube-risk-checker-v1",
                 data=applied_risk_checker,
             ),
-            # AutoPL hydrates from local storage after this full layout replaces
-            # the shell. The one-shot barrier updates its status only after the
-            # browser value has settled; it never mutates backend data on mount.
-            dcc.Store(id="preference-hydrated-store", data=False),
-            dcc.Interval(
-                id="preference-hydration-trigger",
-                interval=250,
-                n_intervals=0,
-                max_intervals=1,
-            ),
             dcc.Store(id="force-risk-draft-store", data={}),
             dcc.Store(id="force-risk-render-store", data={}),
             dcc.Store(id="refresh-result-store", data=0),
@@ -4517,7 +4503,7 @@ def build_layout(
             dcc.Store(id="region-toggle-store", data=False),
             dcc.Interval(
                 id="auto-refresh-interval",
-                interval=60 * 60_000,
+                interval=15 * 60_000,
                 n_intervals=0,
                 disabled=True,
             ),
@@ -4957,21 +4943,6 @@ def build_layout(
                 # retaining the stable layout contract.
                 hidden=not refresh_enabled,
             ),
-            html.Details(
-                [
-                    html.Summary(
-                        "Raw Data",
-                        id="raw-data-summary",
-                        n_clicks=0,
-                        className="aux-summary",
-                    ),
-                    html.Div(id="raw-data-grid", className="raw-data-panel"),
-                ],
-                id="raw-data-details",
-                open=False,
-                className="aux-details",
-                hidden=not refresh_enabled,
-            ),
             html.Div(id="error-log", className="error-log", **{"aria-live": "polite"}),
         ],
         className="app-shell cube-app-shell",
@@ -4993,7 +4964,7 @@ __all__ = [
     "build_line_chart",
     "build_layout",
     "build_initial_load_layout",
-    "build_raw_data_table",
+    "build_operating_date_content",
     "build_risk_checker_inventory",
     "build_risk_date_editor",
     "build_risk_table",
