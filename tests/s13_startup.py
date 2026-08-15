@@ -199,7 +199,7 @@ def test_startup_failure_is_visible_and_retryable() -> None:
     assert "checker service unavailable" in str(status.error)
 
 
-def test_layout_response_schedules_refresh_and_each_browser_paints_shell() -> None:
+def test_layout_response_schedules_refresh_and_warm_browser_skips_shell() -> None:
     manager = build_production_refresh_manager()
     app = build_app(refresh_manager=manager)
     client = app.server.test_client()
@@ -214,8 +214,8 @@ def test_layout_response_schedules_refresh_and_each_browser_paints_shell() -> No
 
     assert manager.health.revision == 1
     assert warm.status_code == 200
-    assert b"initial-load-trigger" in warm.data
-    assert b"risk-type-tabs" not in warm.data
+    assert b"initial-load-trigger" not in warm.data
+    assert b"risk-type-tabs" in warm.data
 
 
 def test_start_endpoint_is_idempotent_and_progress_has_attempt_identity() -> None:
@@ -291,6 +291,17 @@ def test_browser_progress_copy_never_claims_an_unconfirmed_refresh() -> None:
     assert "hasNewError ? 5000 : 300" in source
     assert "revision <= renderedDataRevisionFloor()" in source
     assert 'setProps("data-revision-store", { data: revision })' in source
+    revision_sync = source.index("const syncCommittedDataRevision")
+    assert (
+        'refreshProgressState?.mode === "bootstrap"'
+        in source[revision_sync : revision_sync + 500]
+    )
+    assert "const claimSessionReload" in source
+    assert "dashIsLoading() || Date.now() < handoffDeadline" in source
+    assert "cube-bootstrap-ready-reload:${bootId}:${revision}" in source
+    assert "cube-progress-transport-reload:${bootId}" in source
+    assert "cube-progress-recovery-reload-at" not in source
+    assert "Date.now() - lastRecovery >= 60000" not in source
     reload_guard = source.index("disconnectedFor >= 45000")
     assert (
         'refreshProgressState.mode === "bootstrap"'

@@ -1003,7 +1003,11 @@
     };
 
     const syncCommittedDataRevision = (progress) => {
-      if (!progress || progress.running) return false;
+      if (
+        !progress
+        || progress.running
+        || refreshProgressState?.mode === "bootstrap"
+      ) return false;
       const revision = normalizedRevision(progress.revision);
       const store = document.getElementById("data-revision-store");
       const setProps = window.dash_clientside?.set_props;
@@ -1019,6 +1023,17 @@
         return true;
       } catch (_error) {
         // A transient Dash mount race must not poison backend progress polling.
+        return false;
+      }
+    };
+
+    const claimSessionReload = (key) => {
+      try {
+        if (window.sessionStorage.getItem(key)) return false;
+        window.sessionStorage.setItem(key, String(Date.now()));
+        return true;
+      } catch (_error) {
+        // Without durable session state, reloading could recreate a loop.
         return false;
       }
     };
@@ -1325,11 +1340,24 @@
           finishRefreshProgress();
           return;
         }
-        if (dashIsLoading() && Date.now() < handoffDeadline) {
+        // Never interrupt Dash while it is materialising the validated tree.
+        if (dashIsLoading() || Date.now() < handoffDeadline) {
           setTimeout(recoverMount, 1000);
           return;
         }
-        window.location.reload();
+        const latestProgress = lastBackendProgress || progress;
+        const bootId = String(latestProgress.server_boot_id || "unknown");
+        const revision = normalizedRevision(latestProgress.revision) || 0;
+        const recoveryKey = `cube-bootstrap-ready-reload:${bootId}:${revision}`;
+        if (claimSessionReload(recoveryKey)) {
+          window.location.reload();
+          return;
+        }
+        setProgressDetail(
+          "refresh-progress-function",
+          "Dashboard handoff is still pending; polling continues without repeated reloads",
+        );
+        setTimeout(recoverMount, 1000);
       };
       setTimeout(recoverMount, 3000);
       return true;
@@ -1784,22 +1812,16 @@
             disconnectedFor >= 45000
             && refreshProgressState.mode === "bootstrap"
           ) {
-            const recoveryKey = "cube-progress-recovery-reload-at";
-            let lastRecovery = 0;
-            try {
-              lastRecovery = Number(window.sessionStorage.getItem(recoveryKey) || 0);
-            } catch (_error) {
-              lastRecovery = 0;
-            }
-            if (Date.now() - lastRecovery >= 60000) {
-              try {
-                window.sessionStorage.setItem(recoveryKey, String(Date.now()));
-              } catch (_error) {
-                // A restricted browser can still perform the reload.
-              }
+            const bootId = String(refreshProgressState.serverBootId || "unknown");
+            const recoveryKey = `cube-progress-transport-reload:${bootId}`;
+            if (claimSessionReload(recoveryKey)) {
               window.location.reload();
               return;
             }
+            setProgressDetail(
+              "refresh-progress-product",
+              "Automatic reload is unavailable or already attempted; progress polling continues",
+            );
           }
         }
         if (

@@ -282,20 +282,9 @@ def build_app(
             stage_delays=stage_delays,
         )
 
-    def cube_page_body(*, first_paint: bool = False) -> html.Main:
-        """Mount Risk under the startup callback's stable inner owner.
-
-        Every new browser gets the lightweight opening shell on its first
-        paint.  A warm manager replaces it from the committed snapshot on the
-        first interval tick; normal in-app navigation mounts the warm page
-        directly.
-        """
-        page = (
-            build_initial_load_layout(stage_delays=stage_delays)
-            if first_paint and refresh_manager is not None
-            else current_cube_page()
-        )
-        return html.Main(page, id="cube-page-container")
+    def cube_page_body() -> html.Main:
+        """Mount the revision-aware Risk page under its stable callback owner."""
+        return html.Main(current_cube_page(), id="cube-page-container")
 
     def not_found_page(pathname: str) -> html.Main:
         """Return an explicit page for paths outside the configured catalogue."""
@@ -367,7 +356,7 @@ def build_app(
                 ),
                 dcc.Store(id="active-page-path", data=cube_path),
                 html.Div(
-                    cube_page_body(first_paint=True),
+                    cube_page_body(),
                     id="app-page-container",
                 ),
             ],
