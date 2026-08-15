@@ -477,8 +477,8 @@ def test_long_financial_callback_cannot_own_live_revision() -> None:
     assert (
         "perspective-risk-cube-commodity-market-v1",
         "data",
-    ) in outputs
-    assert ("perspective-risk-cube-risk-checker-v1", "data") in outputs
+    ) not in outputs
+    assert ("perspective-risk-cube-risk-checker-v1", "data") not in outputs
     assert ("refresh-commit-revision", "children") in outputs
     assert ("data-revision-store", "data") not in outputs
 

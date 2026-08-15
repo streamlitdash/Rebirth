@@ -4024,7 +4024,7 @@ def _build_refresh_controls(
                                 **{"aria-keyshortcuts": "Shift+F9"},
                             ),
                             html.Button(
-                                "Commo",
+                                f"Commo: {'On' if commodity_enabled else 'Off'}",
                                 id=f"{id_prefix}commo-market-toggle",
                                 n_clicks=0,
                                 disabled=controls_disabled,
@@ -4042,7 +4042,7 @@ def _build_refresh_controls(
                                 **{"aria-pressed": str(commodity_enabled).lower()},
                             ),
                             html.Button(
-                                "RiskChecker",
+                                f"RiskChecker: {'On' if checker_enabled else 'Off'}",
                                 id=f"{id_prefix}risk-checker-toggle",
                                 n_clicks=0,
                                 disabled=controls_disabled,
@@ -4060,14 +4060,17 @@ def _build_refresh_controls(
                                 **{"aria-pressed": str(checker_enabled).lower()},
                             ),
                             html.Button(
-                                "AutoPL",
+                                "AutoPL: On",
                                 id=f"{id_prefix}auto-refresh-toggle",
                                 n_clicks=0,
                                 disabled=controls_disabled,
                                 className="data-source-toggle auto-refresh-toggle is-on",
                                 title="Automatic 15-minute P&L refresh is On. Activate to turn it Off.",
                                 type="button",
-                                **{"aria-label": "AutoPL", "aria-pressed": "true"},
+                                **{
+                                    "aria-label": "AutoPL is On",
+                                    "aria-pressed": "true",
+                                },
                             ),
                             theme_toggle,
                         ],
@@ -4343,6 +4346,7 @@ def build_shared_refresh_shell(
             dcc.Store(id="force-risk-draft-store", data={}),
             dcc.Store(id="force-risk-render-store", data={}),
             dcc.Store(id="refresh-result-store", data=0),
+            dcc.Store(id="refresh-busy-store", data=False),
             dcc.Interval(
                 id="auto-refresh-interval",
                 interval=15 * 60_000,

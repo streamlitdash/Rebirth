@@ -1095,15 +1095,35 @@ def _next_counter(value: Any) -> int:
 
 def _refresh_status(
     snapshot: RefreshSnapshotProtocol,
+    *,
+    action_committed: bool = True,
 ) -> tuple[str, str, str]:
-    refreshed_at = snapshot.refreshed_at.strftime("%H:%M:%S UTC")
     status_frame = snapshot.risk_status
     t_minus_one = int(
         ((status_frame["Age"] == 0) & ~status_frame["Force Risk"].astype(bool)).sum()
     )
     forced = int(status_frame["Force Risk"].astype(bool).sum())
+    action_labels = {
+        "portfolio mapping": "Portfolios refreshed",
+        "reload all risk": "Risk refreshed",
+        "manual P&L": "P&L refreshed",
+        "automatic 15-minute refresh": "AutoPL refreshed",
+        "dashboard settings updated": "Settings applied",
+        "apply forced risk dates": "Date settings applied",
+    }
+    reason = str(getattr(snapshot, "refresh_reason", "") or "")
+    action_succeeded = (
+        action_committed and not snapshot.errors and reason in action_labels
+    )
+    success_label = action_labels[reason] if action_succeeded else "Last success"
+    status_at = snapshot.refreshed_at
+    if action_succeeded:
+        last_attempt_at = getattr(snapshot, "last_attempt_at", None)
+        if last_attempt_at is not None:
+            status_at = max(status_at, last_attempt_at)
+    status_time = status_at.strftime("%H:%M:%S UTC")
     status = (
-        f"Last success {refreshed_at} · T-1 risk {t_minus_one} · Forced risk {forced}"
+        f"{success_label} {status_time} · T-1 risk {t_minus_one} · Forced risk {forced}"
     )
     if snapshot.errors:
         return (
@@ -2417,9 +2437,9 @@ def register_callbacks(
             )
             return (
                 not enabled,
-                no_update,
+                f"AutoPL: {state}",
                 title,
-                no_update,
+                f"AutoPL is {state}",
                 str(enabled).lower(),
                 f"data-source-toggle auto-refresh-toggle {'is-on' if enabled else 'is-off'}",
             )
@@ -2435,7 +2455,7 @@ def register_callbacks(
             enabled = commodity_market_enabled(stored_value)
             state = "On" if enabled else "Off"
             return (
-                "Commo",
+                f"Commo: {state}",
                 f"Commodity market data is {state}.",
                 str(enabled).lower(),
                 f"data-source-toggle {'is-on' if enabled else 'is-off'}",
@@ -2516,7 +2536,7 @@ def register_callbacks(
             enabled = risk_checker_enabled(stored_value)
             state = "On" if enabled else "Off"
             return (
-                "RiskChecker",
+                f"RiskChecker: {state}",
                 f"Risk checker is {state}",
                 str(enabled).lower(),
                 f"data-source-toggle {'is-on' if enabled else 'is-off'}",
@@ -2534,8 +2554,6 @@ def register_callbacks(
             Output("error-log", "className"),
             Output(FORCE_STORE_ID, "data"),
             Output(VIEW_DATE_STORE_ID, "data"),
-            Output(COMMODITY_MARKET_STORE_ID, "data"),
-            Output(RISK_CHECKER_STORE_ID, "data"),
             Input("auto-refresh-interval", "n_intervals"),
             Input("refresh-portfolios-button", "n_clicks"),
             Input("refresh-pl-button", "n_clicks"),
@@ -2553,6 +2571,7 @@ def register_callbacks(
                 (Output("auto-refresh-toggle", "disabled"), True, False),
                 (Output("commo-market-toggle", "disabled"), True, False),
                 (Output("risk-checker-toggle", "disabled"), True, False),
+                (Output("refresh-busy-store", "data"), True, False),
                 (
                     Output("refresh-status", "className"),
                     "refresh-status is-refreshing",
@@ -2625,8 +2644,6 @@ def register_callbacks(
                             "error-log has-errors",
                             no_update,
                             no_update,
-                            committed_commodity,
-                            committed_checker,
                         )
                     if (
                         requested == current_applied
@@ -2712,8 +2729,6 @@ def register_callbacks(
                     "error-log",
                     no_update,
                     no_update,
-                    committed_commodity,
-                    committed_checker,
                 )
             except StaleRefreshError:
                 return (
@@ -2724,8 +2739,6 @@ def register_callbacks(
                     "error-log has-errors",
                     no_update,
                     no_update,
-                    committed_commodity,
-                    committed_checker,
                 )
             except (TypeError, ValueError):
                 return (
@@ -2736,8 +2749,6 @@ def register_callbacks(
                     "error-log has-errors",
                     no_update,
                     no_update,
-                    committed_commodity,
-                    committed_checker,
                 )
             except Exception as error:
                 incident_id = uuid.uuid4().hex[:10]
@@ -2754,12 +2765,13 @@ def register_callbacks(
                     "error-log has-errors",
                     no_update,
                     no_update,
-                    committed_commodity,
-                    committed_checker,
                 )
 
             cache.replace(snapshot)
-            status_text, error_text, error_class = _refresh_status(snapshot)
+            status_text, error_text, error_class = _refresh_status(
+                snapshot,
+                action_committed=(apply_result is None or bool(apply_result.committed)),
+            )
             if (
                 apply_result is not None
                 and not apply_result.committed
@@ -2791,8 +2803,6 @@ def register_callbacks(
                     if applying and apply_result is not None and apply_result.committed
                     else no_update
                 ),
-                bool(snapshot.commodity_market_enabled),
-                bool(snapshot.risk_checker_enabled),
             )
 
         @app.callback(
@@ -2804,6 +2814,23 @@ def register_callbacks(
             if not _revision or refresh_manager.health.revision <= 0:
                 return no_update
             return build_operating_date_content(refresh_manager.snapshot)
+
+        @app.callback(
+            Output(COMMODITY_MARKET_STORE_ID, "data"),
+            Output(RISK_CHECKER_STORE_ID, "data"),
+            Input("data-revision-store", "data"),
+            Input(REFRESH_RESULT_STORE_ID, "data"),
+            prevent_initial_call=True,
+        )
+        def sync_committed_dashboard_settings(_revision, _refresh_result):
+            """Rebase settings after data or same-revision metadata commits."""
+            if refresh_manager.health.revision <= 0:
+                raise PreventUpdate
+            committed = refresh_manager.control_snapshot
+            return (
+                bool(committed.commodity_market_enabled),
+                bool(committed.risk_checker_enabled),
+            )
 
         @app.callback(
             Output(FORCE_DRAFT_STORE_ID, "data"),
@@ -3036,15 +3063,24 @@ def register_callbacks(
             Output("force-risk-edit-status", "className"),
             Input(FORCE_DRAFT_STORE_ID, "data"),
             Input(REFRESH_RESULT_STORE_ID, "data"),
+            Input("refresh-busy-store", "data"),
             Input("force-risk-apply-button", "id", allow_optional=True),
         )
         def update_force_risk_actions(
             draft_state,
             _refresh_result,
+            refresh_busy,
             force_apply_button_id,
         ):
             if force_apply_button_id != "force-risk-apply-button":
                 raise PreventUpdate
+            if bool(refresh_busy):
+                return (
+                    True,
+                    True,
+                    "Refresh in progress. Apply and Cancel are temporarily unavailable.",
+                    "force-risk-edit-status",
+                )
             manager_snapshot = refresh_manager.control_snapshot
             applied = snapshot_forced_dates(manager_snapshot)
             applied_view = snapshot_forced_view_date(manager_snapshot)

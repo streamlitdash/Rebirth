@@ -1385,21 +1385,46 @@
     const startRefreshProgress = (mode) => {
       const panel = document.getElementById("refresh-progress");
       if (!panel) return;
+      // The Python busy Store is authoritative at completion, but Dash holds
+      // callbacks downstream of a long-running Output until that request
+      // returns. Disable page-local date actions synchronously so a second
+      // Apply cannot be queued while the first transaction is in flight.
+      const setProps = window.dash_clientside?.set_props;
+      ["force-risk-apply-button", "force-risk-cancel-button"].forEach((id) => {
+        const action = document.getElementById(id);
+        if (!action) return;
+        try {
+          if (typeof setProps === "function") setProps(id, { disabled: true });
+          else action.disabled = true;
+        } catch (_error) {
+          action.disabled = true;
+        }
+      });
       setGlobalLoaderVisible(true);
       clearRefreshProgressTimers();
       const reloadAll = mode === "reload";
       const bootstrap = mode === "bootstrap";
       const portfolioOnly = mode === "portfolios";
+      const commoditySetting = mode === "commo";
+      const checkerSetting = mode === "checker";
+      const dateSettings = mode === "dates";
+      const settingsOnly = commoditySetting || checkerSetting || dateSettings;
       const fullRiskLoad = reloadAll || bootstrap;
       const automatic = mode === "automatic";
       const requestedFunction = bootstrap
         ? "RiskRefreshManager.refresh(initial_load)"
         : reloadAll ? "RiskRefreshManager.refresh(force_risk=True)"
         : portfolioOnly ? "RiskRefreshManager.refresh_portfolios()"
+        : commoditySetting ? "RiskRefreshManager.refresh(commodity_market)"
+        : checkerSetting ? "RiskRefreshManager.refresh(risk_checker)"
+        : dateSettings ? "RiskRefreshManager.refresh(forced_dates)"
         : "RiskRefreshManager.refresh(force_pl=True)";
       const requestedSource = fullRiskLoad
         ? "all connector sources"
         : portfolioOnly ? "portfolio mapping connector only"
+        : commoditySetting ? "commodity market setting"
+        : checkerSetting ? "risk checker setting"
+        : dateSettings ? "staged risk and market dates"
         : automatic ? "automatic 15-minute refresh" : "manual P&L refresh";
       const riskProductDelay = Number(panel.dataset.riskProductDelay || 0);
       const title = document.getElementById("refresh-progress-title");
@@ -1408,6 +1433,9 @@
         ? "Loading Cube data"
         : reloadAll ? "Reloading all risk"
         : portfolioOnly ? "Refreshing portfolios"
+        : commoditySetting ? "Updating Commo market"
+        : checkerSetting ? "Updating RiskChecker"
+        : dateSettings ? "Applying date settings"
         : automatic ? "Automatic refresh"
         : "Refreshing P&L";
       if (title) title.textContent = bootstrap
@@ -1445,6 +1473,8 @@
         "refresh-progress-product",
         portfolioOnly
           ? "Reloading portfolio mapping and rebuilding dependent views"
+          : settingsOnly
+            ? "Applying settings through one atomic refresh"
           : fullRiskLoad
             ? "Preparing Risk & dRisk product calls"
             : "Checking readiness before conditional risk and market/P&L refresh",
@@ -2163,12 +2193,17 @@
     }
 
     const refreshTrigger = event.target.closest(
-      "#refresh-portfolios-button, #refresh-pl-button, #reload-risk-button, #initial-load-retry"
+      "#refresh-portfolios-button, #refresh-pl-button, #reload-risk-button, "
+      + "#commo-market-toggle, #risk-checker-toggle, #force-risk-apply-button, "
+      + "#initial-load-retry"
     );
     if (refreshTrigger) {
       const mode = refreshTrigger.id === "reload-risk-button"
         ? "reload"
         : refreshTrigger.id === "refresh-portfolios-button" ? "portfolios"
+        : refreshTrigger.id === "commo-market-toggle" ? "commo"
+        : refreshTrigger.id === "risk-checker-toggle" ? "checker"
+        : refreshTrigger.id === "force-risk-apply-button" ? "dates"
         : refreshTrigger.id === "initial-load-retry" ? "bootstrap" : "pl";
       startRefreshProgress(mode);
     }

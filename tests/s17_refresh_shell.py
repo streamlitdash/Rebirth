@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pandas as pd
 from dash import no_update
 from feeds.s01_sources import build_production_refresh_manager
+from ui import s07_events as events
 from ui.s04_components import (
     build_initial_load_layout,
     build_shared_refresh_shell,
@@ -64,6 +65,10 @@ def test_shared_shell_has_neutral_bootstrap_and_error_modes() -> None:
     assert _by_id(neutral, "refresh-status").className == "refresh-status"
     assert _by_id(neutral, "refresh-progress").hidden is True
     assert _by_id(neutral, "shared-refresh-bootstrap-interval").disabled is True
+    assert _by_id(neutral, "commo-market-toggle").children == "Commo: Off"
+    assert _by_id(neutral, "risk-checker-toggle").children == "RiskChecker: On"
+    assert _by_id(neutral, "auto-refresh-toggle").children == "AutoPL: On"
+    assert _by_id(neutral, "refresh-busy-store").data is False
 
     loading = build_shared_refresh_shell(
         None,
@@ -119,6 +124,7 @@ def test_cold_risk_body_can_exclude_every_shared_lifecycle_id() -> None:
         "refresh-commit-revision",
         "refresh-control-strip",
         "refresh-progress",
+        "refresh-busy-store",
         "error-log",
         "auto-refresh-interval",
         "shared-refresh-bootstrap-interval",
@@ -137,6 +143,11 @@ def test_startup_page_and_shared_shell_have_independent_callback_outputs() -> No
     page_callback = _callback_for_output(app, "cube-page-container", "children")
     shell_callback = _callback_for_output(app, "shared-refresh-shell", "children")
     refresh_callback = _callback_for_output(app, "refresh-commit-revision", "children")
+    refresh_registration = next(
+        registration
+        for registration in app._callback_list
+        if "refresh-commit-revision.children" in registration["output"]
+    )
 
     assert page_callback is not shell_callback
     assert [
@@ -163,6 +174,11 @@ def test_startup_page_and_shared_shell_have_independent_callback_outputs() -> No
         if item["id"] == "force-risk-apply-button"
     )
     assert force_apply.get("allow_optional") is True
+    assert refresh_registration["running"]["running"]["refresh-busy-store.data"] is True
+    assert (
+        refresh_registration["running"]["runningOff"]["refresh-busy-store.data"]
+        is False
+    )
 
     draft_callback = _callback_for_output(app, "force-risk-draft-store", "data")
     draft_mount = next(
@@ -177,6 +193,158 @@ def test_startup_page_and_shared_shell_have_independent_callback_outputs() -> No
         if item["id"] == "force-risk-apply-button" and item["property"] == "id"
     )
     assert actions_mount.get("allow_optional") is True
+    assert ("refresh-busy-store", "data") in {
+        (item["id"], item["property"]) for item in actions_callback["inputs"]
+    }
+
+
+def test_force_actions_disable_for_busy_and_clean_states() -> None:
+    manager = build_production_refresh_manager()
+    manager.refresh(force_risk=True, force_pl=True)
+    app = build_app(refresh_manager=manager)
+    metadata = _callback_for_output(app, "force-risk-edit-status", "children")
+    callback = metadata["callback"].__wrapped__
+    snapshot = manager.control_snapshot
+    applied = events.snapshot_forced_dates(snapshot)
+    applied_view = events.snapshot_forced_view_date(snapshot)
+    proposal = dict(applied)
+    proposal["ir/delta"] = "2026-08-01"
+    dirty = events.make_force_draft(
+        applied,
+        proposal,
+        revision=snapshot.revision,
+        applied_view_date=applied_view,
+        view_date=applied_view,
+    )
+    clean = events.make_force_draft(
+        applied,
+        applied,
+        revision=snapshot.revision,
+        applied_view_date=applied_view,
+        view_date=applied_view,
+    )
+
+    assert callback(dirty, 0, False, "force-risk-apply-button")[:2] == (
+        False,
+        False,
+    )
+    busy = callback(dirty, 0, True, "force-risk-apply-button")
+    assert busy[:2] == (True, True)
+    assert "Refresh in progress" in busy[2]
+    assert callback(clean, 1, False, "force-risk-apply-button")[:2] == (
+        True,
+        True,
+    )
+
+
+def test_control_labels_and_committed_settings_are_unambiguous() -> None:
+    manager = build_production_refresh_manager()
+    manager.refresh(force_risk=True, force_pl=True)
+    app = build_app(refresh_manager=manager)
+
+    auto_callback = _callback_for_output(app, "auto-refresh-toggle", "children")[
+        "callback"
+    ].__wrapped__
+    commo_callback = _callback_for_output(app, "commo-market-toggle", "children")[
+        "callback"
+    ].__wrapped__
+    checker_callback = _callback_for_output(app, "risk-checker-toggle", "children")[
+        "callback"
+    ].__wrapped__
+    assert auto_callback(True)[1] == "AutoPL: On"
+    assert auto_callback(False)[1] == "AutoPL: Off"
+    assert commo_callback(False)[0] == "Commo: Off"
+    assert commo_callback(True)[0] == "Commo: On"
+    assert checker_callback(False)[0] == "RiskChecker: Off"
+    assert checker_callback(True)[0] == "RiskChecker: On"
+
+    settings_callback = next(
+        metadata
+        for metadata in app.callback_map.values()
+        if {
+            (output.component_id, output.component_property)
+            for output in _callback_outputs(metadata)
+        }
+        == {
+            ("perspective-risk-cube-commodity-market-v1", "data"),
+            ("perspective-risk-cube-risk-checker-v1", "data"),
+        }
+    )
+    assert {(item["id"], item["property"]) for item in settings_callback["inputs"]} == {
+        ("data-revision-store", "data"),
+        ("refresh-result-store", "data"),
+    }
+    assert settings_callback["callback"].__wrapped__(manager.health.revision, 1) == (
+        False,
+        True,
+    )
+
+    revision = manager.health.revision
+    forced_dates = {
+        source_type: pd.Timestamp(risk_date).date().isoformat()
+        for source_type, risk_date in manager.snapshot.risk_dates.items()
+    }
+    manager.refresh(
+        forced_dates=forced_dates,
+        commodity_market_enabled=False,
+        risk_checker_enabled=False,
+        reason="same-revision settings test",
+        expected_revision=revision,
+    )
+    assert manager.health.revision == revision
+    assert settings_callback["callback"].__wrapped__(revision, 2) == (False, False)
+
+
+def test_refresh_status_names_the_completed_action() -> None:
+    status_frame = pd.DataFrame({"Age": [0], "Force Risk": [False]})
+    labels = {
+        "portfolio mapping": "Portfolios refreshed",
+        "reload all risk": "Risk refreshed",
+        "manual P&L": "P&L refreshed",
+        "automatic 15-minute refresh": "AutoPL refreshed",
+        "dashboard settings updated": "Settings applied",
+        "apply forced risk dates": "Date settings applied",
+    }
+    for reason, label in labels.items():
+        snapshot = SimpleNamespace(
+            refreshed_at=datetime(2026, 8, 15, 16, tzinfo=timezone.utc),
+            last_attempt_at=datetime(2026, 8, 15, 17, tzinfo=timezone.utc),
+            risk_status=status_frame,
+            refresh_reason=reason,
+            errors=(),
+        )
+        assert events._refresh_status(snapshot)[0].startswith(f"{label} 17:00:00 UTC")
+
+    failed = SimpleNamespace(
+        refreshed_at=datetime(2026, 8, 15, 16, tzinfo=timezone.utc),
+        last_attempt_at=datetime(2026, 8, 15, 17, tzinfo=timezone.utc),
+        risk_status=status_frame,
+        refresh_reason="reload all risk",
+        errors=("retained",),
+    )
+    assert events._refresh_status(failed)[0].startswith("Last success 16:00:00 UTC")
+
+    completed = SimpleNamespace(
+        refreshed_at=datetime(2026, 8, 15, 18, tzinfo=timezone.utc),
+        last_attempt_at=datetime(2026, 8, 15, 17, tzinfo=timezone.utc),
+        risk_status=status_frame,
+        refresh_reason="reload all risk",
+        errors=(),
+    )
+    assert events._refresh_status(completed)[0].startswith(
+        "Risk refreshed 18:00:00 UTC"
+    )
+
+    not_committed = SimpleNamespace(
+        refreshed_at=datetime(2026, 8, 15, 16, tzinfo=timezone.utc),
+        last_attempt_at=datetime(2026, 8, 15, 17, tzinfo=timezone.utc),
+        risk_status=status_frame,
+        refresh_reason="dashboard settings updated",
+        errors=(),
+    )
+    assert events._refresh_status(not_committed, action_committed=False)[0].startswith(
+        "Last success 16:00:00 UTC"
+    )
 
 
 def test_operating_dates_stay_neutral_before_the_cold_start_commits() -> None:
@@ -198,3 +366,24 @@ def test_browser_defers_start_and_revision_signals_off_risk_page() -> None:
     assert 'document.getElementById("cube-page-container")' in source
     assert '&& document.getElementById("risk-type-tabs")' in source
     assert "syncCommittedDataRevision(lastBackendProgress);" in source
+    trigger_start = source.index("const refreshTrigger = event.target.closest")
+    trigger_end = source.index("const header = event.target.closest", trigger_start)
+    trigger_source = source[trigger_start:trigger_end]
+    for selector in (
+        "#refresh-portfolios-button",
+        "#refresh-pl-button",
+        "#reload-risk-button",
+        "#commo-market-toggle",
+        "#risk-checker-toggle",
+        "#force-risk-apply-button",
+    ):
+        assert selector in trigger_source
+    assert "#auto-refresh-toggle" not in trigger_source
+    assert '"commo"' in trigger_source
+    assert '"checker"' in trigger_source
+    assert '"dates"' in trigger_source
+    assert "Updating Commo market" in source
+    assert "Updating RiskChecker" in source
+    assert "Applying date settings" in source
+    assert '["force-risk-apply-button", "force-risk-cancel-button"]' in source
+    assert "setProps(id, { disabled: true })" in source
