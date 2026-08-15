@@ -1,0 +1,16 @@
+Risk Type,Risk Greek,Age
+FX,Delta,0
+FX,Vega,0
+IR,Delta,0
+IR,Gamma,0
+IR,DeltaVega,0
+IR,XCCY,0
+IR,XCCYVega,0
+IR,Inflation,0
+IR,InflationVega,1
+IR,Basis,0
+IR,Bond,0
+Credit,Delta,0
+Credit,Vega,1
+Commo,Delta,0
+Commo,Vega,1

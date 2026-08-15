@@ -1,0 +1,17 @@
+Risk Type,Risk Greek,ConcertoField
+FX,Delta,fxdeltaeffect
+FX,Gamma,fxgammaeffect
+FX,Vega,fxvegaeffect
+IR,Delta,irdeltaeffect
+IR,Gamma,irgammaeffect
+IR,DeltaVega,irdeltavegaeffect
+IR,XCCY,irxccyeffect
+IR,XCCYVega,irxccyvegaeffect
+IR,Inflation,irinflationeffect
+IR,InflationVega,irinflationvegaeffect
+IR,Basis,irbasiseffect
+IR,Bond,irbondeffect
+Credit,Delta,creditdeltaeffect
+Credit,Vega,creditvegaeffect
+Commo,Delta,commodeltaeffect
+Commo,Vega,commovegaeffect

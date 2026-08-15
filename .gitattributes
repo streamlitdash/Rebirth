@@ -1,0 +1,11 @@
+* text=auto
+*.css text eol=lf
+*.csv text eol=lf
+*.ini text eol=lf
+*.js text eol=lf
+*.md text eol=lf
+*.py text eol=lf
+*.toml text eol=lf
+*.txt text eol=lf
+*.pdf binary
+*.png binary

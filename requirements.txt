@@ -1,0 +1,9 @@
+# Exact direct versions verified locally and used by Plotly Cloud.
+# Dash 4.4.0 is intentional: the native PL editor is lifecycle-tested against
+# this DataTable and Patch implementation. Review README.md before upgrading.
+dash==4.4.0
+numpy==2.5.1
+pandas==3.0.3
+plotly==6.9.0
+tzdata==2026.3
+gunicorn==23.0.0; platform_system != "Windows"
