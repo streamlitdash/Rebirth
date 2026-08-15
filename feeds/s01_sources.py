@@ -5,7 +5,10 @@ reporting dimension in those files is marked ``FAKE_REPLACE_ME`` so placeholder
 data cannot be mistaken for production.
 
 Those files sit behind small public connector functions. The dated Risk Checker
-function owns both readiness and inventory files. To connect real systems,
+function owns both readiness and inventory files. Recovered private connector
+sources are preserved, fully commented and non-importable, under the sibling
+``_disabled`` archives in ``feeds`` and ``adapters``. They are deliberately not
+registered here or included in deployment bundles. To connect real systems,
 replace the marked body of each public loader below.
 Keep its parameters and documented return columns unchanged; the common pipeline
 will continue to own validation, joins, P&L formulas, aggregation, readiness-date
@@ -586,13 +589,14 @@ def send_portfolio_pl(frame: pd.DataFrame) -> None:
 
 
 def get_product_connector_adapters() -> Mapping[str, ProductConnectorAdapter]:
-    """Return per-source real adapters when APIs cannot share generic loaders.
+    """Return the active per-source views over the fake CSV loaders.
 
     Every source gets its own bound callable. Market callables receive the
     ordered, unique Underlyings from validated Risk and intentionally fetch them
     one at a time before returning one all-or-nothing frame. Replace any one
     callable with that function's real API implementation without changing the
-    other products.
+    other products. The recovered private registrations in ``_disabled`` are
+    archival reference only and are never imported by this composition root.
     """
     adapters: dict[str, ProductConnectorAdapter] = {}
     for source_type in PRODUCT_SPECS_BY_SOURCE_TYPE:
@@ -657,6 +661,9 @@ def build_production_refresh_manager(
         )
 
     resolve_market_state.__name__ = "get_market_state"
+    # ACTIVE RUNTIME REGISTRATION: these callables are the CSV-backed boundary
+    # above. Files in feeds/_disabled and adapters/_disabled are intentionally
+    # non-importable archives and must never be wired here implicitly.
     return RiskRefreshManager(
         get_portfolio_config,
         thresholds=get_risk_thresholds,

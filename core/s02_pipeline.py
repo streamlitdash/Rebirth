@@ -1920,6 +1920,7 @@ class ControlSnapshot:
     risk_status: pd.DataFrame
     risk_checker_enabled: bool
     commodity_market_enabled: bool
+    risk_dates: dict[str, pd.Timestamp]
     forced_dates: dict[str, pd.Timestamp]
     errors: tuple[str, ...]
 
@@ -2229,6 +2230,7 @@ class RiskRefreshManager:
             risk_status=committed.risk_status.copy(deep=True),
             risk_checker_enabled=committed.risk_checker_enabled,
             commodity_market_enabled=committed.commodity_market_enabled,
+            risk_dates=dict(committed.risk_dates),
             forced_dates=dict(committed.forced_dates),
             errors=committed.errors,
         )
@@ -2355,6 +2357,7 @@ class RiskRefreshManager:
         limit: int = 500,
         identity_mode: str = "reported",
         risk_filters: Mapping[str, Sequence[str] | None] | None = None,
+        exclude_selected: bool = False,
     ) -> SearchResult:
         """Build one exact-selection pivot from the current committed catalog."""
         with self._state_lock:
@@ -2367,6 +2370,7 @@ class RiskRefreshManager:
             limit=limit,
             identity_mode=identity_mode,
             risk_filters=risk_filters,
+            exclude_selected=exclude_selected,
         )
 
     def pivot_combined_hierarchy(
@@ -2377,6 +2381,7 @@ class RiskRefreshManager:
         leaf_limit: int = 500,
         identity_mode: str = "reported",
         risk_filters: Mapping[str, Sequence[str] | None] | None = None,
+        exclude_selected: bool = False,
     ) -> SearchResult:
         """Return all independently aggregated prefix levels for one identity."""
         with self._state_lock:
@@ -2389,6 +2394,7 @@ class RiskRefreshManager:
             leaf_limit=leaf_limit,
             identity_mode=identity_mode,
             risk_filters=risk_filters,
+            exclude_selected=exclude_selected,
         )
 
     @property

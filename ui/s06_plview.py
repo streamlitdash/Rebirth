@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dash import dash_table, dcc, html
-from core.s04_pl import HISTORICAL_PL_COLUMNS
+from core.s04_pl import HISTORY_TYPE, PL_HISTORY_COLUMNS
 
 
 DISPLAY_COLUMNS = (
@@ -108,7 +108,7 @@ def _preview_table() -> dash_table.DataTable:
 
 
 def _historical_table() -> dash_table.DataTable:
-    """Build the read-only daily Portfolio/ConcertoField history table."""
+    """Build the interactive actual/predicted raw-detail table."""
     return dash_table.DataTable(
         id="pl-history-grid",
         columns=[
@@ -117,7 +117,7 @@ def _historical_table() -> dash_table.DataTable:
                 "id": column,
                 **({"type": "numeric"} if column == "PL" else {}),
             }
-            for column in HISTORICAL_PL_COLUMNS
+            for column in PL_HISTORY_COLUMNS
         ],
         data=[],
         editable=False,
@@ -629,7 +629,7 @@ def build_pl_send_sections() -> list[html.Div | html.Details]:
     history = html.Details(
         [
             html.Summary(
-                "Histo Data",
+                "Histo P&L",
                 id="pl-history-summary",
                 n_clicks=0,
                 className="aux-summary",
@@ -670,13 +670,30 @@ def build_pl_send_sections() -> list[html.Div | html.Details]:
                                 ],
                                 className="pl-editor-filter",
                             ),
+                            html.Div(
+                                [
+                                    html.Label(
+                                        HISTORY_TYPE,
+                                        htmlFor="pl-history-type-filter",
+                                    ),
+                                    dcc.Dropdown(
+                                        id="pl-history-type-filter",
+                                        options=[],
+                                        value=[],
+                                        multi=True,
+                                        placeholder="Histo and Predicted",
+                                    ),
+                                ],
+                                className="pl-editor-filter",
+                            ),
                         ],
                         className="pl-editor-toolbar",
                     ),
                     html.P(
-                        "Track validated daily P&L at Market Date + Portfolio + "
-                        "ConcertoField grain. The selectors apply to both the chart "
-                        "and the table.",
+                        "Compare validated Histo and Predicted daily P&L at Market "
+                        "Date + P&L Type + Portfolio + ConcertoField grain. The "
+                        "selectors apply to both the chart and the raw-detail table. "
+                        "Files are read from histo/YYYY/MM-DD/{histo,predicted}.csv.",
                         className="pl-editor-guide",
                     ),
                     dcc.Loading(
@@ -685,7 +702,7 @@ def build_pl_send_sections() -> list[html.Div | html.Details]:
                             figure={
                                 "data": [],
                                 "layout": {
-                                    "title": "Historical P&L",
+                                    "title": "Historical vs predicted P&L",
                                     "xaxis": {"title": "Market Date"},
                                     "yaxis": {"title": "P&L"},
                                 },
@@ -701,7 +718,7 @@ def build_pl_send_sections() -> list[html.Div | html.Details]:
                         className="pl-send-table",
                     ),
                     html.Div(
-                        "Open Histo Data to load its validated rows.",
+                        "Open Histo P&L to load its validated rows.",
                         id="pl-history-status",
                         className="pl-send-status",
                         role="status",
@@ -729,8 +746,40 @@ def build_pl_send_sections() -> list[html.Div | html.Details]:
     return [state, preview, by_sog, by_portfolio, save, history]
 
 
+def build_pl_page(*, start_initial_load: bool = False) -> html.Main:
+    """Build the native P&L Sender page and all page-local workflow state."""
+    return html.Main(
+        html.Section(
+            [
+                (
+                    dcc.Interval(
+                        id="pnl-initial-load-trigger",
+                        interval=500,
+                        n_intervals=0,
+                        max_intervals=1,
+                    )
+                    if start_initial_load
+                    else None
+                ),
+                dcc.Store(id="pl-adjustment-revision-store", data=0),
+                html.H1("P&L Sender", className="static-data-page-title"),
+                html.P(
+                    "Preview governed P&L, edit and send it by SOG or Portfolio, "
+                    "write the complete file, and compare Histo with Predicted P&L.",
+                    className="static-data-page-note",
+                ),
+                *build_pl_send_sections(),
+            ],
+            id="pnl-page",
+            className="static-data-page",
+        ),
+        id="pnl-page-container",
+    )
+
+
 __all__ = [
     "DISPLAY_COLUMNS",
     "GRID_ROW_ID",
+    "build_pl_page",
     "build_pl_send_sections",
 ]

@@ -1002,14 +1002,19 @@
       return floor;
     };
 
+    const financialPageCanConsumeRevision = () => (
+      (
+        document.getElementById("cube-page-container")
+        && document.getElementById("risk-type-tabs")
+      )
+      || document.getElementById("pnl-page-container")
+    );
+
     const syncCommittedDataRevision = (progress) => {
       if (refreshProgressState?.mode === "bootstrap") return false;
-      // Risk render callbacks target page-local outputs. Hold the common
-      // revision signal on other Dash Pages and publish it when Risk mounts.
-      if (
-        !document.getElementById("cube-page-container")
-        || !document.getElementById("risk-type-tabs")
-      ) return false;
+      // Revision-driven callbacks target page-local outputs. Hold the common
+      // signal until a warm Risk page or the configured P&L page can consume it.
+      if (!financialPageCanConsumeRevision()) return false;
       const commitNode = document.getElementById("refresh-commit-revision");
       const progressRevision = progress?.running === false
         ? normalizedRevision(progress.revision)
@@ -1720,10 +1725,7 @@
 
   syncRefreshLifecycleNodes = () => {
     syncRefreshStatusObserver();
-    if (
-      document.getElementById("cube-page-container")
-      && document.getElementById("risk-type-tabs")
-    ) {
+    if (financialPageCanConsumeRevision()) {
       syncCommittedDataRevision(lastBackendProgress);
     }
     const state = refreshProgressState;

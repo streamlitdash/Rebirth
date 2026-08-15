@@ -438,8 +438,17 @@ def apply_filters(
     risk_types: Sequence[str] | None,
     splits: Sequence[str] | None,
     dimension_filters: Mapping[str, Sequence[str] | None] | None,
+    *,
+    exclude_selected: bool = False,
 ) -> pd.DataFrame:
-    """Apply current Risk Explorer selections without changing values."""
+    """Apply Risk-local filters with OR-within and AND-across semantics.
+
+    Populated dimension selections include their values by default.  In
+    exclusion mode every populated set instead removes its selected values;
+    empty selections remain unrestricted in either mode.  Risk Type and Split
+    retain their existing inclusion semantics because they are navigation and
+    sourced-risk controls rather than reporting-dimension filters.
+    """
     mask = pd.Series(True, index=data.index)
     if risk_types:
         mask &= data["risk type"].isin(risk_types)
@@ -451,8 +460,13 @@ def apply_filters(
         raise ValueError(f"Unknown reporting-dimension filters: {unknown_dimensions}")
     for column in FILTER_COLUMNS:
         selected = selected_dimensions.get(column)
+        if isinstance(selected, (str, bytes)):
+            raise TypeError(
+                f"Reporting-dimension filter {column!r} must be a sequence of values"
+            )
         if selected:
-            mask &= data[column].isin(selected)
+            matches = data[column].isin(selected)
+            mask &= ~matches if exclude_selected else matches
     frame = data.loc[mask].copy()
     frame["abs pl"] = frame["pl"].abs()
     frame["rows"] = 1

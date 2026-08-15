@@ -249,6 +249,9 @@ class ControlSnapshotProtocol(Protocol):
     def commodity_market_enabled(self) -> bool: ...
 
     @property
+    def risk_dates(self) -> Mapping[str, pd.Timestamp]: ...
+
+    @property
     def forced_dates(self) -> Mapping[str, pd.Timestamp]: ...
 
     @property
@@ -361,6 +364,8 @@ class RefreshManagerProtocol(Protocol):
         ),
         limit: int = 500,
         identity_mode: str = "reported",
+        risk_filters: Mapping[str, Sequence[str] | None] | None = None,
+        exclude_selected: bool = False,
     ) -> SearchResultProtocol: ...
 
     def pivot_combined_hierarchy(
@@ -375,6 +380,7 @@ class RefreshManagerProtocol(Protocol):
         leaf_limit: int = 500,
         identity_mode: str = "reported",
         risk_filters: Mapping[str, Sequence[str] | None] | None = None,
+        exclude_selected: bool = False,
     ) -> SearchResultProtocol: ...
 
     def refresh(

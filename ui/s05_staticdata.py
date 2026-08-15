@@ -19,7 +19,6 @@ _STATIC_FILE_CATALOG = [
     {"label": "Top Thresholds", "value": "s07_thresholds.csv"},
     {"label": "Concerto Mapping", "value": "s08_concerto.csv"},
     {"label": "Reported Underlying Mapping", "value": "s09_reported.csv"},
-    {"label": "Historical P&L", "value": "s10_historical_pl.csv"},
 ]
 STATIC_FILE_OPTIONS = [
     option for option in _STATIC_FILE_CATALOG if (DATA_DIR / option["value"]).is_file()

@@ -507,6 +507,7 @@ def _render_quick_search_pivot(
     index_columns: object,
     is_open: object,
     risk_filters: Mapping[str, Sequence[str] | None] | None = None,
+    exclude_selected: bool = False,
 ):
     selected_mode = str(identity_mode or "reported").strip().casefold()
     selected_indexes, restore_index = _normalise_quick_search_index(index_columns)
@@ -530,8 +531,9 @@ def _render_quick_search_pivot(
             "leaf_limit": QUICK_RISK_PIVOT_LIMIT,
             "identity_mode": selected_mode,
             "risk_filters": risk_filters,
+            "exclude_selected": exclude_selected,
         }
-        # ``identity_mode`` and ``risk_filters`` were added to the manager
+        # Filter arguments were added to the manager
         # contract after the exact-pivot helper first shipped.  Keeping this
         # small compatibility boundary lets cold fixtures and direct helper
         # callers use the older read-only protocol without catching a
@@ -628,6 +630,7 @@ def _top_book_action_view_token(
     *,
     splits: Sequence[str] | None = None,
     dimension_filters: Mapping[str, Sequence[str] | None] | None = None,
+    exclude_selected: bool = False,
 ) -> str:
     """Bind Top Book actions to the exact filtered hierarchy generation."""
     return json.dumps(
@@ -637,6 +640,7 @@ def _top_book_action_view_token(
                 key: sorted(values or [])
                 for key, values in sorted((dimension_filters or {}).items())
             },
+            "exclude_selected": bool(exclude_selected),
             "splits": sorted(splits or []),
             "view": "top-book",
         },
@@ -644,6 +648,35 @@ def _top_book_action_view_token(
         separators=(",", ":"),
         default=str,
     )
+
+
+def risk_exclude_selected(value: Sequence[str] | None) -> bool:
+    """Normalize the Risk-local exclusion checklist value."""
+    return "exclude" in (value or [])
+
+
+def filter_unmapped_portfolios(
+    frame: pd.DataFrame,
+    selected_portfolios: Sequence[str] | None,
+    *,
+    exclude_selected: bool = False,
+) -> pd.DataFrame:
+    """Apply the Portfolio subset of shared Risk filters to unmapped books.
+
+    Unmapped rows deliberately have no governed Activity, Signoff Group,
+    Category, or Sub Category. Portfolio is their only meaningful shared
+    dimension, so mapped-only selections do not erase this diagnostic table.
+    """
+    if not isinstance(frame, pd.DataFrame):
+        raise TypeError("unmapped frame must be a pandas DataFrame")
+    selected = list(selected_portfolios or [])
+    if frame.empty or not selected:
+        return frame.copy()
+    if "Portfolio" not in frame:
+        raise ValueError("unmapped frame is missing required column 'Portfolio'")
+    matches = frame["Portfolio"].isin(selected)
+    mask = ~matches if exclude_selected else matches
+    return frame.loc[mask].copy()
 
 
 def _has_valid_action_envelope(
@@ -1023,6 +1056,8 @@ class _RiskDataCache:
         ir_family: str | None,
         splits: Sequence[str] | None,
         dimension_filters: Mapping[str, Sequence[str] | None],
+        *,
+        exclude_selected: bool = False,
     ) -> pd.DataFrame:
         """Return filtered data with promotion computed AFTER filtering.
 
@@ -1044,6 +1079,7 @@ class _RiskDataCache:
                     (column, tuple(dimension_filters.get(column) or ()))
                     for column in sorted(dimension_filters)
                 ),
+                bool(exclude_selected),
             )
             with self._lock:
                 cached = self._filtered.get(key)
@@ -1054,6 +1090,7 @@ class _RiskDataCache:
                 [active_risk_type] if active_risk_type else [],
                 list(splits or ()),
                 dimension_filters,
+                exclude_selected=exclude_selected,
             )
             # Recompute promotion on filtered data so that only selected rows
             # participate in threshold comparison.
@@ -1142,7 +1179,6 @@ def register_callbacks(
     *,
     route_prefix: str = "/",
     startup_coordinator: StartupCoordinator | None = None,
-    pl_enabled: bool = False,
 ) -> None:
     """Register the complete interactive behavior for the risk dashboard."""
     cache = _RiskDataCache(
@@ -1191,7 +1227,6 @@ def register_callbacks(
                 prepared,
                 snapshot,
                 refresh_enabled=True,
-                pl_enabled=pl_enabled,
                 stage_delays=refresh_manager.stage_delays,
                 include_shared_refresh_shell=False,
             )
@@ -1226,13 +1261,19 @@ def register_callbacks(
             triggered: Any,
             load_intervals: Any,
             retry_clicks: Any,
+            pnl_intervals: Any = 0,
         ) -> StartupStatus:
             """Apply one idempotent startup signal and return its current state."""
-            if triggered == "initial-load-trigger":
-                if int(load_intervals or 0) <= 0:
+            if triggered in {"initial-load-trigger", "pnl-initial-load-trigger"}:
+                intervals = (
+                    pnl_intervals
+                    if triggered == "pnl-initial-load-trigger"
+                    else load_intervals
+                )
+                if int(intervals or 0) <= 0:
                     raise PreventUpdate
                 # n_intervals=1 is delivered only after the cold Risk page has
-                # painted; direct Static navigation never owns this trigger.
+                # or the cold P&L page has painted. Static/Stock never own one.
                 coordinator.start()
             elif triggered == "initial-load-retry":
                 if int(retry_clicks or 0) <= 0:
@@ -1290,6 +1331,7 @@ def register_callbacks(
             Output("shared-refresh-shell", "children"),
             Input("initial-load-trigger", "n_intervals", allow_optional=True),
             Input("initial-load-retry", "n_clicks", allow_optional=True),
+            Input("pnl-initial-load-trigger", "n_intervals", allow_optional=True),
             Input("shared-refresh-bootstrap-interval", "n_intervals"),
             State("refresh-status", "className", allow_optional=True),
             State("error-log", "children", allow_optional=True),
@@ -1299,6 +1341,7 @@ def register_callbacks(
         def hydrate_shared_refresh_shell(
             load_intervals,
             retry_clicks,
+            pnl_intervals,
             _shared_intervals,
             status_class="",
             displayed_error="",
@@ -1314,6 +1357,7 @@ def register_callbacks(
                 ctx.triggered_id,
                 load_intervals,
                 retry_clicks,
+                pnl_intervals,
             )
             common_options = {
                 "refresh_enabled": True,
@@ -1332,8 +1376,8 @@ def register_callbacks(
                 return build_shared_refresh_shell(
                     refresh_manager.snapshot,
                     # The committed marker may advance on any page, but the
-                    # live revision Store is released only after warm Risk
-                    # outputs mount (by the browser lifecycle synchronizer).
+                    # live revision Store is released only after a consuming
+                    # financial page (warm Risk or P&L) mounts.
                     data_revision=shell_revision,
                     **common_options,
                 ).children
@@ -1394,6 +1438,7 @@ def register_callbacks(
         Input({"type": "aggregate-row-toggle", "risk_type": ALL}, "n_clicks"),
         Input("split-filter", "value"),
         *dimension_filter_inputs,
+        Input("risk-filter-exclude-selected", "value"),
         State("aggregate-open-risk-types", "data"),
     )
     def reduce_and_render_aggregate_pl(
@@ -1406,8 +1451,11 @@ def register_callbacks(
         """Apply shared filters, reduce a chevron, and render Aggregate P&L."""
         dimension_count = len(dimension_filter_ids)
         dimension_values = values[:dimension_count]
-        open_risk_types = (
+        exclude_value = (
             values[dimension_count] if len(values) > dimension_count else None
+        )
+        open_risk_types = (
+            values[dimension_count + 1] if len(values) > dimension_count + 1 else None
         )
 
         updated_open_risk_types = no_update
@@ -1438,6 +1486,7 @@ def register_callbacks(
             None,  # Do not apply the active IR-family tab.
             selected_splits,
             reporting_filter_map(dimension_values),
+            exclude_selected=risk_exclude_selected(exclude_value),
         )
 
         return (
@@ -1458,6 +1507,7 @@ def register_callbacks(
         Input("top-book-row-action-store", "data"),
         Input("split-filter", "value"),
         *dimension_filter_inputs,
+        Input("risk-filter-exclude-selected", "value"),
         State("top-book-open-rows-store", "data"),
     )
     def reduce_and_render_top_book(
@@ -1470,7 +1520,13 @@ def register_callbacks(
         """Keep Top Book lazy while expanding rows in one request."""
         dimension_count = len(dimension_filter_ids)
         dimension_values = values[:dimension_count]
-        open_rows = values[dimension_count] if len(values) > dimension_count else None
+        exclude_value = (
+            values[dimension_count] if len(values) > dimension_count else None
+        )
+        exclude_selected = risk_exclude_selected(exclude_value)
+        open_rows = (
+            values[dimension_count + 1] if len(values) > dimension_count + 1 else None
+        )
         reporting_filters = reporting_filter_map(dimension_values)
         filtered = cache.filtered(
             refresh_manager,
@@ -1478,11 +1534,13 @@ def register_callbacks(
             None,
             selected_splits,
             reporting_filters,
+            exclude_selected=exclude_selected,
         )
         view_token = _top_book_action_view_token(
             data_revision,
             splits=selected_splits,
             dimension_filters=reporting_filters,
+            exclude_selected=exclude_selected,
         )
         is_open = bool(int(summary_clicks or 0) % 2)
         updated_open_rows = no_update
@@ -1586,6 +1644,7 @@ def register_callbacks(
         *,
         splits,
         dimension_values,
+        exclude_selected,
         credit_measure,
         credit_multi_metric,
         alt_metric,
@@ -1602,6 +1661,7 @@ def register_callbacks(
             "credit_multi_metric": credit_multi_metric,
             "expanded_metrics": sorted(expanded_metrics or []),
             "filters": {key: sorted(values) for key, values in sorted(filters.items())},
+            "exclude_selected": bool(exclude_selected),
             "splits": sorted(splits or []),
             "promotion_enabled": bool(promotion_enabled),
             "region_enabled": bool(region_enabled),
@@ -1626,6 +1686,7 @@ def register_callbacks(
         alt_metric,
         open_rows,
         dimension_values,
+        exclude_selected=False,
         promotion_enabled=True,
         region_enabled=True,
     ):
@@ -1645,6 +1706,7 @@ def register_callbacks(
             credit_multi_metric=credit_multi_metric,
             alt_metric=alt_metric,
             expanded_metrics=expanded_metrics,
+            exclude_selected=exclude_selected,
             promotion_enabled=promotion_enabled,
             region_enabled=region_enabled,
             underlying_sort_metric=selected_sort_metric,
@@ -1657,6 +1719,7 @@ def register_callbacks(
                 normalized_ir_family,
                 splits,
                 reporting_filters,
+                exclude_selected=exclude_selected,
             )
 
         if table_view == "alt":
@@ -1746,6 +1809,7 @@ def register_callbacks(
         plot_component,
         tenor_view,
         dimension_values,
+        exclude_selected=False,
     ):
         """Build the current detail, short-circuiting the empty state."""
         if not selection:
@@ -1763,6 +1827,7 @@ def register_callbacks(
             ir_family,
             splits,
             reporting_filter_map(dimension_values),
+            exclude_selected=exclude_selected,
         )
         selected_credit_measure = selection.get("credit_measure")
         if detail_risk_type == "Credit" and selected_credit_measure:
@@ -1812,6 +1877,7 @@ def register_callbacks(
         Input("plot-component", "value"),
         Input("detail-tenor-view", "value"),
         Input("dimension-filter-values-store", "data"),
+        Input("risk-filter-exclude-selected", "value"),
         Input("promotion-toggle-store", "data"),
         Input("region-toggle-store", "data"),
         Input("underlying-sort-metric", "value"),
@@ -1839,6 +1905,7 @@ def register_callbacks(
         plot_component,
         tenor_view,
         dimension_values,
+        exclude_value,
         promotion_enabled,
         region_enabled,
         underlying_sort_metric,
@@ -1855,6 +1922,7 @@ def register_callbacks(
         row, metric and filter interactions each require one server request.
         """
         dimension_values = dimension_values or []
+        exclude_selected = risk_exclude_selected(exclude_value)
         normalized_ir_family = ir_family if active_risk_type == "IR" else None
         context = {
             "risk_type": active_risk_type,
@@ -1878,6 +1946,7 @@ def register_callbacks(
             "credit-multi-metric.value",
             "alt-metric.value",
             "dimension-filter-values-store.data",
+            "risk-filter-exclude-selected.value",
             "promotion-toggle-store.data",
             "region-toggle-store.data",
             "underlying-sort-metric.value",
@@ -1973,6 +2042,7 @@ def register_callbacks(
                 generation_state=risk_generation_state(
                     splits=effective_splits,
                     dimension_values=dimension_values,
+                    exclude_selected=exclude_selected,
                     credit_measure=credit_measure,
                     credit_multi_metric=credit_multi_metric,
                     alt_metric=alt_metric,
@@ -2050,6 +2120,7 @@ def register_callbacks(
                             data_revision,
                             splits=effective_splits,
                             dimension_filters=reporting_filter_map(dimension_values),
+                            exclude_selected=exclude_selected,
                         ),
                     ):
                         raise PreventUpdate
@@ -2155,6 +2226,7 @@ def register_callbacks(
                 alt_metric=alt_metric,
                 open_rows=effective_open_rows,
                 dimension_values=dimension_values,
+                exclude_selected=exclude_selected,
                 promotion_enabled=bool(promotion_enabled),
                 region_enabled=bool(region_enabled),
             )
@@ -2176,6 +2248,7 @@ def register_callbacks(
                 plot_component=effective_plot_component,
                 tenor_view=effective_tenor_view,
                 dimension_values=dimension_values,
+                exclude_selected=exclude_selected,
             )
             updates[9] = detail_tenor_options
             updates[10] = effective_tenor_view
@@ -2191,10 +2264,18 @@ def register_callbacks(
         Output("unmapped-books-grid", "children"),
         Input("unmapped-books-summary", "n_clicks"),
         Input("data-revision-store", "data"),
+        Input(DIMENSION_FILTER_IDS["portfolio"], "value"),
+        Input("risk-filter-exclude-selected", "value"),
         State("unmapped-books-details", "open"),
         prevent_initial_call=True,
     )
-    def render_unmapped_books(_summary_clicks, _revision, is_open):
+    def render_unmapped_books(
+        _summary_clicks,
+        _revision,
+        selected_portfolios,
+        exclude_value,
+        is_open,
+    ):
         """Load the complete unmapped-book inventory only while it is open."""
         open_update = (
             not bool(is_open)
@@ -2207,6 +2288,11 @@ def register_callbacks(
             refresh_manager.read_frame("unmapped_frame").frame
             if refresh_manager is not None
             else pd.DataFrame()
+        )
+        frame = filter_unmapped_portfolios(
+            frame,
+            selected_portfolios,
+            exclude_selected=risk_exclude_selected(exclude_value),
         )
         return True, build_unmapped_books_table(frame)
 
@@ -2264,6 +2350,7 @@ def register_callbacks(
             Input("quick-search-summary", "n_clicks"),
             Input("data-revision-store", "data"),
             Input("split-filter", "value"),
+            Input("risk-filter-exclude-selected", "value"),
             *dimension_filter_inputs,
             prevent_initial_call=True,
         )
@@ -2274,6 +2361,7 @@ def register_callbacks(
             summary_clicks,
             _revision,
             selected_splits,
+            exclude_value,
             *dimension_values,
         ):
             rendered, index_update = _render_quick_search_pivot(
@@ -2286,6 +2374,7 @@ def register_callbacks(
                     selected_splits,
                     dimension_values,
                 ),
+                exclude_selected=risk_exclude_selected(exclude_value),
             )
             return rendered, index_update
 
@@ -2813,7 +2902,7 @@ def register_callbacks(
             """Keep the prominent dates aligned with the committed snapshot."""
             if not _revision or refresh_manager.health.revision <= 0:
                 return no_update
-            return build_operating_date_content(refresh_manager.snapshot)
+            return build_operating_date_content(refresh_manager.control_snapshot)
 
         @app.callback(
             Output(COMMODITY_MARKET_STORE_ID, "data"),
@@ -3195,11 +3284,13 @@ __all__ = [
     "draft_base_dates",
     "draft_forced_dates",
     "force_dates_dirty",
+    "filter_unmapped_portfolios",
     "make_force_draft",
     "normalize_forced_dates",
     "persisted_force_dates",
     "rebase_force_draft",
     "register_callbacks",
     "risk_action_view_token",
+    "risk_exclude_selected",
     "snapshot_forced_dates",
 ]

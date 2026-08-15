@@ -161,12 +161,18 @@ def test_startup_page_and_shared_shell_have_independent_callback_outputs() -> No
     assert {(item["id"], item["property"]) for item in shell_callback["inputs"]} == {
         ("initial-load-trigger", "n_intervals"),
         ("initial-load-retry", "n_clicks"),
+        ("pnl-initial-load-trigger", "n_intervals"),
         ("shared-refresh-bootstrap-interval", "n_intervals"),
     }
     assert all(
         item.get("allow_optional") is True
         for item in shell_callback["inputs"]
-        if item["id"].startswith("initial-load-")
+        if item["id"]
+        in {
+            "initial-load-trigger",
+            "initial-load-retry",
+            "pnl-initial-load-trigger",
+        }
     )
     force_apply = next(
         item
@@ -354,17 +360,18 @@ def test_operating_dates_stay_neutral_before_the_cold_start_commits() -> None:
     assert metadata["callback"].__wrapped__(0) is no_update
 
 
-def test_browser_defers_start_and_revision_signals_off_risk_page() -> None:
+def test_browser_defers_revision_until_a_financial_page_can_consume_it() -> None:
     source = (Path(__file__).parents[1] / "assets" / "s02_app.js").read_text(
         encoding="utf-8"
     )
     assert 'document.getElementById("shared-refresh-shell")' in source
     assert "shell.getClientRects().length > 0" in source
     assert "running && !refreshProgressState && lifecycleVisible" in source
-    assert '!document.getElementById("cube-page-container")' in source
-    assert '!document.getElementById("risk-type-tabs")' in source
+    assert "const financialPageCanConsumeRevision" in source
     assert 'document.getElementById("cube-page-container")' in source
-    assert '&& document.getElementById("risk-type-tabs")' in source
+    assert 'document.getElementById("risk-type-tabs")' in source
+    assert 'document.getElementById("pnl-page-container")' in source
+    assert "if (!financialPageCanConsumeRevision()) return false;" in source
     assert "syncCommittedDataRevision(lastBackendProgress);" in source
     trigger_start = source.index("const refreshTrigger = event.target.closest")
     trigger_end = source.index("const header = event.target.closest", trigger_start)

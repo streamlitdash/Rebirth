@@ -6,9 +6,11 @@ import argparse
 import os
 from pathlib import Path
 
+from adapters.s05_stock import get_stock
 from core.s05_storage import LocalCsvAdjustmentRepository
 from feeds.s01_sources import (
     build_production_refresh_manager,
+    get_portfolio_config,
     send_portfolio_pl,
     send_sog_pl,
 )
@@ -68,7 +70,7 @@ def create_app(settings: RuntimeSettings | None = None):
     )
     historical_pl_path = resolve_data_path(
         os.getenv("PL_HISTORICAL_PATH"),
-        Path("data/s10_historical_pl.csv"),
+        Path("data/histo"),
         root=project_root,
     )
 
@@ -83,6 +85,8 @@ def create_app(settings: RuntimeSettings | None = None):
     return build_app(
         refresh_manager=manager,
         pl_send_config=pl_send_config,
+        stock_source=get_stock,
+        stock_portfolio_source=get_portfolio_config,
         dash_kwargs=settings.dash_kwargs,
     )
 

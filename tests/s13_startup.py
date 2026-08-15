@@ -540,9 +540,13 @@ def test_native_pages_mount_one_exact_page_and_explicit_404() -> None:
 
     static_page, metadata = _native_page(app, "/static-data")
     static_ids = {getattr(item, "id", None) for item in _walk(static_page)}
-    cube_class, static_class, shell_style = nav(app.get_relative_path("/static-data/"))
+    cube_class, pnl_class, stock_class, static_class, shell_style = nav(
+        app.get_relative_path("/static-data/")
+    )
     assert metadata == {"title": "Cube — Static Data"}
     assert cube_class == "app-nav-link cube-nav-link"
+    assert pnl_class == "app-nav-link cube-nav-link"
+    assert stock_class == "app-nav-link cube-nav-link"
     assert static_class == "app-nav-link cube-nav-link is-active"
     assert shell_style == {"display": "none"}
     assert {"static-data-page", "static-data-file-selector"} <= static_ids
@@ -551,17 +555,49 @@ def test_native_pages_mount_one_exact_page_and_explicit_404() -> None:
 
     cube_page, metadata = _native_page(app)
     cube_ids = {getattr(item, "id", None) for item in _walk(cube_page)}
-    cube_class, static_class, shell_style = nav(app.get_relative_path("/"))
+    cube_class, pnl_class, stock_class, static_class, shell_style = nav(
+        app.get_relative_path("/")
+    )
     assert metadata == {"title": "Cube — Risk"}
     assert cube_class == "app-nav-link cube-nav-link is-active"
+    assert pnl_class == "app-nav-link cube-nav-link"
+    assert stock_class == "app-nav-link cube-nav-link"
     assert static_class == "app-nav-link cube-nav-link"
     assert shell_style == {}
     assert {"cube-page-container", "initial-load-trigger"} <= cube_ids
     assert "static-data-page" not in cube_ids
 
+    pnl_page, metadata = _native_page(app, "/pnl")
+    pnl_ids = {getattr(item, "id", None) for item in _walk(pnl_page)}
+    cube_class, pnl_class, stock_class, static_class, shell_style = nav(
+        app.get_relative_path("/pnl")
+    )
+    assert metadata == {"title": "Cube — P&L Sender"}
+    assert cube_class == "app-nav-link cube-nav-link"
+    assert pnl_class == "app-nav-link cube-nav-link is-active"
+    assert stock_class == "app-nav-link cube-nav-link"
+    assert static_class == "app-nav-link cube-nav-link"
+    assert shell_style == {}
+    assert {"pnl-page", "pnl-unavailable"} <= pnl_ids
+    assert "cube-page-container" not in pnl_ids
+
+    stock_page, metadata = _native_page(app, "/stock")
+    stock_ids = {getattr(item, "id", None) for item in _walk(stock_page)}
+    cube_class, pnl_class, stock_class, static_class, shell_style = nav(
+        app.get_relative_path("/stock")
+    )
+    assert metadata == {"title": "Cube — Stock"}
+    assert cube_class == "app-nav-link cube-nav-link"
+    assert pnl_class == "app-nav-link cube-nav-link"
+    assert stock_class == "app-nav-link cube-nav-link is-active"
+    assert static_class == "app-nav-link cube-nav-link"
+    assert shell_style == {"display": "none"}
+    assert {"stock-page", "stock-unavailable"} <= stock_ids
+    assert "cube-page-container" not in stock_ids
+
     not_found, metadata = _native_page(app, "/nested/static-data")
     not_found_ids = {getattr(item, "id", None) for item in _walk(not_found)}
-    cube_class, static_class, shell_style = nav(
+    cube_class, pnl_class, stock_class, static_class, shell_style = nav(
         app.get_relative_path("/nested/static-data")
     )
     return_link = next(
@@ -571,6 +607,8 @@ def test_native_pages_mount_one_exact_page_and_explicit_404() -> None:
     )
     assert metadata == {"title": "Cube — Page not found"}
     assert cube_class == "app-nav-link cube-nav-link"
+    assert pnl_class == "app-nav-link cube-nav-link"
+    assert stock_class == "app-nav-link cube-nav-link"
     assert static_class == "app-nav-link cube-nav-link"
     assert shell_style == {"display": "none"}
     assert {"not-found-page", "not-found-page-container"} <= not_found_ids
@@ -589,16 +627,24 @@ def test_native_pages_match_the_public_prefix_exactly() -> None:
 
     static_page, _metadata = _native_page(app, "/static-data")
     static_ids = {getattr(item, "id", None) for item in _walk(static_page)}
-    cube_class, static_class, shell_style = nav("/proxy/internal/static-data/")
+    cube_class, pnl_class, stock_class, static_class, shell_style = nav(
+        "/proxy/internal/static-data/"
+    )
     assert cube_class == "app-nav-link cube-nav-link"
+    assert pnl_class == "app-nav-link cube-nav-link"
+    assert stock_class == "app-nav-link cube-nav-link"
     assert static_class == "app-nav-link cube-nav-link is-active"
     assert shell_style == {"display": "none"}
     assert "static-data-page" in static_ids
 
     not_found, _metadata = _native_page(app, "/nested/static-data")
     not_found_ids = {getattr(item, "id", None) for item in _walk(not_found)}
-    cube_class, static_class, shell_style = nav("/proxy/internal/nested/static-data")
+    cube_class, pnl_class, stock_class, static_class, shell_style = nav(
+        "/proxy/internal/nested/static-data"
+    )
     assert cube_class == "app-nav-link cube-nav-link"
+    assert pnl_class == "app-nav-link cube-nav-link"
+    assert stock_class == "app-nav-link cube-nav-link"
     assert static_class == "app-nav-link cube-nav-link"
     assert shell_style == {"display": "none"}
     assert "not-found-page" in not_found_ids
@@ -629,10 +675,16 @@ def test_repeated_apps_keep_native_page_services_isolated() -> None:
 
     assert tuple(page_registry) == (
         "pages.risk",
+        "pages.pnl",
+        "pages.stock",
         "pages.static_data",
         "pages.not_found_404",
     )
+    assert page_registry["pages.pnl"]["relative_path"] == "/warm/pnl"
+    assert page_registry["pages.stock"]["relative_path"] == "/warm/stock"
     assert page_registry["pages.static_data"]["relative_path"] == "/warm/static-data"
+    assert cold_app.get_relative_path("/pnl") == "/cold/pnl"
+    assert warm_app.get_relative_path("/stock") == "/warm/stock"
     assert cold_app.get_relative_path("/static-data") == "/cold/static-data"
     assert warm_app.get_relative_path("/static-data") == "/warm/static-data"
 
@@ -680,6 +732,7 @@ def test_static_data_page_defers_its_default_csv_until_callback_mount() -> None:
 
     options = {option["value"] for option in STATIC_FILE_OPTIONS}
     assert "s08_concerto.csv" in options
+    assert "s10_historical_pl.csv" not in options
     assert "s08_plsend.csv" not in options
 
 

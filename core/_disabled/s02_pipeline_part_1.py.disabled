@@ -1,0 +1,585 @@
+# """Reusable pandas pipeline for risk, market move, P&L, and dashboard data.
+#
+# The runnable app performs data access only through ``feeds.s01_sources.py``.
+# Functions in this module validate injected DataFrames and calculate results; they
+# must remain independent of CSV, database, and API implementation details.
+# """
+#
+# from __future__ import annotations
+#
+# import logging
+# import re
+# import time
+# import uuid
+# from dataclasses import dataclass, replace
+# from datetime import date, datetime, timezone
+# from numbers import Real
+# from pathlib import Path
+# from threading import Lock, RLock
+# from typing import Callable, Literal, Mapping, Protocol, Sequence
+# from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+#
+# import numpy as np
+# import pandas as pd
+#
+# from core.s01_schema import (
+#     PORTFOLIO_COLUMN,
+#     PORTFOLIO_CONFIG_COLUMNS,
+#     PORTFOLIO_CONFIG_REQUIRED_COLUMNS,
+#     PORTFOLIO_FIELDS,
+#     PORTFOLIO_FIELD_BY_KEY,
+#     PORTFOLIO_MAPPED_COLUMN,
+#     PORTFOLIO_METADATA_COLUMNS,
+#     PORTFOLIO_OPTIONAL_METADATA_COLUMNS,
+#     PORTFOLIO_POSITION_COLUMNS,
+#     PORTFOLIO_REPORTING_COLUMNS,
+#     TENOR_COLUMNS,
+#     TENOR_OPTION,
+#     TENOR_OPTION_ORDER,
+#     TENOR_ORDER_COLUMNS,
+#     TENOR_SWAP,
+#     TENOR_SWAP_ORDER,
+#     UNMAPPED_VALUE,
+# )
+# from core.s03_search import SearchCatalog, SearchResult, build_search_catalog
+# from core.s06_mapping import (
+#     REPORTED_UNDERLYING,
+#     attach_reported_underlying,
+#     load_reported_underlying_mapping,
+# )
+#
+# LOGGER = logging.getLogger(__name__)
+#
+# RISK_TYPE = "Risk Type"
+# SOURCE_TYPE = "Source Type"
+# RISK_GREEK = "Risk Greek"
+# SPLIT = "Split"
+# GROUP = "Group"
+# UNDERLYING = "Underlying"
+# PORTFOLIO = PORTFOLIO_COLUMN
+# RISK = "Risk"
+# DRISK = "dRisk"
+# OPEN = "Open"
+# CURRENT = "Current"
+# LIVE = "Live"
+# OFFICIAL = "OFFICIAL"
+# MARKET_STATUS = "Market Status"
+# MARKET_DATE = "Market Date"
+# MARKET_MOVE = "Move"
+# MARKET_AVAILABLE = "Market Available"
+# MARKET_DATA_STATUS = "Market Data Status"
+# PL = "PL"
+# PRODUCT = PORTFOLIO_FIELD_BY_KEY["product"].external_name
+# PRODUCT_LABELS = {
+#     value.casefold(): value
+#     for value in PORTFOLIO_FIELD_BY_KEY["product"].allowed_values
+# }
+# CANONICAL_PRODUCTS = frozenset(PRODUCT_LABELS.values())
+# ACTIVITY = PORTFOLIO_FIELD_BY_KEY["activity"].external_name
+# SIGNOFF_GROUP = PORTFOLIO_FIELD_BY_KEY["signoffgroup"].external_name
+# CATEGORY = PORTFOLIO_FIELD_BY_KEY["category"].external_name
+# SUBCATEGORY = PORTFOLIO_FIELD_BY_KEY["subcategory"].external_name
+# PORTFOLIO_MAPPED = PORTFOLIO_MAPPED_COLUMN
+# GROUP = "Group"
+# DISPLAY_BUCKET = "Display Bucket"
+# PROMOTION_REASON = "Promotion Reason"
+# PROMOTION_SCORE = "Promotion Score"
+# RISK_THRESHOLD = "Risk Threshold"
+# DRISK_THRESHOLD = "dRisk Threshold"
+# PL_THRESHOLD = "PL Threshold"
+# RISK_DATE = "Risk Date"
+# AGE = "Age"
+# MRX_FILE = "MRX File"
+# EFFECTIVE_RISK_DATE = "Effective Risk Date"
+# FORCE_RISK = "Force Risk"
+# CHECKER_DATE = "Checker Date"
+# SUGGESTED_RISK_DATE = "Suggested Risk Date"
+# AGE_DEFAULTED = "Age Defaulted"
+#
+# CREDIT_MEASURES = ("SP01", "PSP01", "PM01", "PM01P", "Theta", "JTD")
+# CREDIT_MEASURE_COLUMNS = tuple(
+#     f"{metric} (measure)" for measure in CREDIT_MEASURES for metric in (RISK, DRISK)
+# )
+#
+# MarketUnit = Literal["pips", "outright", "vol_points", "bp"]
+# PlFormula = Literal["absolute", "minusabsolute", "percentage", "percentage_vega", "taylor_gamma"]
+# FrameSource = pd.DataFrame | Callable[[], pd.DataFrame] | None
+# DateFrameSource = pd.DataFrame | str | Path
+# GovernanceSource = DataFrameSource | Callable[[], pd.DataFrame]
+# PortfolioConfigSource = DataFrameSource | Callable[[pd.Timestamp], pd.DataFrame]
+# ProductSources = Mapping[str, Mapping[str, FrameSource]]
+# RiskCheckerResult = tuple[pd.DataFrame, pd.DataFrame]
+# MarketStatusResolver = Callable[[pd.Timestamp], str]
+# FrameName = Literal[
+#     "risk_status",
+#     "risk_checker",
+#     "combined_pl",
+#     "market_frame",
+#     "dashboard_frame",
+#     "unmapped_frame",
+# ]
+#
+#
+# class ProductMarketConnector(Protocol):
+#     """One source-bound, one-Underlying market connector."""
+#
+#     def __call__(
+#         self,
+#         market_date: pd.Timestamp,
+#         underlying: str,
+#         *,
+#         market_status: str,
+#     ) -> pd.DataFrame: ...
+#
+#
+# class GenericMarketConnector(Protocol):
+#     """Generic market connector whose first argument selects the source."""
+#
+#     def __call__(
+#         self,
+#         source_type: str,
+#         market_date: pd.Timestamp,
+#         underlying: str,
+#         *,
+#         market_status: str,
+#     ) -> pd.DataFrame: ...
+#
+#
+# class RefreshInProgressError(RuntimeError):
+#     """Raised when a refresh writer already owns the manager's refresh gate."""
+#
+#
+# class StaleRefreshError(RuntimeError):
+#     """Raised when a caller attempts to refresh from an obsolete revision."""
+#
+#     def __init__(self, expected_revision: int, actual_revision: int) -> None:
+#         self.expected_revision = expected_revision
+#         self.actual_revision = actual_revision
+#         super().__init__(
+#             "refresh revision is stale: "
+#             f"expected {expected_revision}, current revision is {actual_revision}"
+#         )
+#
+#
+# class ProductionIntegrationError(RuntimeError):
+#     """Raised when a required real-data integration has not been configured."""
+#
+#
+# @dataclass(frozen=True)
+# class AxisSpec:
+#     """One market-owned categorical axis and its authoritative rank column."""
+#
+#     column: str
+#     order_column: str
+#
+#
+# SWAP_AXIS = AxisSpec(TENOR_SWAP, TENOR_SWAP_ORDER)
+# OPTION_AXIS = AxisSpec(TENOR_OPTION, TENOR_OPTION_ORDER)
+#
+#
+# @dataclass(frozen=True)
+# class ProductSpec:
+#     key: str
+#     source_type: str
+#     risk_type: str
+#     risk_greek: str
+#     axes: tuple[AxisSpec, ...]
+#     market_unit: MarketUnit
+#     pl_formula: PlFormula
+#     gamma_move_scale: float = 1.0
+#     gamma_risk_step: float = 1.0
+#
+#     @property
+#     def tenor_columns(self) -> list[str]:
+#         return [axis.column for axis in self.axes]
+#
+#     @property
+#     def tenor_order_columns(self) -> list[str]:
+#         return [axis.order_column for axis in self.axes]
+#
+#     @property
+#     def market_keys(self) -> list[str]:
+#         return [RISK_TYPE, RISK_GREEK, UNDERLYING, *self.tenor_columns]
+#
+#
+# PRODUCT_SPECS: dict[str, ProductSpec] = {
+#     "fxdelta": ProductSpec(
+#         "fxdelta", "fx/delta", "FX", "Delta", (), "pips", "percentage"
+#     ),
+#     "fxgamma": ProductSpec(
+#         "fxgamma", "fx/gamma", "FX", "Gamma", (), "outright", "taylor_gamma", 1, 1
+#     ),
+#     "fxvega": ProductSpec(
+#         "fxvega", "fx/vega", "FX", "Vega", (SWAP_AXIS,), "vol_points", "absolute"
+#     ),
+#     "irdelta": ProductSpec(
+#         "irdelta", "ir/delta", "IR", "Delta", (SWAP_AXIS,), "bp", "minusabsolute"
+#     ),
+#     "irgamma": ProductSpec(
+#         "irgamma", "ir/gamma", "IR", "Gamma", (SWAP_AXIS,), "bp", "taylor_gamma", 1, 1
+#     ),
+#     "irdeltavega": ProductSpec(
+#         "irdeltavega", "ir/deltavega", "IR", "DeltaVega", (SWAP_AXIS, OPTION_AXIS), "bp", "percentage_vega"
+#     ),
+#     "xccy": ProductSpec(
+#         "xccy", "ir/xccy", "IR", "XCCY", (SWAP_AXIS,), "bp", "minusabsolute"
+#     ),
+#     "xccyvega": ProductSpec(
+#         "xccyvega", "ir/xccyvega", "IR", "XCCYVega", (SWAP_AXIS, OPTION_AXIS), "bp", "percentage_vega",
+#     ),
+#     "inflation": ProductSpec(
+#         "inflation", "ir/inflation", "IR", "Inflation", (SWAP_AXIS,), "bp", "absolute",
+#     ),
+#     "inflationvega": ProductSpec(
+#         "inflationvega", "ir/inflationvega", "IR", "InflationVega", (SWAP_AXIS, OPTION_AXIS), "bp", "percentage_vega",
+#     ),
+#     "basis": ProductSpec(
+#         "basis", "ir/basis", "IR", "Basis", (SWAP_AXIS,), "bp", "minusabsolute"
+#     ),
+#     "bond": ProductSpec(
+#         "bond", "ir/bond", "IR", "Bond", (SWAP_AXIS,), "bp", "minusabsolute"
+#     ),
+#     "creditdelta": ProductSpec(
+#         "creditdelta", "credit/delta", "Credit", "Delta", (SWAP_AXIS,), "bp", "absolute",
+#     ),
+#     "creditvega": ProductSpec(
+#         "creditvega", "credit/vega", "Credit", "Vega", (SWAP_AXIS,), "bp", "absolute",
+#     ),
+#     "commoddelta": ProductSpec(
+#         "commoddelta", "commo/delta", "Commo", "Delta", (SWAP_AXIS,), "outright", "percentage",
+#     ),
+#     "commovega": ProductSpec(
+#         "commovega", "commo/vega", "Commo", "Vega", (SWAP_AXIS,), "vol_points", "absolute",
+#     ),
+# }
+#
+#
+# def _validate_multiplier(value: object, *, label: str) -> float:
+#     """Return a finite real multiplier while rejecting bool and string coercion."""
+#     if isinstance(value, (bool, np.bool_)) or not isinstance(value, Real):
+#         raise TypeError(f"{label} must be a non-boolean real number")
+#     multiplier = float(value)
+#     if not np.isfinite(multiplier):
+#         raise ValueError(f"{label} must be finite")
+#     return multiplier
+#
+#
+# def _validate_multipliers(
+#     multipliers: Mapping[str, float] | None,
+# ) -> dict[str, float]:
+#     """Validate product multiplier keys and values at a public API boundary."""
+#     if multipliers is None:
+#         return {}
+#     if not isinstance(multipliers, Mapping):
+#         raise TypeError("multipliers must be a mapping of product keys to numbers")
+#     unknown_keys = sorted(
+#         set(multipliers) - set(PRODUCT_SPECS), key=lambda key: str(key)
+#     )
+#     if unknown_keys:
+#         raise ValueError(f"unknown product multiplier keys: {unknown_keys}")
+#     return {
+#         key: _validate_multiplier(value, label=f"multiplier for {key!r}")
+#         for key, value in multipliers.items()
+#     }
+#
+#
+# @dataclass(frozen=True)
+# class ProductConnectorAdapter:
+#     """Product-specific connector hooks for sources with different APIs/shapes.
+#
+#     Each callable is already bound to its product/source, so FX delta can call a
+#     completely different service from credit detail while the validated output
+#     contract below remains common.
+#
+#     REAL CONNECTOR INTEGRATION POINT
+#
+#     Construct one adapter per source type and pass the mapping to
+#     ``RiskRefreshManager(connector_adapters=...)``. Every callable must return a
+#     ``pandas.DataFrame``; returning ``None``, dictionaries, or lists is rejected.
+#
+#     ``risk(risk_date)``
+#         ``risk_date`` is a normalized, timezone-naive ``pandas.Timestamp``.
+#         Return one authoritative position row per product key with columns
+#         ``Underlying``, the source's required tenor columns, ``Portfolio``,
+#         connector-owned ``Group``, ``Risk``, and ``dRisk``. ``Group`` passes
+#         through unchanged: the framework does not classify, normalize, or
+#         restrict its values. ``Risk Type`` and ``Risk Greek`` may be supplied
+#         and are checked when present. Credit sources may also return the
+#         optional ``Risk/dRisk`` measure columns listed in
+#         ``CREDIT_MEASURE_COLUMNS``.
+#
+#     ``market_open(market_date, underlying, *, market_status)``
+#         ``market_date`` is independent of the risk date. Return unique market
+#         keys plus numeric ``Open`` and the applicable market-owned tenor-order
+#         columns. ``underlying`` is one member of the ordered, unique scope from
+#         validated Risk. The framework calls once per Underlying and concatenates
+#         only after every call succeeds. An empty
+#         DataFrame with the correct columns is allowed and means that the opening
+#         leg is unavailable. ``market_status`` is supplied by the manager and is
+#         exactly ``Live`` or ``OFFICIAL``; connectors must not infer it again.
+#
+#     ``market_status(market_date, underlying, *, market_status)``
+#         Return the same market keys plus numeric ``Current``. ``Market Status`` may
+#         be supplied, but if present it must exactly match the explicit
+#         ``market_status`` argument. An empty, correctly shaped frame is allowed
+#         and is surfaced as unavailable market data, never as zero.
+#
+#     The normalized market keys are ``Risk Type``, ``Risk Greek``, ``Underlying``,
+#     and the tenor columns declared by the corresponding ``ProductSpec``. The
+#     validators below enforce uniqueness, numeric types, finite values, and the
+#     source-specific identity before anything reaches aggregation or P&L.
+#     """
+#
+#     risk: Callable[[pd.Timestamp], pd.DataFrame]
+#     # Market connectors receive the independently selected market/view date,
+#     # not the product's (potentially aged) risk date.
+#     market_open: ProductMarketConnector
+#     market_status: ProductMarketConnector
+#
+#
+# PRODUCT_SPECS_BY_SOURCE_TYPE = {
+#     spec.source_type: spec for spec in PRODUCT_SPECS.values()
+# }
+# if len(PRODUCT_SPECS_BY_SOURCE_TYPE) != len(PRODUCT_SPECS):
+#     raise RuntimeError("Product catalogue Source Type values must be unique")
+#
+# _PRODUCT_PAIRS = {(spec.risk_type, spec.risk_greek) for spec in PRODUCT_SPECS.values()}
+# if len(_PRODUCT_PAIRS) != len(PRODUCT_SPECS):
+#     raise RuntimeError("Product catalogue Risk Type/Risk Greek pairs must be unique")
+#
+#
+# def _load_frame(
+#     source: FrameSource,
+#     *,
+#     label: str,
+#     allow_empty: bool = False,
+# ) -> pd.DataFrame:
+#     if source is None:
+#         raise ProductionIntegrationError(
+#             f"{label} requires an explicit real connector DataFrame or callable"
+#         )
+#     if isinstance(source, pd.DataFrame):
+#         frame = source
+#     elif callable(source):
+#         frame = source()
+#     else:
+#         raise TypeError(
+#             "A source must be a pandas DataFrame or a zero-argument callable"
+#         )
+#     if not isinstance(frame, pd.DataFrame):
+#         raise TypeError("Data source functions must return a pandas DataFrame")
+#     if frame.empty and not allow_empty:
+#         raise ValueError("Data source returned an empty DataFrame")
+#     # Product adapters own any source-specific renaming. The shared boundary is
+#     # intentionally strict so one column name has one meaning everywhere.
+#     return frame.copy()
+#
+#
+# def _require_columns(frame: pd.DataFrame, columns: list[str], label: str) -> None:
+#     missing = [column for column in columns if column not in frame]
+#     if missing:
+#         raise ValueError(f"{label} is missing required columns: {missing}")
+#
+#
+# def _coerce_numeric(
+#     frame: pd.DataFrame, columns: list[str], label: str
+# ) -> pd.DataFrame:
+#     result = frame.copy()
+#     for column in columns:
+#         if result[column].map(lambda value: isinstance(value, (bool, np.bool_))).any():
+#             raise ValueError(f"{label} column {column!r} must not contain booleans")
+#         converted = pd.to_numeric(result[column], errors="coerce")
+#         invalid = converted.isna() | ~np.isfinite(converted)
+#         if invalid.any():
+#             rows = result.index[invalid].tolist()[:5]
+#             raise ValueError(
+#                 f"{label} column {column!r} has missing, non-numeric, or non-finite values at rows {rows}"
+#             )
+#         result[column] = converted.astype(float)
+#     return result
+#
+#
+# def _validate_market_tenor_orders(
+#     frame: pd.DataFrame,
+#     spec: ProductSpec,
+#     label: str,
+# ) -> pd.DataFrame:
+#     """Validate market-owned axis order without making it part of quote identity."""
+#     result = frame.copy()
+#     for axis in spec.axes:
+#         tenor_column = axis.column
+#         order_column = axis.order_column
+#         _require_columns(result, [order_column], label)
+#         boolean = result[order_column].map(
+#             lambda value: isinstance(value, (bool, np.bool_))
+#         )
+#         numeric = pd.to_numeric(result[order_column], errors="coerce")
+#         invalid = boolean | numeric.isna() | ~np.isfinite(numeric)
+#         invalid |= numeric.lt(0) | numeric.mod(1).ne(0)
+#         if invalid.any():
+#             rows = result.index[invalid].tolist()[:5]
+#             raise ValueError(
+#                 f"{label} column {order_column!r} must contain non-negative "
+#                 f"integer market orders at rows {rows}"
+#             )
+#         result[order_column] = numeric.astype("Int64")
+#         # Within one Source Type (fixed by ProductSpec), each Underlying has one
+#         # authority for a tenor label and one tenor label at each order position.
+#         # tenor_to_order = result.groupby([UNDERLYING, tenor_column], dropna=False)[
+#         #     order_column
+#         # ].nunique(dropna=False)
+#         # if tenor_to_order.gt(1).any():
+#         #     raise ValueError(
+#         #         f"{label} has conflicting {order_column!r} values per "
+#         #         f"Source Type + Underlying + {tenor_column}"
+#         #     )
+#         # order_to_tenor = result.groupby([UNDERLYING, order_column], dropna=False)[
+#         #     tenor_column
+#         # ].nunique(dropna=False)
+#         # if order_to_tenor.gt(1).any():
+#         #     raise ValueError(
+#         #         f"{label} maps more than one {tenor_column!r} to the same "
+#         #         f"{order_column!r} per Source Type + Underlying"
+#         #     )
+#     return result
+#
+#
+# def _require_nonblank(
+#     frame: pd.DataFrame, columns: list[str], label: str
+# ) -> pd.DataFrame:
+#     """Reject null/blank join keys and normalize their surrounding whitespace."""
+#     result = frame.copy()
+#     for column in columns:
+#         missing = result[column].isna()
+#         normalized = result[column].astype("string").str.strip()
+#         invalid = missing | normalized.eq("")
+#         if invalid.any():
+#             rows = result.index[invalid].tolist()[:5]
+#             raise ValueError(
+#                 f"{label} column {column!r} has null or blank keys at rows {rows}"
+#             )
+#         result[column] = normalized.astype(str)
+#     return result
+#
+#
+# def _enforce_product(
+#     frame: pd.DataFrame, spec: ProductSpec, label: str
+# ) -> pd.DataFrame:
+#     result = frame.copy()
+#     if (
+#         RISK_TYPE in result
+#         and not result[RISK_TYPE].dropna().astype(str).eq(spec.risk_type).all()
+#     ):
+#         raise ValueError(f"{label} contains a Risk Type other than {spec.risk_type!r}")
+#     if (
+#         RISK_GREEK in result
+#         and not result[RISK_GREEK].dropna().astype(str).eq(spec.risk_greek).all()
+#     ):
+#         raise ValueError(
+#             f"{label} contains a Risk Greek other than {spec.risk_greek!r}"
+#         )
+#     result[RISK_TYPE] = spec.risk_type
+#     result[RISK_GREEK] = spec.risk_greek
+#     return result
+#
+#
+# def _as_timestamp(value: date | datetime | str | pd.Timestamp) -> pd.Timestamp:
+#     timestamp = pd.Timestamp(value)
+#     if pd.isna(timestamp):
+#         raise ValueError("date values must not be NaT or blank")
+#     if timestamp.tzinfo is not None:
+#         # Preserve the caller's stated calendar day. Production connectors should
+#         # normalize to their agreed trading timezone before calling this function.
+#         timestamp = timestamp.tz_localize(None)
+#     return timestamp.normalize()
+#
+#
+# def checker_date_for(
+#     market_date: date | datetime | str | pd.Timestamp,
+# ) -> pd.Timestamp:
+#     """Return the one authoritative prior-business-day checker date."""
+#
+#     return _as_timestamp(market_date) - pd.offsets.BDay(1)
+#
+#
+# def risk_date_for(
+#     checker_date: date | datetime | str | pd.Timestamp,
+#     age: int,
+# ) -> pd.Timestamp:
+#     """Apply checker Age to the already-derived checker date."""
+#
+#     if isinstance(age, (bool, np.bool_)) or not isinstance(age, Real):
+#         raise TypeError("Age must be a non-negative integer")
+#     selected_age = float(age)
+#     if (
+#         not np.isfinite(selected_age)
+#         or selected_age < 0
+#         or not selected_age.is_integer()
+#     ):
+#         raise ValueError("Age must be a non-negative integer")
+#     if selected_age > 0:
+#         selected_age -= 1
+#     else:
+#         selected_age = 0
+#     return _as_timestamp(checker_date) - pd.offsets.BDay(int(selected_age))
+#
+#
+# def get_risk(
+#     risk_date: date | datetime | str | pd.Timestamp,
+#     source_type: str,
+# ) -> pd.DataFrame:
+#     """Fail-closed generic risk connector boundary.
+#
+#     ``risk_date`` is the effective T-1/T-2 (or forced) business date and
+#     ``source_type`` is one of the 16 Source Type contracts, for example ``fx/delta``.
+#     Return a ``pandas.DataFrame`` containing ``Underlying``, ``Portfolio``,
+#     opaque connector-owned ``Group``, numeric authoritative ``Risk`` and
+#     ``dRisk``, plus every tenor column required by that source's
+#     ``ProductSpec``. ``Risk Type`` and ``Risk Greek`` are optional inputs
+#     because the common validator adds and enforces them. Credit connectors may
+#     additionally return columns named by ``CREDIT_MEASURE_COLUMNS``. Rows must
+#     be unique by underlying, applicable tenors, and portfolio.
+#     """
+#     try:
+#         spec = PRODUCT_SPECS_BY_SOURCE_TYPE[source_type]
+#     except KeyError as exc:
+#         raise ValueError(f"Unknown Source Type {source_type!r}") from exc
+#     normalized_date = _as_timestamp(risk_date)
+#     required = [UNDERLYING, *spec.tenor_columns, PORTFOLIO, GROUP, RISK, DRISK]
+#     # APP DATA ACCESS IS CENTRALIZED IN feeds.s01_sources.get_risk.
+#     # Direct-library integration shape (comments only, never fallback data):
+#     # records = risk_client.fetch(source_type=source_type, risk_date=normalized_date)
+#     # return pd.DataFrame(records)
+#     raise ProductionIntegrationError(
+#         f"No real risk connector is configured for {source_type!r} on "
+#         f"{normalized_date.date()}. Implement get_risk() or inject risk_loader=...; "
+#         f"required columns are {required}."
+#     )
+#
+#
+# def get_market_open(
+#     source_type: str,
+#     market_date: date | datetime | str | pd.Timestamp,
+#     underlying: str,
+#     *,
+#     market_status: str,
+# ) -> pd.DataFrame:
+#     """Fail-closed generic opening-market connector boundary.
+#
+#     Return one row per source-specific market key for ``market_date`` with a
+#     finite numeric ``Open``. Required keys are ``Underlying`` plus the tenor
+#     columns declared by the source's ``ProductSpec``. ``Risk Type`` and
+#     ``Risk Greek`` may be supplied and will be checked. A genuinely unavailable
+#     market leg may be represented by an empty DataFrame with the correct schema;
+#     it must never be replaced with zero-valued quotes. ``market_status`` is the
+#     manager-selected ``Live`` or ``OFFICIAL`` source and must be used rather than
+#     independently inferred by the connector.
+#     """
+#     try:
+#         spec = PRODUCT_SPECS_BY_SOURCE_TYPE[source_type]
+#     except KeyError as exc:
+#         raise ValueError(f"Unknown Source Type {source_type!r}") from exc
+#     selected_date = _as_timestamp(market_date)
+#     if not isinstance(underlying, str) or not underlying.strip():
+#         raise ValueError("Underlying must be nonblank text")
+#     selected_status = _require_market_status(market_status)

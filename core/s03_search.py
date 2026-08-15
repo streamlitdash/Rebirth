@@ -128,6 +128,7 @@ QUICK_RISK_IDENTITY_MODE_COLUMNS = MappingProxyType(
 # the dashboard controls while Split remains the sourced/developed-risk axis.
 QUICK_RISK_FILTER_COLUMNS = (
     SPLIT,
+    PORTFOLIO,
     *(
         field.external_name
         for field in PORTFOLIO_FIELDS
@@ -154,8 +155,15 @@ def _filter_risk_positions(
     frame: pd.DataFrame,
     positions: np.ndarray,
     risk_filters: Mapping[str, Sequence[str] | None] | None,
+    *,
+    exclude_selected: bool = False,
 ) -> np.ndarray:
-    """Filter exact committed risk positions without changing row order."""
+    """Filter exact committed risk positions without changing row order.
+
+    Split is a sourced-risk control and always keeps inclusion semantics.
+    ``exclude_selected`` applies only to Portfolio/reporting dimensions, in
+    line with the main Risk filter bar.
+    """
 
     selected_filters = dict(risk_filters or {})
     unknown = sorted(set(selected_filters) - set(QUICK_RISK_FILTER_COLUMNS))
@@ -174,7 +182,8 @@ def _filter_risk_positions(
             )
         selected = list(raw_selected or [])
         if selected:
-            keep &= candidates[column].isin(selected).to_numpy()
+            matches = candidates[column].isin(selected).to_numpy()
+            keep &= ~matches if exclude_selected and column != SPLIT else matches
     return positions[keep]
 
 
@@ -1097,6 +1106,7 @@ class SearchCatalog:
         limit: int = _MAX_RESULT_LIMIT,
         identity_mode: str = "reported",
         risk_filters: Mapping[str, Sequence[str] | None] | None = None,
+        exclude_selected: bool = False,
     ) -> SearchResult:
         """Return one exact-selection Risk/P&L + Market pivot.
 
@@ -1111,6 +1121,7 @@ class SearchCatalog:
             selected_index,
             identity_mode=identity_mode,
             risk_filters=risk_filters,
+            exclude_selected=exclude_selected,
         )
         pivot = _combined_pivot(
             selected_risk,
@@ -1136,6 +1147,7 @@ class SearchCatalog:
         *,
         identity_mode: str = "reported",
         risk_filters: Mapping[str, Sequence[str] | None] | None = None,
+        exclude_selected: bool = False,
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
         """Select exact Risk and quote source rows once for combined pivots."""
         positions, _options, _search_labels = self._quick_risk_index(identity_mode)
@@ -1147,6 +1159,7 @@ class SearchCatalog:
             self._risk_pivot_frame,
             risk_positions,
             risk_filters,
+            exclude_selected=exclude_selected,
         )
         if len(risk_positions):
             referenced_quote_positions = self._risk_to_quote[risk_positions]
@@ -1184,6 +1197,7 @@ class SearchCatalog:
         leaf_limit: int = _MAX_RESULT_LIMIT,
         identity_mode: str = "reported",
         risk_filters: Mapping[str, Sequence[str] | None] | None = None,
+        exclude_selected: bool = False,
     ) -> SearchResult:
         """Return independently aggregated ordered prefix levels.
 
@@ -1200,6 +1214,7 @@ class SearchCatalog:
             selected_index,
             identity_mode=identity_mode,
             risk_filters=risk_filters,
+            exclude_selected=exclude_selected,
         )
         levels = []
         for depth in range(1, len(selected_index) + 1):

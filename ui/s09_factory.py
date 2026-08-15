@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Mapping
+from threading import Lock
+from typing import Any, Mapping, Sequence
+from uuid import uuid4
 
 import pandas as pd
 from dash import (
     Dash,
     Input,
     Output,
+    State,
     dcc,
     html,
+    no_update,
     page_container,
     page_registry,
     register_page,
@@ -21,8 +25,10 @@ from flask import jsonify, request
 
 from pages import PAGE_SERVICES_CONFIG_KEY
 from pages.not_found_404 import layout as not_found_page_layout
+from pages.pnl import layout as pnl_page_layout
 from pages.risk import layout as risk_page_layout
 from pages.static_data import layout as static_data_page_layout
+from pages.stock import layout as stock_page_layout
 
 from .s03_aggregate import prepare_risk_data
 from .s07_events import (
@@ -37,7 +43,24 @@ from .s04_components import (
     build_shared_refresh_shell,
 )
 from .s08_plevents import PLSendConfig, register_pl_send_callbacks
+from .s06_plview import build_pl_page
 from .s01_contracts import RefreshManagerProtocol
+from .s10_stock import (
+    STOCK_FILTER_FIELDS,
+    STOCK_FILTER_IDS,
+    StockPageData,
+    build_stock_page_from_data,
+    build_stock_page_shell,
+    build_stock_table_panel,
+    default_stock_dates,
+    filter_stock_comparison,
+    load_stock_page_data,
+    normalize_stock_date_pair,
+    stock_exclude_selected,
+    stock_filter_map,
+    stock_filter_options,
+    stock_summary_text,
+)
 
 
 def _register_native_pages() -> None:
@@ -52,11 +75,27 @@ def _register_native_pages() -> None:
         layout=risk_page_layout,
     )
     register_page(
+        "pages.pnl",
+        path="/pnl",
+        name="P&L",
+        title="Cube — P&L Sender",
+        order=1,
+        layout=pnl_page_layout,
+    )
+    register_page(
+        "pages.stock",
+        path="/stock",
+        name="Stock",
+        title="Cube — Stock",
+        order=2,
+        layout=stock_page_layout,
+    )
+    register_page(
         "pages.static_data",
         path="/static-data",
         name="Static Data",
         title="Cube — Static Data",
-        order=1,
+        order=3,
         layout=static_data_page_layout,
     )
     register_page(
@@ -135,6 +174,8 @@ def build_app(
     refresh_manager: RefreshManagerProtocol | None = None,
     *,
     pl_send_config: PLSendConfig | None = None,
+    stock_source: Any | None = None,
+    stock_portfolio_source: Any | None = None,
     dash_kwargs: Mapping[str, Any] | None = None,
 ) -> Dash:
     """Create the Dash app from static data or a server-side refresh manager."""
@@ -147,6 +188,15 @@ def build_app(
         )
     if pl_send_config is not None and refresh_manager is None:
         raise ValueError("PL send configuration requires a refresh manager")
+    if (stock_source is None) != (stock_portfolio_source is None):
+        raise ValueError(
+            "Stock requires both stock_source and stock_portfolio_source, or neither"
+        )
+    stock_load_lock = Lock()
+    stock_cached_pages: dict[tuple[int, str, str, str], StockPageData] = {}
+    stock_intent_lock = Lock()
+    stock_intent_sequence = 0
+    stock_latest_intent: dict[str, int] = {}
 
     # A manager-backed app must become reachable before it calls any source.
     # Reuse an already committed snapshot (for example in a warm worker), but
@@ -275,6 +325,8 @@ def build_app(
 
     stage_delays = refresh_manager.stage_delays if refresh_manager is not None else None
     cube_href = app.get_relative_path("/")
+    pnl_href = app.get_relative_path("/pnl")
+    stock_href = app.get_relative_path("/stock")
     static_data_href = app.get_relative_path("/static-data")
 
     def current_cube_page():
@@ -288,7 +340,6 @@ def build_app(
                         prepared,
                         snapshot,
                         refresh_enabled=True,
-                        pl_enabled=pl_send_config is not None,
                         stage_delays=stage_delays,
                         include_shared_refresh_shell=False,
                     )
@@ -313,7 +364,6 @@ def build_app(
             risk_data,
             initial_snapshot,
             refresh_enabled=False,
-            pl_enabled=False,
             stage_delays=stage_delays,
             include_shared_refresh_shell=False,
         )
@@ -323,18 +373,89 @@ def build_app(
         return html.Main(current_cube_page(), id="cube-page-container")
 
     def current_shared_snapshot():
-        """Return only a snapshot already committed by this app's manager."""
+        """Return the compact committed view used by the shared page shell."""
         if refresh_manager is not None:
             try:
                 if refresh_manager.health.revision > 0:
-                    return refresh_manager.snapshot
+                    return refresh_manager.control_snapshot
             except Exception:
                 return initial_snapshot
         return initial_snapshot
 
+    def pnl_page_body():
+        """Mount the sender workflow only on its native P&L route."""
+        if pl_send_config is not None:
+            try:
+                start_initial_load = (
+                    refresh_manager is not None
+                    and int(refresh_manager.health.revision) <= 0
+                )
+            except Exception:
+                start_initial_load = refresh_manager is not None
+            return build_pl_page(start_initial_load=start_initial_load)
+        return html.Main(
+            [
+                html.H1("P&L Sender", className="static-data-page-title"),
+                html.P(
+                    "P&L sending is not configured for this application.",
+                    id="pnl-unavailable",
+                    className="static-data-empty",
+                ),
+            ],
+            id="pnl-page",
+            className="static-data-page",
+        )
+
+    def stock_page_body():
+        """Paint Stock immediately; its page-local callback owns source I/O."""
+        if stock_source is None or stock_portfolio_source is None:
+            return html.Main(
+                [
+                    html.H1("Stock", className="static-data-page-title"),
+                    html.P(
+                        "GetStock and its Portfolio mapping are not configured.",
+                        id="stock-unavailable",
+                        className="static-data-empty",
+                    ),
+                ],
+                id="stock-page",
+                className="static-data-page",
+            )
+
+        snapshot = current_shared_snapshot()
+        reference_date = (
+            snapshot.market_date
+            if snapshot is not None
+            else pd.Timestamp.now().normalize()
+        )
+        current_date, prior_date = default_stock_dates(reference_date)
+        page = build_stock_page_shell(
+            current_date=current_date,
+            prior_date=prior_date,
+        )
+        page.children = [
+            dcc.Store(id="stock-request-scope", data=uuid4().hex),
+            *page.children,
+        ]
+        return page
+
+    def loaded_stock_page(current_date: object, prior_date: object) -> StockPageData:
+        """Resolve two dated Stock legs behind the mounted page shell."""
+
+        return load_stock_page_data(
+            stock_source=stock_source,
+            portfolio_config_source=stock_portfolio_source,
+            current_date=current_date,
+            prior_date=prior_date,
+            # The current selected Stock date owns the mapping authority.
+            portfolio_date=current_date,
+        )
+
     app.server.config[PAGE_SERVICES_CONFIG_KEY] = {
         "cube_href": cube_href,
         "risk_page_builder": cube_page_body,
+        "pnl_page_builder": pnl_page_body,
+        "stock_page_builder": stock_page_body,
     }
 
     def serve_layout():
@@ -369,6 +490,18 @@ def build_app(
                                     className="app-nav-link cube-nav-link is-active",
                                 ),
                                 dcc.Link(
+                                    "P&L",
+                                    href=pnl_href,
+                                    id="pnl-nav-link",
+                                    className="app-nav-link cube-nav-link",
+                                ),
+                                dcc.Link(
+                                    "Stock",
+                                    href=stock_href,
+                                    id="stock-nav-link",
+                                    className="app-nav-link cube-nav-link",
+                                ),
+                                dcc.Link(
                                     "Static Data",
                                     href=static_data_href,
                                     id="static-data-nav-link",
@@ -397,6 +530,8 @@ def build_app(
 
     @app.callback(
         Output("cube-nav-link", "className"),
+        Output("pnl-nav-link", "className"),
+        Output("stock-nav-link", "className"),
         Output("static-data-nav-link", "className"),
         Output("shared-refresh-shell", "style"),
         Input("_pages_location", "pathname"),
@@ -405,14 +540,28 @@ def build_app(
         """Reflect the native page route without taking ownership of content."""
         selected_path = app.strip_relative_path(pathname)
         cube_class = "app-nav-link cube-nav-link"
+        pnl_class = "app-nav-link cube-nav-link"
+        stock_class = "app-nav-link cube-nav-link"
         static_class = "app-nav-link cube-nav-link"
         shared_shell_style = {"display": "none"}
         if selected_path == "":
             cube_class = f"{cube_class} is-active"
             shared_shell_style = {}
+        elif selected_path == "pnl":
+            pnl_class = f"{pnl_class} is-active"
+            if refresh_manager is not None:
+                shared_shell_style = {}
+        elif selected_path == "stock":
+            stock_class = f"{stock_class} is-active"
         elif selected_path == "static-data":
             static_class = f"{static_class} is-active"
-        return cube_class, static_class, shared_shell_style
+        return (
+            cube_class,
+            pnl_class,
+            stock_class,
+            static_class,
+            shared_shell_style,
+        )
 
     register_callbacks(
         app,
@@ -421,10 +570,309 @@ def build_app(
         risk_data,
         route_prefix=request_prefix,
         startup_coordinator=startup_coordinator,
-        pl_enabled=pl_send_config is not None,
     )
     if refresh_manager is not None and pl_send_config is not None:
         register_pl_send_callbacks(app, refresh_manager, pl_send_config)
+    if stock_source is not None and stock_portfolio_source is not None:
+
+        def committed_stock_revision() -> int:
+            try:
+                return (
+                    int(refresh_manager.health.revision)
+                    if refresh_manager is not None
+                    else 0
+                )
+            except Exception:
+                return 0
+
+        def stock_filter_outputs():
+            return [
+                output
+                for field in STOCK_FILTER_FIELDS
+                for output in (
+                    Output(STOCK_FILTER_IDS[field.key], "options"),
+                    Output(STOCK_FILTER_IDS[field.key], "value"),
+                )
+            ]
+
+        def stock_filter_states():
+            return [
+                State(STOCK_FILTER_IDS[field.key], "value")
+                for field in STOCK_FILTER_FIELDS
+            ]
+
+        def stock_cache_token(
+            revision: int,
+            current_date: pd.Timestamp,
+            prior_date: pd.Timestamp,
+            portfolio_date: pd.Timestamp,
+        ) -> dict[str, Any]:
+            return {
+                "revision": revision,
+                "current_date": current_date.date().isoformat(),
+                "prior_date": prior_date.date().isoformat(),
+                "portfolio_date": portfolio_date.date().isoformat(),
+            }
+
+        def stock_cache_key(token: object) -> tuple[int, str, str, str] | None:
+            if not isinstance(token, Mapping):
+                return None
+            try:
+                return (
+                    int(token["revision"]),
+                    str(token["current_date"]),
+                    str(token["prior_date"]),
+                    str(token["portfolio_date"]),
+                )
+            except (KeyError, TypeError, ValueError):
+                return None
+
+        def stock_error_result(error: Exception, *, retryable: bool):
+            return (
+                [
+                    html.P(
+                        f"Stock could not be loaded: {error}",
+                        id="stock-load-error",
+                        className="static-data-empty",
+                        role="alert",
+                    )
+                ],
+                no_update,
+                None,
+                not retryable,
+                *([no_update] * (2 * len(STOCK_FILTER_FIELDS))),
+            )
+
+        def claim_stock_intent(request_scope: object) -> tuple[str, int]:
+            """Record the newest load request for one mounted Stock page."""
+
+            nonlocal stock_intent_sequence
+            scope = str(request_scope or "stock-unscoped")
+            with stock_intent_lock:
+                stock_intent_sequence += 1
+                sequence = stock_intent_sequence
+                stock_latest_intent[scope] = sequence
+            return scope, sequence
+
+        def stock_intent_is_current(scope: str, sequence: int) -> bool:
+            with stock_intent_lock:
+                return stock_latest_intent.get(scope) == sequence
+
+        def finish_stock_intent(scope: str, sequence: int) -> None:
+            with stock_intent_lock:
+                if stock_latest_intent.get(scope) == sequence:
+                    stock_latest_intent.pop(scope, None)
+
+        def stale_stock_result():
+            """Ignore a response superseded by newer date intent in the browser."""
+
+            return (no_update,) * (4 + (2 * len(STOCK_FILTER_FIELDS)))
+
+        def render_stock_result(
+            page_data: StockPageData,
+            selected_filter_values: Sequence[Sequence[str] | None],
+            exclude_value: Sequence[str] | None,
+        ) -> tuple[Any, list[Any]]:
+            selected_filters = stock_filter_map(selected_filter_values)
+            options, valid = stock_filter_options(
+                page_data.mapped_stock,
+                selected_filters,
+            )
+            page = build_stock_page_from_data(
+                page_data,
+                selected_filters=valid,
+                exclude_selected=stock_exclude_selected(exclude_value),
+            )
+            filter_payload: list[Any] = []
+            for field in STOCK_FILTER_FIELDS:
+                filter_payload.extend((options[field.key], valid[field.key]))
+            return page.children, filter_payload
+
+        def load_stock_revision(
+            current_date: object,
+            prior_date: object,
+            loaded_revision: object,
+            loaded_dates: object,
+            selected_filter_values: Sequence[Sequence[str] | None],
+            exclude_value: Sequence[str] | None,
+            request_scope: object,
+        ):
+            """Coalesce dated loads and retain retryability after failures."""
+
+            scope, intent_sequence = claim_stock_intent(request_scope)
+            try:
+                current, prior = normalize_stock_date_pair(current_date, prior_date)
+            except Exception as error:
+                # Invalid picker state needs a user edit, not a one-second
+                # automatic retry loop.
+                finish_stock_intent(scope, intent_sequence)
+                return stock_error_result(error, retryable=False)
+            committed_revision = committed_stock_revision()
+            token = stock_cache_token(
+                committed_revision,
+                current,
+                prior,
+                current,
+            )
+            key = stock_cache_key(token)
+            if (
+                loaded_revision == committed_revision
+                and stock_cache_key(loaded_dates) == key
+                and key in stock_cached_pages
+            ):
+                finish_stock_intent(scope, intent_sequence)
+                return (
+                    no_update,
+                    no_update,
+                    no_update,
+                    True,
+                    *([no_update] * (2 * len(STOCK_FILTER_FIELDS))),
+                )
+            if not stock_load_lock.acquire(blocking=False):
+                return (
+                    no_update,
+                    no_update,
+                    no_update,
+                    False,
+                    *([no_update] * (2 * len(STOCK_FILTER_FIELDS))),
+                )
+            try:
+                page_data = stock_cached_pages.get(key)
+                if page_data is None:
+                    try:
+                        page_data = loaded_stock_page(current, prior)
+                    except Exception as error:
+                        app.logger.exception("Could not load the Stock page")
+                        if not stock_intent_is_current(scope, intent_sequence):
+                            return stale_stock_result()
+                        finish_stock_intent(scope, intent_sequence)
+                        return stock_error_result(error, retryable=True)
+                    if key is None:
+                        raise RuntimeError("Stock cache key could not be constructed")
+                    stock_cached_pages[key] = page_data
+                    if len(stock_cached_pages) > 8:
+                        stock_cached_pages.pop(next(iter(stock_cached_pages)))
+                if not stock_intent_is_current(scope, intent_sequence):
+                    return stale_stock_result()
+                children, filter_payload = render_stock_result(
+                    page_data,
+                    selected_filter_values,
+                    exclude_value,
+                )
+                if committed_stock_revision() != committed_revision:
+                    # A commit landed while a dated connector was in flight.
+                    # The completed result may paint, but its revision/date
+                    # token is not released and the timer remains retryable.
+                    return (
+                        children,
+                        no_update,
+                        no_update,
+                        False,
+                        *filter_payload,
+                    )
+                finish_stock_intent(scope, intent_sequence)
+                return (
+                    children,
+                    committed_revision,
+                    token,
+                    True,
+                    *filter_payload,
+                )
+            finally:
+                stock_load_lock.release()
+
+        @app.callback(
+            Output("stock-page-content", "children"),
+            Output("stock-loaded-revision", "data"),
+            Output("stock-loaded-dates", "data"),
+            Output("stock-load-trigger", "disabled"),
+            *stock_filter_outputs(),
+            Input("stock-load-trigger", "n_intervals"),
+            Input("refresh-commit-revision", "children"),
+            Input("stock-compare-button", "n_clicks"),
+            State("stock-loaded-revision", "data"),
+            State("stock-loaded-dates", "data"),
+            State("stock-current-date", "date"),
+            State("stock-prior-date", "date"),
+            State("stock-filter-exclude-selected", "value"),
+            *stock_filter_states(),
+            State("stock-request-scope", "data"),
+            prevent_initial_call=True,
+        )
+        def coordinate_stock_load(
+            _ticks,
+            _committed_revision,
+            _compare_clicks,
+            loaded_revision,
+            loaded_dates,
+            current_date,
+            prior_date,
+            exclude_value,
+            *filter_values_and_scope,
+        ):
+            """Own mount, Compare, retry, and financial-commit Stock loads."""
+
+            selected_filter_values = filter_values_and_scope[: len(STOCK_FILTER_FIELDS)]
+            request_scope = filter_values_and_scope[-1]
+            return load_stock_revision(
+                current_date,
+                prior_date,
+                loaded_revision,
+                loaded_dates,
+                selected_filter_values,
+                exclude_value,
+                request_scope,
+            )
+
+        @app.callback(
+            Output("stock-table-panel", "children"),
+            Output("stock-row-count", "children"),
+            Output("stock-mapped-count", "children"),
+            Output("stock-unmapped-count", "children"),
+            Output("stock-dimension-filter-store", "data"),
+            *[
+                Input(STOCK_FILTER_IDS[field.key], "value")
+                for field in STOCK_FILTER_FIELDS
+            ],
+            Input("stock-filter-exclude-selected", "value"),
+            State("stock-loaded-dates", "data"),
+            prevent_initial_call=True,
+        )
+        def filter_stock_table(*values):
+            """Filter only the server-cached Stock comparison for this page."""
+            selected_filter_values = values[: len(STOCK_FILTER_FIELDS)]
+            exclude_value = values[len(STOCK_FILTER_FIELDS)]
+            loaded_dates = values[-1]
+            selected_filters = stock_filter_map(selected_filter_values)
+            key = stock_cache_key(loaded_dates)
+            page_data = stock_cached_pages.get(key)
+            if page_data is None:
+                return (no_update,) * 5
+            filtered = filter_stock_comparison(
+                page_data.mapped_stock,
+                selected_filters,
+                exclude_selected=stock_exclude_selected(exclude_value),
+            )
+            rows, mapped, unmapped = stock_summary_text(
+                filtered,
+                total_rows=len(page_data.mapped_stock),
+                current_date=page_data.current_date,
+                prior_date=page_data.prior_date,
+            )
+            return (
+                build_stock_table_panel(
+                    filtered,
+                    has_unfiltered_rows=not page_data.mapped_stock.empty,
+                ),
+                rows,
+                mapped,
+                unmapped,
+                {
+                    "filters": selected_filters,
+                    "exclude_selected": stock_exclude_selected(exclude_value),
+                },
+            )
+
     return app
 
 

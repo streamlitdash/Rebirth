@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
-from core.s01_schema import PORTFOLIO_FIELDS
+from core.s01_schema import PORTFOLIO_COLUMN, PORTFOLIO_FIELDS, PortfolioField
 
-VIEW_DIMENSION_FIELDS = tuple(
-    field for field in PORTFOLIO_FIELDS if "view_dimension" in field.roles
+PORTFOLIO_UI_FIELD = PortfolioField(
+    PORTFOLIO_COLUMN,
+    "portfolio",
+    "Portfolio",
+    roles=frozenset({"view_dimension", "filter_dimension"}),
+    dashboard_section="position",
+    filter_id="portfolio-filter",
 )
-FILTER_DIMENSION_FIELDS = tuple(
-    field for field in PORTFOLIO_FIELDS if "filter_dimension" in field.roles
+VIEW_DIMENSION_FIELDS = (
+    PORTFOLIO_UI_FIELD,
+    *(field for field in PORTFOLIO_FIELDS if "view_dimension" in field.roles),
+)
+FILTER_DIMENSION_FIELDS = (
+    PORTFOLIO_UI_FIELD,
+    *(field for field in PORTFOLIO_FIELDS if "filter_dimension" in field.roles),
 )
 VIEW_DIMENSIONS = tuple(field.key for field in VIEW_DIMENSION_FIELDS)
 FILTER_COLUMNS = [field.key for field in FILTER_DIMENSION_FIELDS]
@@ -240,6 +250,7 @@ __all__ = [
     "METRIC_COLUMNS",
     "NUMERIC_COLUMNS",
     "PLOT_METRICS",
+    "PORTFOLIO_UI_FIELD",
     "PRODUCT_LABELS",
     "PRODUCT_ORDER",
     "PROMOTION_THRESHOLD_COLUMNS",

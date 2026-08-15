@@ -7,6 +7,9 @@ senders can therefore share one fail-closed financial data contract.
 
 from __future__ import annotations
 
+import re
+from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import TypeAlias
 
@@ -47,6 +50,25 @@ PL_SEND_KEY = (PORTFOLIO, CONCERTO_FIELD)
 ADJUSTMENT_KEY = (MARKET_DATE, PORTFOLIO, CONCERTO_FIELD)
 HISTORICAL_PL_COLUMNS = (MARKET_DATE, PORTFOLIO, CONCERTO_FIELD, PL)
 HISTORICAL_PL_KEY = ADJUSTMENT_KEY
+HISTORY_TYPE = "P&L Type"
+HISTO_TYPE = "Histo"
+PREDICTED_TYPE = "Predicted"
+HISTORY_FILE_COLUMNS = (PORTFOLIO, CONCERTO_FIELD, PL)
+PL_HISTORY_COLUMNS = (
+    MARKET_DATE,
+    HISTORY_TYPE,
+    PORTFOLIO,
+    CONCERTO_FIELD,
+    PL,
+)
+PL_HISTORY_KEY = (MARKET_DATE, HISTORY_TYPE, PORTFOLIO, CONCERTO_FIELD)
+
+_HISTORY_YEAR_PATTERN = re.compile(r"\d{4}")
+_HISTORY_DATE_PATTERN = re.compile(r"(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])")
+_HISTORY_FILES = {
+    "histo.csv": HISTO_TYPE,
+    "predicted.csv": PREDICTED_TYPE,
+}
 
 FrameSource: TypeAlias = pd.DataFrame | str | Path
 
@@ -226,6 +248,220 @@ def load_historical_pl(source: FrameSource) -> pd.DataFrame:
     return frame.sort_values(list(HISTORICAL_PL_KEY), kind="stable").reset_index(
         drop=True
     )
+
+
+def _legacy_pl_history(source: FrameSource) -> pd.DataFrame:
+    """Promote the legacy one-file actual history contract into the paired shape."""
+    history = load_historical_pl(source)
+    history.insert(1, HISTORY_TYPE, HISTO_TYPE)
+    return history[list(PL_HISTORY_COLUMNS)]
+
+
+def _history_directory_entries(directory: Path, *, label: str) -> list[Path]:
+    """Return a stable directory listing with storage errors in the PL domain."""
+    try:
+        return sorted(directory.iterdir(), key=lambda path: path.name)
+    except OSError as exc:
+        raise PLSendValidationError(f"Could not inspect {label}: {exc}") from exc
+
+
+def _history_leaf_date(year: str, month_day: str) -> str:
+    """Validate and normalize one ``YYYY/MM-DD`` history partition."""
+    if not _HISTORY_YEAR_PATTERN.fullmatch(year):
+        raise PLSendValidationError(
+            f"P&L history year directory must be YYYY; found {year!r}"
+        )
+    if not _HISTORY_DATE_PATTERN.fullmatch(month_day):
+        raise PLSendValidationError(
+            "P&L history date directory must be MM-DD below its year; "
+            f"found {year}/{month_day}"
+        )
+    try:
+        return datetime.strptime(f"{year}-{month_day}", "%Y-%m-%d").date().isoformat()
+    except ValueError as exc:
+        raise PLSendValidationError(
+            f"P&L history date directory is not a valid date: {year}/{month_day}"
+        ) from exc
+
+
+def _load_history_leaf_file(
+    source: Path,
+    *,
+    market_date: str,
+    history_type: str,
+) -> pd.DataFrame:
+    """Load one strictly shaped actual or predicted history partition."""
+    label = f"P&L history file {source}"
+    frame = _read_frame(source, label=label)
+    actual_columns = tuple(str(column).strip() for column in frame.columns)
+    if actual_columns != HISTORY_FILE_COLUMNS:
+        raise PLSendValidationError(
+            f"{label} must have exactly these columns in order: "
+            f"{list(HISTORY_FILE_COLUMNS)}; found {list(actual_columns)}"
+        )
+    frame.columns = list(HISTORY_FILE_COLUMNS)
+    frame = _normalise_text_columns(
+        frame,
+        [PORTFOLIO, CONCERTO_FIELD],
+        label=label,
+    )
+    frame = _normalise_pl(frame, label=label)
+    duplicate_keys = frame.duplicated([PORTFOLIO, CONCERTO_FIELD], keep=False)
+    if duplicate_keys.any():
+        keys = (
+            frame.loc[duplicate_keys, [PORTFOLIO, CONCERTO_FIELD]]
+            .drop_duplicates()
+            .to_dict("records")
+        )
+        raise PLSendValidationError(
+            f"{label} contains duplicate Portfolio + ConcertoField keys: {keys}"
+        )
+    frame.insert(0, HISTORY_TYPE, history_type)
+    frame.insert(0, MARKET_DATE, market_date)
+    return frame[list(PL_HISTORY_COLUMNS)]
+
+
+def _load_pl_history_uncached(source: FrameSource) -> pd.DataFrame:
+    """Load paired actual/predicted P&L from ``YYYY/MM-DD`` partitions.
+
+    A directory source must contain only ``YYYY/MM-DD`` leaf directories. Every
+    leaf must contain exactly ``histo.csv`` and ``predicted.csv``; their exact
+    schema is ``Portfolio, ConcertoField, PL`` because the market date and series
+    identity are authoritative in the path. A legacy CSV/DataFrame with
+    :data:`HISTORICAL_PL_COLUMNS` remains readable as actual-only history.
+    """
+    if isinstance(source, pd.DataFrame):
+        return _legacy_pl_history(source)
+    if not isinstance(source, (str, Path)):
+        raise TypeError(
+            "P&L history must be a pandas DataFrame, CSV path, or directory"
+        )
+
+    root = Path(source)
+    if not root.exists() or not root.is_dir():
+        return _legacy_pl_history(root)
+
+    year_entries = _history_directory_entries(root, label=f"P&L history root {root}")
+    if not year_entries:
+        raise PLSendValidationError(f"P&L history root is empty: {root}")
+
+    partitions: list[pd.DataFrame] = []
+    for year_directory in year_entries:
+        year = year_directory.name
+        if not year_directory.is_dir() or not _HISTORY_YEAR_PATTERN.fullmatch(year):
+            raise PLSendValidationError(
+                "P&L history root may contain only YYYY directories; "
+                f"found {year_directory}"
+            )
+        date_entries = _history_directory_entries(
+            year_directory,
+            label=f"P&L history year {year_directory}",
+        )
+        if not date_entries:
+            raise PLSendValidationError(
+                f"P&L history year directory is empty: {year_directory}"
+            )
+        for date_directory in date_entries:
+            if not date_directory.is_dir():
+                raise PLSendValidationError(
+                    "P&L history year directories may contain only MM-DD "
+                    f"directories; found {date_directory}"
+                )
+            market_date = _history_leaf_date(year, date_directory.name)
+            file_entries = _history_directory_entries(
+                date_directory,
+                label=f"P&L history date {date_directory}",
+            )
+            names = {entry.name for entry in file_entries if entry.is_file()}
+            unexpected = [entry.name for entry in file_entries if not entry.is_file()]
+            unexpected.extend(sorted(names - set(_HISTORY_FILES)))
+            missing = sorted(set(_HISTORY_FILES) - names)
+            if missing or unexpected:
+                details: list[str] = []
+                if missing:
+                    details.append(f"missing {missing}")
+                if unexpected:
+                    details.append(f"unexpected {sorted(unexpected)}")
+                raise PLSendValidationError(
+                    f"P&L history date {year}/{date_directory.name} must contain "
+                    "exactly histo.csv and predicted.csv; " + "; ".join(details)
+                )
+            for filename, history_type in _HISTORY_FILES.items():
+                partitions.append(
+                    _load_history_leaf_file(
+                        date_directory / filename,
+                        market_date=market_date,
+                        history_type=history_type,
+                    )
+                )
+
+    if not partitions:
+        raise PLSendValidationError(f"P&L history root has no date partitions: {root}")
+    history = pd.concat(partitions, ignore_index=True)
+    duplicate_keys = history.duplicated(list(PL_HISTORY_KEY), keep=False)
+    if duplicate_keys.any():
+        keys = (
+            history.loc[duplicate_keys, list(PL_HISTORY_KEY)]
+            .drop_duplicates()
+            .to_dict("records")
+        )
+        raise PLSendValidationError(
+            "P&L history contains duplicate Market Date + P&L Type + Portfolio + "
+            f"ConcertoField keys: {keys}"
+        )
+    return history.sort_values(list(PL_HISTORY_KEY), kind="stable").reset_index(
+        drop=True
+    )
+
+
+def _pl_history_directory_signature(
+    root: Path,
+) -> tuple[tuple[str, str, int, int], ...]:
+    """Fingerprint one history tree so filter changes reuse parsed CSV rows."""
+
+    try:
+        entries = sorted(root.rglob("*"), key=lambda path: path.as_posix())
+        signature = []
+        for entry in entries:
+            stat = entry.stat()
+            signature.append(
+                (
+                    entry.relative_to(root).as_posix(),
+                    "directory" if entry.is_dir() else "file",
+                    int(stat.st_mtime_ns),
+                    int(stat.st_size),
+                )
+            )
+        return tuple(signature)
+    except OSError as exc:
+        raise PLSendValidationError(
+            f"Could not inspect P&L history root {root}: {exc}"
+        ) from exc
+
+
+@lru_cache(maxsize=16)
+def _cached_pl_history_directory(
+    root_text: str,
+    signature: tuple[tuple[str, str, int, int], ...],
+) -> pd.DataFrame:
+    """Parse one immutable directory signature at most once per process."""
+
+    del signature  # Its immutable value is intentionally part of the cache key.
+    return _load_pl_history_uncached(Path(root_text))
+
+
+def load_pl_history(source: FrameSource) -> pd.DataFrame:
+    """Load strict paired history, caching unchanged directory revisions."""
+
+    if isinstance(source, (str, Path)):
+        root = Path(source)
+        if root.exists() and root.is_dir():
+            resolved = root.resolve()
+            signature = _pl_history_directory_signature(resolved)
+            return _cached_pl_history_directory(str(resolved), signature).copy(
+                deep=True
+            )
+    return _load_pl_history_uncached(source)
 
 
 def load_portfolio_governance(source: FrameSource) -> pd.DataFrame:
@@ -692,6 +928,9 @@ __all__ = [
     "ADJUSTMENT_KEY",
     "HISTORICAL_PL_COLUMNS",
     "HISTORICAL_PL_KEY",
+    "HISTORY_FILE_COLUMNS",
+    "HISTORY_TYPE",
+    "HISTO_TYPE",
     "FrameSource",
     "MAPPING_COLUMNS",
     "MARKET_DATE",
@@ -700,7 +939,10 @@ __all__ = [
     "PLSendValidationError",
     "PL_SEND_COLUMNS",
     "PL_SEND_KEY",
+    "PL_HISTORY_COLUMNS",
+    "PL_HISTORY_KEY",
     "PORTFOLIO",
+    "PREDICTED_TYPE",
     "RECORD_TYPE",
     "RISK_GREEK",
     "RISK_TYPE",
@@ -712,6 +954,7 @@ __all__ = [
     "empty_pl_send_frame",
     "load_plsend_mapping",
     "load_historical_pl",
+    "load_pl_history",
     "load_portfolio_governance",
     "normalize_market_date",
     "normalize_pl_send_rows",

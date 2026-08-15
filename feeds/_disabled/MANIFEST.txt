@@ -1,0 +1,13 @@
+# DISABLED PRIVATE FEED RECOVERY
+#
+# Archive: s01_sources.py.disabled
+# Recovery source: rebirth/s01_sources_part_1.py
+# Normalized source SHA-256: b4de2c3a2caf7b7f475fd942b7f92b642c1fab9c273fad99caa49d727325594f
+#
+# This archive preserves the original Risk Checker, Portfolio, threshold, reporting,
+# sender, product-registration, and refresh-manager composition source. Every original
+# source line is comment-prefixed and the `.py.disabled` suffix is non-importable.
+#
+# The active runtime remains `feeds/s01_sources.py`, whose registered loaders read the
+# checked-in fake CSV files. This archive is not imported, registered, or included in
+# Plotly deployment bundles.

@@ -10,11 +10,17 @@ import pandas as pd
 import pytest
 from dash import Dash, dcc, html, no_update
 
-from core.s04_pl import CONCERTO_FIELD
+from core.s04_pl import (
+    CONCERTO_FIELD,
+    HISTO_TYPE,
+    HISTORY_FILE_COLUMNS,
+    HISTORY_TYPE,
+    PREDICTED_TYPE,
+)
 from core.s05_storage import LocalCsvAdjustmentRepository
 from feeds.s01_sources import build_production_refresh_manager
 from ui import s08_plevents as pl_events
-from ui.s06_plview import build_pl_send_sections
+from ui.s06_plview import build_pl_page, build_pl_send_sections
 from ui.s08_plevents import PLSendConfig
 from ui.s09_factory import build_app
 
@@ -44,8 +50,16 @@ def _history_frame() -> pd.DataFrame:
 
 
 def _config(tmp_path: Path) -> PLSendConfig:
-    history_source = tmp_path / "historical.csv"
-    _history_frame().to_csv(history_source, index=False)
+    history_source = tmp_path / "histo"
+    for market_date, daily in _history_frame().groupby("Market Date", sort=True):
+        year, month, day = str(market_date).split("-")
+        leaf = history_source / year / f"{month}-{day}"
+        leaf.mkdir(parents=True)
+        actual = daily[list(HISTORY_FILE_COLUMNS)]
+        predicted = actual.copy()
+        predicted["PL"] = predicted["PL"] * 0.9
+        actual.to_csv(leaf / "histo.csv", index=False)
+        predicted.to_csv(leaf / "predicted.csv", index=False)
     return PLSendConfig(
         mapping_source=tmp_path / "mapping.csv",
         adjustment_repository=LocalCsvAdjustmentRepository(tmp_path / "adjustments"),
@@ -216,7 +230,7 @@ def test_pl_sections_are_independent_top_level_disclosures() -> None:
         "SOG P&L",
         "Portfolio P&L",
         "Write PL to S3",
-        "Histo Data",
+        "Histo P&L",
     ]
     assert all(
         [item for item in _walk(detail) if isinstance(item, html.Details)] == [detail]
@@ -225,38 +239,76 @@ def test_pl_sections_are_independent_top_level_disclosures() -> None:
     assert "pl-workflow-summary" not in _string_ids(html.Div(sections))
 
 
+def test_native_pl_page_owns_workflow_and_adjustment_state() -> None:
+    page = build_pl_page()
+    ids = _string_ids(page)
+
+    assert getattr(page, "id", None) == "pnl-page-container"
+    assert {
+        "pnl-page",
+        "pl-adjustment-revision-store",
+        "pl-workflow-state",
+        "pl-preview-summary",
+        "pl-sog-summary",
+        "pl-portfolio-summary",
+        "pl-history-summary",
+    } <= ids
+
+    cold_page = build_pl_page(start_initial_load=True)
+    assert "pnl-initial-load-trigger" in _string_ids(cold_page)
+
+
 def test_histo_data_is_lazy_and_filters_chart_and_table(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app, _manager = _registered_pl_app(tmp_path)
     history = _callback(app, "pl-history-grid.data")
-    real_loader = pl_events.load_historical_pl
+    real_loader = pl_events.load_pl_history
 
     def forbidden(*_args, **_kwargs):
         raise AssertionError("closed Histo Data performed file work")
 
-    monkeypatch.setattr(pl_events, "load_historical_pl", forbidden)
-    closed = history(0, [], [])
-    assert closed[3] == []
-    assert closed[4] == "Open Histo Data to load its validated rows."
+    monkeypatch.setattr(pl_events, "load_pl_history", forbidden)
+    closed = history(0, [], [], [])
+    assert closed[4] == []
+    assert closed[5] == "Open Histo P&L to load its validated rows."
 
-    monkeypatch.setattr(pl_events, "load_historical_pl", real_loader)
-    portfolio_options, concerto_options, figure, rows, status = history(
+    monkeypatch.setattr(pl_events, "load_pl_history", real_loader)
+    portfolio_options, concerto_options, type_options, figure, rows, status = history(
         1,
         ["BOOK-A"],
         ["irdeltaeffect"],
+        [HISTO_TYPE],
     )
     assert [option["value"] for option in portfolio_options] == ["BOOK-A", "BOOK-B"]
     assert [option["value"] for option in concerto_options] == [
         "fxdeltaeffect",
         "irdeltaeffect",
     ]
+    assert type_options == [
+        {"label": HISTO_TYPE, "value": HISTO_TYPE},
+        {"label": PREDICTED_TYPE, "value": PREDICTED_TYPE},
+    ]
     assert len(rows) == 2
     assert {row["Portfolio"] for row in rows} == {"BOOK-A"}
     assert {row[CONCERTO_FIELD] for row in rows} == {"irdeltaeffect"}
+    assert {row[HISTORY_TYPE] for row in rows} == {HISTO_TYPE}
     assert len(figure.data) == 1
-    assert "2 of 4 validated daily rows" in status
+    assert "2 of 8 validated historical/predicted rows" in status
+
+    _, _, _, comparison, comparison_rows, _ = history(
+        1,
+        ["BOOK-A"],
+        ["irdeltaeffect"],
+        [],
+    )
+    assert len(comparison_rows) == 4
+    assert [trace.name.rsplit(" · ", 1)[-1] for trace in comparison.data] == [
+        HISTO_TYPE,
+        PREDICTED_TYPE,
+    ]
+    assert [trace.line.dash for trace in comparison.data] == ["solid", "dash"]
 
 
 def test_manager_app_without_pl_config_omits_inert_workflow(tmp_path: Path) -> None:
@@ -283,7 +335,12 @@ def test_manager_app_without_pl_config_omits_inert_workflow(tmp_path: Path) -> N
         send_portfolio_pl=lambda _frame: None,
     )
     with_pl = build_app(refresh_manager=manager, pl_send_config=config)
-    with_page = _native_page(with_pl)
+    with_risk_page = _native_page(with_pl)
+    with_risk_ids = _string_ids(with_risk_page)
+    assert "pl-preview-summary" not in with_risk_ids
+    assert "pl-adjustment-revision-store" not in with_risk_ids
+
+    with_page = _native_page(with_pl, "/pnl")
     with_ids = _string_ids(with_page)
     assert {
         "pl-preview-summary",
@@ -294,6 +351,37 @@ def test_manager_app_without_pl_config_omits_inert_workflow(tmp_path: Path) -> N
     } <= with_ids
     assert "pl-workflow-summary" not in with_ids
     assert any("pl-send-preview-grid.data" in key for key in with_pl.callback_map)
+
+
+def test_cold_native_pnl_is_safe_before_commit_and_recovers_at_revision_one(
+    tmp_path: Path,
+) -> None:
+    manager = build_production_refresh_manager()
+    config = PLSendConfig(
+        mapping_source=Path("data/s08_concerto.csv"),
+        adjustment_repository=LocalCsvAdjustmentRepository(tmp_path / "adjustments"),
+        saved_directory=tmp_path / "saved",
+        send_sog_pl=lambda _frame: None,
+        send_portfolio_pl=lambda _frame: None,
+    )
+    app = build_app(refresh_manager=manager, pl_send_config=config)
+    page = _native_page(app, "/pnl")
+
+    assert "pnl-initial-load-trigger" in _string_ids(page)
+    assert manager.health.revision == 0
+    preview = _callback(app, "pl-send-preview-grid.data")
+    rows, status = preview(1, 0, [], 0)
+    assert rows == []
+    assert status == "P&L data is still loading. This preview will update shortly."
+
+    sog = _callback(app, "pl-send-sog-effective-store.data")
+    store, options, selected = sog(1, 0, [], 0, None)
+    assert (store, options, selected) == ({}, [], None)
+
+    manager.refresh(force_risk=True, force_pl=True)
+    rows, status = preview(1, manager.health.revision, [], 0)
+    assert rows
+    assert "unique Portfolio + ConcertoField rows" in status
 
 
 def test_static_app_rejects_inert_pl_configuration(tmp_path: Path) -> None:

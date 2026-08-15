@@ -22,13 +22,32 @@ def test_stage_bundle_uses_conventional_runtime_names(tmp_path: Path) -> None:
     assert "tzdata==" in requirements
     for page_module in (
         "__init__.py",
+        "pnl.py",
         "risk.py",
         "static_data.py",
+        "stock.py",
         "not_found_404.py",
     ):
         assert (staged / "pages" / page_module).read_bytes() == (
             publishing.PROJECT / "pages" / page_module
         ).read_bytes()
+    for relative_path in (
+        Path("adapters/s05_stock.py"),
+        Path("adapters/s06_new_positions.py"),
+        Path("core/s08_stock.py"),
+        Path("ui/s10_stock.py"),
+    ):
+        assert (staged / relative_path).read_bytes() == (
+            publishing.PROJECT / relative_path
+        ).read_bytes()
+    history_files = sorted((publishing.PROJECT / "data" / "histo").rglob("*.csv"))
+    assert history_files
+    assert {path.name for path in history_files} == {"histo.csv", "predicted.csv"}
+    for source in history_files:
+        relative_path = source.relative_to(publishing.PROJECT)
+        assert (staged / relative_path).read_bytes() == source.read_bytes()
+    assert not any(path.name == "_disabled" for path in staged.rglob("_disabled"))
+    assert not any(staged.rglob("*.disabled"))
     assert not any((staged / "pages").rglob("__pycache__"))
     assert not (staged / "s03_publish.py").exists()
     assert not (staged / "tests").exists()

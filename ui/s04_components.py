@@ -60,8 +60,7 @@ from .s02_constants import (
     VIEW_DIMENSION_FIELDS,
     get_active_groups,
 )
-from .s01_contracts import RefreshSnapshotProtocol
-from .s06_plview import build_pl_send_sections
+from .s01_contracts import ControlSnapshotProtocol, RefreshSnapshotProtocol
 
 
 _DETAIL_LOGGER = logging.getLogger(__name__)
@@ -3882,7 +3881,7 @@ def _build_theme_toggle() -> html.Button:
 
 
 def build_operating_date_content(
-    snapshot: RefreshSnapshotProtocol | None,
+    snapshot: ControlSnapshotProtocol | RefreshSnapshotProtocol | None,
 ) -> list[html.Div]:
     """Return the prominent committed Market/Risk date cards."""
     if snapshot is None:
@@ -3942,7 +3941,7 @@ def build_operating_date_content(
 
 
 def _build_refresh_controls(
-    initial_snapshot: RefreshSnapshotProtocol | None,
+    initial_snapshot: ControlSnapshotProtocol | RefreshSnapshotProtocol | None,
     *,
     refresh_enabled: bool,
     initial_loading: bool = False,
@@ -4277,7 +4276,7 @@ def _build_refresh_progress(
 
 
 def build_shared_refresh_shell(
-    initial_snapshot: RefreshSnapshotProtocol | None,
+    initial_snapshot: ControlSnapshotProtocol | RefreshSnapshotProtocol | None,
     *,
     refresh_enabled: bool,
     stage_delays: Mapping[str, float] | None = None,
@@ -4460,7 +4459,6 @@ def build_layout(
     initial_snapshot: RefreshSnapshotProtocol | None = None,
     *,
     refresh_enabled: bool = False,
-    pl_enabled: bool = False,
     stage_delays: Mapping[str, float] | None = None,
     include_shared_refresh_shell: bool = True,
 ) -> html.Div:
@@ -4558,11 +4556,6 @@ def build_layout(
                 id="detail-component-request-store",
                 data={"measure": "risk", "component": "total"},
             ),
-            (
-                dcc.Store(id="pl-adjustment-revision-store", data=0)
-                if pl_enabled
-                else None
-            ),
             # Promotion toggle: True = promotion enabled (display bucket between risk greek and group)
             #                   False = promotion disabled (group immediately after risk greek)
             dcc.Store(id="promotion-toggle-store", data=True),
@@ -4643,10 +4636,21 @@ def build_layout(
             html.Div(
                 [
                     html.Div(
-                        "Leave blank to include all values.",
+                        "Leave blank to include all values. Risk filters are independent from Stock filters.",
                         className="filter-note",
                     ),
                     html.Div(dimension_filter_controls, className="controls"),
+                    dcc.Checklist(
+                        id="risk-filter-exclude-selected",
+                        options=[
+                            {
+                                "label": "Exclude selected values",
+                                "value": "exclude",
+                            }
+                        ],
+                        value=[],
+                        className="risk-filter-mode",
+                    ),
                 ],
                 className="dimension-filter-bar top-controls",
             )
@@ -4975,7 +4979,6 @@ def build_layout(
                 ],
                 className="detail-shell",
             ),
-            *(build_pl_send_sections() if refresh_enabled and pl_enabled else []),
             html.Details(
                 [
                     html.Summary(

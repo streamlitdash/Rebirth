@@ -29,6 +29,10 @@ def test_targeted_manager_reads_copy_only_the_requested_frames(
     assert copied_ids == [id(committed.risk_status)]
     control.risk_status.iloc[0, 0] = "changed by caller"
     assert committed.risk_status.iloc[0, 0] != "changed by caller"
+    assert control.risk_dates == committed.risk_dates
+    changed_source = next(iter(control.risk_dates))
+    control.risk_dates[changed_source] = pd.Timestamp("1900-01-01")
+    assert committed.risk_dates[changed_source] != pd.Timestamp("1900-01-01")
 
     copied_ids.clear()
     pl = manager.pl_snapshot

@@ -1,0 +1,34 @@
+# DISABLED PRIVATE ADAPTER RECOVERY
+#
+# These archives preserve the user's original connector code without activating it.
+# Every original source line is comment-prefixed, and the `.py.disabled` suffix keeps
+# the files outside Python's importable module set. Plotly deployment staging also
+# excludes every `_disabled` directory.
+#
+# Active runtime data remains the explicit fake CSV boundary in
+# `feeds/s01_sources.py`. Nothing in this directory is imported or registered.
+#
+# Archive: s01_common.py.disabled
+# Recovery source: rebirth/s01_common.py
+# Normalized source SHA-256: 458fc3964603842681ee6c470d83eefa4d6b462c5dae872e9d6c00f11fd6954e
+# Contents: run_async plus the exact DataFrame, market-status, and Underlying helpers.
+# The helper is preserved for provenance only; run_async is not active or imported.
+#
+# Archive: s02_ir.py.disabled
+# Recovery source: rebirth/s02_ir11
+# Normalized source SHA-256: 07ee062e6ac5ac8aa50ac5592e4a619f5ef85c73f3356808f8d3e0958a320b0c
+# Contents: IR Delta, DeltaVega, XCCY, Basis, Inflation, InflationVega, and Bond adapters.
+#
+# Archive: s03_fx.py.disabled
+# Recovery source: rebirth/s03_fx.py
+# Normalized source SHA-256: ade8a0be99e2291484bba33d3778dfd588f84cd778d3a76d750ed13295dc35bb
+# Contents: FX Delta, Gamma, and Vega adapters.
+#
+# Archive: s04_credit.py.disabled
+# Recovery source: rebirth/s04_credit.py
+# Normalized source SHA-256: c8df28c483810e02ab32934a27377ed4a01e3b68908741ea4bea971192be5bcc
+# Contents: Credit Delta adapter.
+#
+# The recovery sources contained no private Commodity adapter body. The maintained
+# adapter contract in `adapters/s03_commo.py` remains present, while its runtime data
+# continues to come from the fake CSV registration. No Commodity source was invented.
