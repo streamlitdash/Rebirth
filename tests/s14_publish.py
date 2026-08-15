@@ -20,6 +20,16 @@ def test_stage_bundle_uses_conventional_runtime_names(tmp_path: Path) -> None:
     assert (staged / "requirements.txt").is_file()
     requirements = (staged / "requirements.txt").read_text(encoding="utf-8")
     assert "tzdata==" in requirements
+    for page_module in (
+        "__init__.py",
+        "risk.py",
+        "static_data.py",
+        "not_found_404.py",
+    ):
+        assert (staged / "pages" / page_module).read_bytes() == (
+            publishing.PROJECT / "pages" / page_module
+        ).read_bytes()
+    assert not any((staged / "pages").rglob("__pycache__"))
     assert not (staged / "s03_publish.py").exists()
     assert not (staged / "tests").exists()
     assert not (staged / "README.md").exists()

@@ -125,7 +125,19 @@ tooling exceptions.
 | `s06_plview.py` | The four collapsible P&L workflow sections and native editable DataTables. |
 | `s07_events.py` | Startup coordinator and Risk/Cashflow/search/date callbacks. |
 | `s08_plevents.py` | Adjustment editors, send actions, and Write P&L callbacks. |
-| `s09_factory.py` | Dash/Flask construction, routing, health, and progress endpoints. |
+| `s09_factory.py` | Dash/Flask construction, native Dash Pages registration, shared shell, health, and progress endpoints. |
+
+### `pages/`
+
+| File | Responsibility |
+|---|---|
+| `risk.py` | Stable native-page layout wrapper for the revision-aware Risk dashboard. |
+| `static_data.py` | Lazily builds Static Data only when `/static-data` is active. |
+| `not_found_404.py` | Prefix-safe native fallback for unknown URLs. |
+
+The wrappers are deliberately manager-agnostic. They resolve the active app's
+builders from Flask configuration, because Dash's page registry is process-wide
+while tests and hosted workers can construct more than one app factory.
 
 ### Other folders
 
@@ -929,7 +941,7 @@ lists derive from the registry.
 
 ## Add a page and elements
 
-The active second route is the path-safe Static Data page. The retained
+The active second native route is the path-safe Static Data page. The retained
 Intraday Cashflows modules are a tested extension example, not a registered
 route in this reconstruction. Their responsibilities remain separated so the
 data contract can be tested without importing Dash:
@@ -944,7 +956,7 @@ core/s06_cashflow.load_intraday_cashflows(loader, date)
 ui/s05_cashflows.build_intraday_cashflows_page(frame)
         │ components only
         ▼
-ui/s07_events callbacks ── ui/s09_factory route/navigation
+ui/s07_events callbacks ── pages/ layout ── dash.page_container
 ```
 
 To add a third page called Limits:
@@ -1001,10 +1013,12 @@ def register_limits_callbacks(app, connector):
             return no_update, f"Limits unavailable: {exc}"
 ```
 
-4. In `ui/s09_factory.py`, build the page, add one `dcc.Link`, and add one page
-   container.
-5. Extend the route callback in `ui/s07_events.py` with Outputs for the new
-   container and navigation class.
+4. Add a stable `pages/limits.py` layout wrapper. If the page needs per-app
+   services, resolve them through the active Flask app rather than capturing a
+   manager in Dash's process-global page registry.
+5. Register `/limits` in `_register_native_pages`, add its prefix-safe
+   `dcc.Link`, and keep the single shared `dash.page_container`; do not add a
+   second content router or mount hidden copies of other pages.
 6. Call `register_limits_callbacks` once from the factory and pass
    `get_limits`; constructing the page must not call it.
 7. Give the page its own connector instead of importing the risk manager unless
@@ -1250,8 +1264,9 @@ docstrings and type hints are the source of truth.
   `PLSendConfig` supplies their external boundaries, and
   `register_pl_send_callbacks` owns lazy loading, editing, save, send, and write
   actions.
-- `build_app` creates Flask/Dash routes, headers, health/progress, and one active
-  page body at a time. It includes P&L only when a `PLSendConfig` is present.
+- `build_app` creates Flask endpoints and the persistent shell, registers the
+  native page catalogue, and mounts one active body through
+  `dash.page_container`. It includes P&L only when a `PLSendConfig` is present.
 
 ## Deliberate rules versus replaceable examples
 

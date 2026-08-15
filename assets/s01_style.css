@@ -1443,7 +1443,7 @@ body.is-pl-datatable-range-dragging * { cursor: cell !important; user-select: no
   font-style: italic;
 }
 
-/* Enable column resizing for static data tables */
+/* Keep static data columns readable while the table scrolls horizontally. */
 .static-data-panel .dash-table-container .dash-cell {
   min-width: 80px !important;
   max-width: none !important;
@@ -1451,14 +1451,6 @@ body.is-pl-datatable-range-dragging * { cursor: cell !important; user-select: no
 
 .static-data-panel .dash-table-container .dash-header {
   min-width: 80px !important;
-}
-
-.static-data-panel .dash-table-container .dash-cell[resizable="true"] {
-  cursor: col-resize !important;
-}
-
-.static-data-panel .dash-table-container .dash-cell[resizable="true"]:hover {
-  border-right: 3px solid var(--focus) !important;
 }
 
 /* Dark mode overrides for static data DataTable (hardcoded inline styles need !important override) */

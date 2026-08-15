@@ -76,6 +76,19 @@ def _callback(app: Dash, output_fragment: str):
     return app.callback_map[key]["callback"].__wrapped__
 
 
+def _native_page(app: Dash, pathname: str = "/"):
+    """Materialize one Dash Pages route through its registered router."""
+    routes_prefix = app.config.routes_pathname_prefix
+    layout_path = f"{routes_prefix}_dash-layout"
+    response = app.server.test_client().get(layout_path)
+    assert response.status_code == 200
+
+    route = _callback(app, "_pages_content.children")
+    with app.server.test_request_context(layout_path):
+        page, _metadata = route(app.get_relative_path(pathname), "")
+    return page
+
+
 def _string_ids(component: object) -> set[str]:
     return {
         component_id
@@ -251,9 +264,7 @@ def test_manager_app_without_pl_config_omits_inert_workflow(tmp_path: Path) -> N
     manager.refresh(force_risk=True, force_pl=True)
 
     without_pl = build_app(refresh_manager=manager)
-    without_page, *_ = _callback(without_pl, "app-page-container.children")(
-        "/", "/static-data"
-    )
+    without_page = _native_page(without_pl)
     without_ids = _string_ids(without_page)
     assert "pl-preview-summary" not in without_ids
     assert "pl-sog-summary" not in without_ids
@@ -272,9 +283,7 @@ def test_manager_app_without_pl_config_omits_inert_workflow(tmp_path: Path) -> N
         send_portfolio_pl=lambda _frame: None,
     )
     with_pl = build_app(refresh_manager=manager, pl_send_config=config)
-    with_page, *_ = _callback(with_pl, "app-page-container.children")(
-        "/", "/static-data"
-    )
+    with_page = _native_page(with_pl)
     with_ids = _string_ids(with_page)
     assert {
         "pl-preview-summary",

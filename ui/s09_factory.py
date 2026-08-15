@@ -7,8 +7,22 @@ from pathlib import Path
 from typing import Any, Mapping
 
 import pandas as pd
-from dash import Dash, Input, Output, State, dcc, html, no_update
+from dash import (
+    Dash,
+    Input,
+    Output,
+    dcc,
+    html,
+    page_container,
+    page_registry,
+    register_page,
+)
 from flask import jsonify, request
+
+from pages import PAGE_SERVICES_CONFIG_KEY
+from pages.not_found_404 import layout as not_found_page_layout
+from pages.risk import layout as risk_page_layout
+from pages.static_data import layout as static_data_page_layout
 
 from .s03_aggregate import prepare_risk_data
 from .s07_events import (
@@ -17,10 +31,42 @@ from .s07_events import (
     StartupCoordinator,
     register_callbacks,
 )
-from .s04_components import build_initial_load_layout, build_layout
-from .s05_staticdata import build_static_data_page
+from .s04_components import (
+    build_initial_load_layout,
+    build_layout,
+    build_shared_refresh_shell,
+)
 from .s08_plevents import PLSendConfig, register_pl_send_callbacks
 from .s01_contracts import RefreshManagerProtocol
+
+
+def _register_native_pages() -> None:
+    """Install one deterministic page catalogue with stable layout callables."""
+    page_registry.clear()
+    register_page(
+        "pages.risk",
+        path="/",
+        name="Risk",
+        title="Cube — Risk",
+        order=0,
+        layout=risk_page_layout,
+    )
+    register_page(
+        "pages.static_data",
+        path="/static-data",
+        name="Static Data",
+        title="Cube — Static Data",
+        order=1,
+        layout=static_data_page_layout,
+    )
+    register_page(
+        "pages.not_found_404",
+        path="/404",
+        name="Page not found",
+        title="Cube — Page not found",
+        order=99,
+        layout=not_found_page_layout,
+    )
 
 
 def _progress_payload(
@@ -120,12 +166,15 @@ def build_app(
     # Only the active URL's page body is mounted. Page-specific callback
     # targets therefore enter and leave the layout as navigation occurs.
     dash_options["suppress_callback_exceptions"] = True
+    dash_options["use_pages"] = True
+    dash_options["pages_folder"] = ""
     app = Dash(
         __name__,
         assets_folder=str(Path(__file__).resolve().parent.parent / "assets"),
         **dash_options,
     )
     app.title = "Cube"
+    _register_native_pages()
     app.server.config.setdefault(STARTUP_UI_ERROR_CONFIG_KEY, None)
     startup_coordinator: StartupCoordinator | None = None
     if refresh_manager is not None:
@@ -222,30 +271,11 @@ def build_app(
             or response.mimetype == "application/json"
         ):
             response.headers["Cache-Control"] = "no-store, private"
-        if (
-            startup_coordinator is not None
-            and response.status_code < 400
-            and request.path.endswith("_dash-layout")
-            and startup_coordinator.status().phase == "idle"
-        ):
-            # The short delay lets the shell reach the browser before the
-            # background worker begins.  start() is process-wide and
-            # idempotent, so simultaneous visitors cannot create two writers.
-            startup_coordinator.schedule_start(delay_seconds=0.25)
         return response
 
     stage_delays = refresh_manager.stage_delays if refresh_manager is not None else None
-    cube_href = request_prefix
-    static_data_href = f"{request_prefix.rstrip('/')}/static-data"
-    cube_path = cube_href.rstrip("/") or "/"
-    static_data_path = static_data_href.rstrip("/") or "/"
-
-    def normalize_browser_path(pathname: object) -> str:
-        """Return one exact browser pathname without changing its prefix."""
-        value = str(pathname or cube_path).strip()
-        if not value.startswith("/"):
-            value = f"/{value}"
-        return value.rstrip("/") or "/"
+    cube_href = app.get_relative_path("/")
+    static_data_href = app.get_relative_path("/static-data")
 
     def current_cube_page():
         """Serve the shell cold and the complete dashboard after revision 1."""
@@ -260,6 +290,7 @@ def build_app(
                         refresh_enabled=True,
                         pl_enabled=pl_send_config is not None,
                         stage_delays=stage_delays,
+                        include_shared_refresh_shell=False,
                     )
             except Exception as error:
                 app.logger.exception(
@@ -268,52 +299,48 @@ def build_app(
                 )
                 return build_initial_load_layout(
                     stage_delays=stage_delays,
+                    include_shared_refresh_shell=False,
                     error=(
                         "The validated data loaded, but the dashboard could not be "
                         "rendered. Check the server log and retry."
                     ),
                 )
-            return build_initial_load_layout(stage_delays=stage_delays)
+            return build_initial_load_layout(
+                stage_delays=stage_delays,
+                include_shared_refresh_shell=False,
+            )
         return build_layout(
             risk_data,
             initial_snapshot,
             refresh_enabled=False,
             pl_enabled=False,
             stage_delays=stage_delays,
+            include_shared_refresh_shell=False,
         )
 
     def cube_page_body() -> html.Main:
         """Mount the revision-aware Risk page under its stable callback owner."""
         return html.Main(current_cube_page(), id="cube-page-container")
 
-    def not_found_page(pathname: str) -> html.Main:
-        """Return an explicit page for paths outside the configured catalogue."""
-        return html.Main(
-            html.Section(
-                [
-                    html.H1("Page not found"),
-                    html.P(
-                        f"Cube has no page at {pathname}.",
-                        className="static-data-page-note",
-                    ),
-                    dcc.Link(
-                        "Return to Risk",
-                        href=cube_href,
-                        className="app-nav-link cube-nav-link",
-                    ),
-                ],
-                id="not-found-page",
-                className="static-data-page",
-                role="alert",
-            ),
-            id="not-found-page-container",
-        )
+    def current_shared_snapshot():
+        """Return only a snapshot already committed by this app's manager."""
+        if refresh_manager is not None:
+            try:
+                if refresh_manager.health.revision > 0:
+                    return refresh_manager.snapshot
+            except Exception:
+                return initial_snapshot
+        return initial_snapshot
+
+    app.server.config[PAGE_SERVICES_CONFIG_KEY] = {
+        "cube_href": cube_href,
+        "risk_page_builder": cube_page_body,
+    }
 
     def serve_layout():
         """Build a request-fresh router so reconnecting browsers recover cleanly."""
         return html.Div(
             [
-                dcc.Location(id="app-location", refresh="callback-nav"),
                 html.Div(
                     id="backend-endpoints",
                     hidden=True,
@@ -354,55 +381,38 @@ def build_app(
                     ],
                     className="cube-app-header",
                 ),
-                dcc.Store(id="active-page-path", data=cube_path),
-                html.Div(
-                    cube_page_body(),
-                    id="app-page-container",
+                build_shared_refresh_shell(
+                    current_shared_snapshot(),
+                    refresh_enabled=refresh_manager is not None,
+                    stage_delays=stage_delays,
+                    initial_loading=False,
+                    style={"display": "none"},
                 ),
+                page_container,
             ],
             className="app-router-shell",
         )
 
-    app.layout = (
-        serve_layout
-        if refresh_manager is not None and initial_snapshot is None
-        else serve_layout()
-    )
+    app.layout = serve_layout
 
     @app.callback(
-        Output("app-page-container", "children"),
-        Output("active-page-path", "data"),
         Output("cube-nav-link", "className"),
         Output("static-data-nav-link", "className"),
-        Input("app-location", "pathname"),
-        State("active-page-path", "data"),
+        Output("shared-refresh-shell", "style"),
+        Input("_pages_location", "pathname"),
     )
-    def route_page(pathname, active_path):
-        """Mount exactly one page body for one exact, prefix-safe URL."""
-        selected_path = normalize_browser_path(pathname)
-        current_path = normalize_browser_path(active_path)
-        if selected_path == cube_path:
-            cube_class = "app-nav-link cube-nav-link is-active"
-            static_class = "app-nav-link cube-nav-link"
-        elif selected_path == static_data_path:
-            cube_class = "app-nav-link cube-nav-link"
-            static_class = "app-nav-link cube-nav-link is-active"
-        else:
-            cube_class = "app-nav-link cube-nav-link"
-            static_class = "app-nav-link cube-nav-link"
-
-        # The request-fresh layout already contains the root Risk page. Avoid
-        # replacing that tree on the initial Location callback: doing so would
-        # restart its intervals and remount the entire callback graph.
-        if selected_path == current_path:
-            return no_update, no_update, cube_class, static_class
-        if selected_path == cube_path:
-            page = cube_page_body()
-        elif selected_path == static_data_path:
-            page = build_static_data_page()
-        else:
-            page = not_found_page(selected_path)
-        return page, selected_path, cube_class, static_class
+    def update_navigation(pathname):
+        """Reflect the native page route without taking ownership of content."""
+        selected_path = app.strip_relative_path(pathname)
+        cube_class = "app-nav-link cube-nav-link"
+        static_class = "app-nav-link cube-nav-link"
+        shared_shell_style = {"display": "none"}
+        if selected_path == "":
+            cube_class = f"{cube_class} is-active"
+            shared_shell_style = {}
+        elif selected_path == "static-data":
+            static_class = f"{static_class} is-active"
+        return cube_class, static_class, shared_shell_style
 
     register_callbacks(
         app,

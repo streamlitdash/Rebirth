@@ -1004,6 +1004,12 @@
 
     const syncCommittedDataRevision = (progress) => {
       if (refreshProgressState?.mode === "bootstrap") return false;
+      // Risk render callbacks target page-local outputs. Hold the common
+      // revision signal on other Dash Pages and publish it when Risk mounts.
+      if (
+        !document.getElementById("cube-page-container")
+        || !document.getElementById("risk-type-tabs")
+      ) return false;
       const commitNode = document.getElementById("refresh-commit-revision");
       const progressRevision = progress?.running === false
         ? normalizedRevision(progress.revision)
@@ -1197,6 +1203,15 @@
       document.getElementById("refresh-status")
       || document.getElementById("bootstrap-refresh-status")
     );
+
+    const refreshLifecycleVisible = () => {
+      const shell = document.getElementById("shared-refresh-shell");
+      if (!shell) return true;
+      const style = window.getComputedStyle(shell);
+      return style.display !== "none"
+        && style.visibility !== "hidden"
+        && shell.getClientRects().length > 0;
+    };
 
     const refreshErrorNode = () => (
       document.getElementById("error-log")
@@ -1675,6 +1690,12 @@
 
   syncRefreshLifecycleNodes = () => {
     syncRefreshStatusObserver();
+    if (
+      document.getElementById("cube-page-container")
+      && document.getElementById("risk-type-tabs")
+    ) {
+      syncCommittedDataRevision(lastBackendProgress);
+    }
     const state = refreshProgressState;
     if (!state || state.panel?.isConnected) return;
     const replacement = document.getElementById("refresh-progress");
@@ -1697,17 +1718,18 @@
     try {
       syncRefreshLifecycleNodes();
       const running = refreshStatusNode()?.classList.contains("is-refreshing") || false;
+      const lifecycleVisible = refreshLifecycleVisible();
       // Checking Dash's global loading tree is only useful during a
       // refresh attempt. In particular, an ordinary Risk Explorer
       // tab callback must not activate the cube loader.
       const dashLoading = (running || Boolean(refreshProgressState))
         ? dashIsLoading()
         : false;
-      if (running && !refreshProgressState) {
+      if (running && !refreshProgressState && lifecycleVisible) {
         const initialLoad = document.getElementById("refresh-progress")?.dataset.initialLoad === "true";
         startRefreshProgress(initialLoad ? "bootstrap" : "automatic");
       }
-      setGlobalLoaderVisible(running || Boolean(refreshProgressState));
+      setGlobalLoaderVisible(Boolean(refreshProgressState) || (running && lifecycleVisible));
       if (!refreshProgressState) return;
 
       if (running || dashLoading) refreshProgressState.sawRunning = true;

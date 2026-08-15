@@ -48,6 +48,7 @@ from .s04_components import (
     build_risk_checker_inventory,
     build_risk_date_editor,
     build_risk_table,
+    build_shared_refresh_shell,
     build_top_book_exposures,
     build_unmapped_books_table,
     default_top_book_open_rows,
@@ -1172,6 +1173,7 @@ def register_callbacks(
                 refresh_enabled=True,
                 pl_enabled=pl_enabled,
                 stage_delays=refresh_manager.stage_delays,
+                include_shared_refresh_shell=False,
             )
         except Exception as error:
             incident_id = uuid.uuid4().hex[:10]
@@ -1189,6 +1191,7 @@ def register_callbacks(
             return build_initial_load_layout(
                 stage_delays=refresh_manager.stage_delays,
                 error=safe_error,
+                include_shared_refresh_shell=False,
             )
         app.server.config[STARTUP_UI_ERROR_CONFIG_KEY] = None
         return layout
@@ -1199,11 +1202,29 @@ def register_callbacks(
             logger=app.logger,
         )
 
+        def start_or_follow_initial_snapshot(
+            triggered: Any,
+            load_intervals: Any,
+            retry_clicks: Any,
+        ) -> StartupStatus:
+            """Apply one idempotent startup signal and return its current state."""
+            if triggered == "initial-load-trigger":
+                if int(load_intervals or 0) <= 0:
+                    raise PreventUpdate
+                # n_intervals=1 is delivered only after the cold Risk page has
+                # painted; direct Static navigation never owns this trigger.
+                coordinator.start()
+            elif triggered == "initial-load-retry":
+                if int(retry_clicks or 0) <= 0:
+                    raise PreventUpdate
+                coordinator.start(retry=True)
+            return coordinator.status()
+
         @app.callback(
             Output("cube-page-container", "children"),
-            Input("initial-load-trigger", "n_intervals"),
-            Input("initial-load-retry", "n_clicks"),
-            State("bootstrap-error-log", "children"),
+            Input("initial-load-trigger", "n_intervals", allow_optional=True),
+            Input("initial-load-retry", "n_clicks", allow_optional=True),
+            State("initial-load-message", "children", allow_optional=True),
             prevent_initial_call=True,
         )
         def load_initial_snapshot_after_first_paint(
@@ -1211,26 +1232,12 @@ def register_callbacks(
             retry_clicks,
             displayed_error="",
         ):
-            """Start/follow revision 1 without occupying a request worker."""
-            triggered = ctx.triggered_id
-            if triggered == "initial-load-trigger" and int(load_intervals or 0) <= 0:
-                raise PreventUpdate
-            if triggered == "initial-load-retry" and int(retry_clicks or 0) <= 0:
-                raise PreventUpdate
-
-            if triggered == "initial-load-retry":
-                if coordinator.start(retry=True):
-                    # Re-enable the short browser poll immediately; the source
-                    # call remains exclusively on the background worker.
-                    return build_initial_load_layout(
-                        stage_delays=refresh_manager.stage_delays,
-                    )
-            else:
-                # The first call happens only after n_intervals becomes 1,
-                # which guarantees the shell has already painted.
-                coordinator.start()
-
-            startup = coordinator.status()
+            """Hydrate only the cold Risk page; it may safely unmount mid-call."""
+            startup = start_or_follow_initial_snapshot(
+                ctx.triggered_id,
+                load_intervals,
+                retry_clicks,
+            )
             if startup.phase == "succeeded" and refresh_manager.health.revision > 0:
                 return materialize_initial_dashboard(refresh_manager.snapshot)
             if startup.phase == "failed":
@@ -1239,18 +1246,106 @@ def register_callbacks(
                     error=startup.error
                     or "Initial data load failed. Check the server log and retry.",
                     retry_enabled=startup.retryable,
+                    include_shared_refresh_shell=False,
                 )
             if startup.phase == "stalled":
-                # Retain polling so a late connector return can still publish
-                # and mount revision 1. Do not offer a duplicate writer while
-                # the original thread remains alive.
+                # Retain the page poll so a late connector return can still
+                # publish. Never offer a second writer while this one is alive.
                 if str(displayed_error or "") != str(startup.error or ""):
                     return build_initial_load_layout(
                         stage_delays=refresh_manager.stage_delays,
                         error=startup.error,
                         retry_enabled=False,
                         keep_polling=True,
+                        include_shared_refresh_shell=False,
                     )
+            if ctx.triggered_id == "initial-load-retry":
+                return build_initial_load_layout(
+                    stage_delays=refresh_manager.stage_delays,
+                    include_shared_refresh_shell=False,
+                )
+            raise PreventUpdate
+
+        @app.callback(
+            Output("shared-refresh-shell", "children"),
+            Input("initial-load-trigger", "n_intervals", allow_optional=True),
+            Input("initial-load-retry", "n_clicks", allow_optional=True),
+            Input("shared-refresh-bootstrap-interval", "n_intervals"),
+            State("refresh-status", "className", allow_optional=True),
+            State("error-log", "children", allow_optional=True),
+            State("refresh-commit-revision", "children", allow_optional=True),
+            prevent_initial_call=True,
+        )
+        def hydrate_shared_refresh_shell(
+            load_intervals,
+            retry_clicks,
+            _shared_intervals,
+            status_class="",
+            displayed_error="",
+            displayed_revision=0,
+        ):
+            """Follow revision 1 independently of the mounted Dash page."""
+            if (
+                ctx.triggered_id == "shared-refresh-bootstrap-interval"
+                and int(_shared_intervals or 0) <= 0
+            ):
+                raise PreventUpdate
+            startup = start_or_follow_initial_snapshot(
+                ctx.triggered_id,
+                load_intervals,
+                retry_clicks,
+            )
+            common_options = {
+                "refresh_enabled": True,
+                "stage_delays": refresh_manager.stage_delays,
+            }
+            if startup.phase == "succeeded" and refresh_manager.health.revision > 0:
+                try:
+                    shell_revision = int(displayed_revision or 0)
+                except (TypeError, ValueError):
+                    shell_revision = 0
+                if (
+                    shell_revision >= refresh_manager.health.revision
+                    and "is-refreshing" not in str(status_class or "").split()
+                ):
+                    raise PreventUpdate
+                return build_shared_refresh_shell(
+                    refresh_manager.snapshot,
+                    # The committed marker may advance on any page, but the
+                    # live revision Store is released only after warm Risk
+                    # outputs mount (by the browser lifecycle synchronizer).
+                    data_revision=shell_revision,
+                    **common_options,
+                ).children
+            if startup.phase == "failed":
+                error_text = startup.error or (
+                    "Initial data load failed. Check the server log and retry."
+                )
+                if (
+                    str(displayed_error or "") == str(error_text)
+                    and "is-error" in str(status_class or "").split()
+                ):
+                    raise PreventUpdate
+                return build_shared_refresh_shell(
+                    None,
+                    initial_error=error_text,
+                    **common_options,
+                ).children
+            if startup.phase == "stalled":
+                if str(displayed_error or "") != str(startup.error or ""):
+                    return build_shared_refresh_shell(
+                        None,
+                        initial_error=startup.error,
+                        keep_polling=True,
+                        **common_options,
+                    ).children
+                raise PreventUpdate
+            if "is-refreshing" not in str(status_class or "").split():
+                return build_shared_refresh_shell(
+                    None,
+                    initial_loading=True,
+                    **common_options,
+                ).children
             raise PreventUpdate
 
     @app.callback(
@@ -2445,7 +2540,7 @@ def register_callbacks(
             Input("refresh-portfolios-button", "n_clicks"),
             Input("refresh-pl-button", "n_clicks"),
             Input("reload-risk-button", "n_clicks"),
-            Input("force-risk-apply-button", "n_clicks"),
+            Input("force-risk-apply-button", "n_clicks", allow_optional=True),
             Input("commo-market-toggle", "n_clicks"),
             Input("risk-checker-toggle", "n_clicks"),
             State(FORCE_DRAFT_STORE_ID, "data"),
@@ -2706,6 +2801,8 @@ def register_callbacks(
         )
         def sync_operating_dates(_revision):
             """Keep the prominent dates aligned with the committed snapshot."""
+            if not _revision or refresh_manager.health.revision <= 0:
+                return no_update
             return build_operating_date_content(refresh_manager.snapshot)
 
         @app.callback(
@@ -2713,8 +2810,9 @@ def register_callbacks(
             Output(FORCE_RENDER_STORE_ID, "data"),
             Input(FORCE_STORE_ID, "modified_timestamp"),
             Input(VIEW_DATE_STORE_ID, "modified_timestamp"),
-            Input("force-risk-cancel-button", "n_clicks"),
+            Input("force-risk-cancel-button", "n_clicks", allow_optional=True),
             Input(REFRESH_RESULT_STORE_ID, "data"),
+            Input("risk-date-editor", "id", allow_optional=True),
             Input({"type": "force-risk-checkbox", "source": ALL}, "value"),
             Input({"type": "forced-risk-date", "source": ALL}, "date"),
             # These controls are rendered inside `risk-date-editor` by a
@@ -2737,6 +2835,7 @@ def register_callbacks(
             saved_view_modified,
             _cancel_clicks,
             _refresh_result,
+            risk_date_editor_id,
             check_values,
             dates,
             force_view_values,
@@ -2750,6 +2849,8 @@ def register_callbacks(
             current_draft,
             render_counter,
         ):
+            if risk_date_editor_id != "risk-date-editor":
+                raise PreventUpdate
             triggered_ids = list(ctx.triggered_prop_ids.values())
             manager_snapshot = refresh_manager.control_snapshot
             applied = snapshot_forced_dates(manager_snapshot)
@@ -2779,6 +2880,7 @@ def register_callbacks(
                 ctx.triggered_id is None
                 or FORCE_STORE_ID in triggered_ids
                 or VIEW_DATE_STORE_ID in triggered_ids
+                or "risk-date-editor" in triggered_ids
             ):
                 try:
                     proposal = (
@@ -2867,8 +2969,11 @@ def register_callbacks(
             Output("risk-date-editor", "children"),
             Input(FORCE_RENDER_STORE_ID, "data"),
             State(FORCE_DRAFT_STORE_ID, "data"),
+            State("risk-date-editor", "id", allow_optional=True),
         )
-        def render_risk_dates(_render_revision, draft_state):
+        def render_risk_dates(_render_revision, draft_state, risk_date_editor_id):
+            if risk_date_editor_id != "risk-date-editor":
+                raise PreventUpdate
             snapshot = refresh_manager.control_snapshot
             applied = snapshot_forced_dates(snapshot)
             applied_view = snapshot_forced_view_date(snapshot)
@@ -2884,7 +2989,11 @@ def register_callbacks(
 
         @app.callback(
             Output("risk-checker-inventory", "children"),
-            Input("risk-checker-inventory-summary", "n_clicks"),
+            Input(
+                "risk-checker-inventory-summary",
+                "n_clicks",
+                allow_optional=True,
+            ),
             Input(REFRESH_RESULT_STORE_ID, "data"),
             prevent_initial_call=True,
         )
@@ -2927,8 +3036,15 @@ def register_callbacks(
             Output("force-risk-edit-status", "className"),
             Input(FORCE_DRAFT_STORE_ID, "data"),
             Input(REFRESH_RESULT_STORE_ID, "data"),
+            Input("force-risk-apply-button", "id", allow_optional=True),
         )
-        def update_force_risk_actions(draft_state, _refresh_result):
+        def update_force_risk_actions(
+            draft_state,
+            _refresh_result,
+            force_apply_button_id,
+        ):
+            if force_apply_button_id != "force-risk-apply-button":
+                raise PreventUpdate
             manager_snapshot = refresh_manager.control_snapshot
             applied = snapshot_forced_dates(manager_snapshot)
             applied_view = snapshot_forced_view_date(manager_snapshot)

@@ -3981,9 +3981,12 @@ def _build_refresh_controls(
     elif initial_error:
         status_text = "Initial data load failed · no snapshot was published"
         status_class = "refresh-status is-error"
-    else:
+    elif initial_loading:
         status_text = "Opening Cube · loading the first validated snapshot"
         status_class = "refresh-status is-refreshing"
+    else:
+        status_text = "Open Risk to load the first validated snapshot"
+        status_class = "refresh-status"
 
     return html.Div(
         [
@@ -4270,17 +4273,147 @@ def _build_refresh_progress(
     )
 
 
+def build_shared_refresh_shell(
+    initial_snapshot: RefreshSnapshotProtocol | None,
+    *,
+    refresh_enabled: bool,
+    stage_delays: Mapping[str, float] | None = None,
+    initial_loading: bool = False,
+    initial_error: str | None = None,
+    keep_polling: bool = False,
+    data_revision: int | None = None,
+    style: Mapping[str, str] | None = None,
+) -> html.Div:
+    """Build the one persistent refresh lifecycle mounted above Dash Pages."""
+    applied_forced_dates = (
+        {
+            str(source): pd.Timestamp(value).date().isoformat()
+            for source, value in initial_snapshot.forced_dates.items()
+        }
+        if initial_snapshot is not None
+        else {}
+    )
+    applied_view_date = (
+        pd.Timestamp(initial_snapshot.forced_view_date).date().isoformat()
+        if initial_snapshot is not None
+        and initial_snapshot.forced_view_date is not None
+        else None
+    )
+    applied_commodity_market = bool(
+        initial_snapshot.commodity_market_enabled
+        if initial_snapshot is not None
+        else False
+    )
+    applied_risk_checker = bool(
+        initial_snapshot.risk_checker_enabled if initial_snapshot is not None else True
+    )
+    revision = initial_snapshot.revision if initial_snapshot is not None else 0
+    rendered_revision = (
+        revision if data_revision is None else max(0, int(data_revision))
+    )
+    error = str(initial_error or "")
+
+    return html.Div(
+        [
+            dcc.Store(id="data-revision-store", data=rendered_revision),
+            html.Span(revision, id="refresh-commit-revision", hidden=True),
+            # Backend-affecting settings mirror the one process-wide committed
+            # snapshot. AutoPL alone is browser-local scheduling state.
+            dcc.Store(
+                id="perspective-risk-cube-forced-risk-v1",
+                data=applied_forced_dates,
+            ),
+            dcc.Store(
+                id="perspective-risk-cube-view-date-v1",
+                data=applied_view_date,
+            ),
+            dcc.Store(
+                id="perspective-risk-cube-auto-refresh-v1",
+                data=True,
+                storage_type="local",
+            ),
+            dcc.Store(
+                id="perspective-risk-cube-commodity-market-v1",
+                data=applied_commodity_market,
+            ),
+            dcc.Store(
+                id="perspective-risk-cube-risk-checker-v1",
+                data=applied_risk_checker,
+            ),
+            dcc.Store(id="force-risk-draft-store", data={}),
+            dcc.Store(id="force-risk-render-store", data={}),
+            dcc.Store(id="refresh-result-store", data=0),
+            dcc.Interval(
+                id="auto-refresh-interval",
+                interval=15 * 60_000,
+                n_intervals=0,
+                disabled=True,
+            ),
+            # Once Risk starts revision 1 this common poll survives navigation,
+            # allowing the shell to receive the terminal snapshot even if the
+            # cold page and its own interval unmount.
+            dcc.Interval(
+                id="shared-refresh-bootstrap-interval",
+                interval=500,
+                n_intervals=0,
+                disabled=not (initial_loading or keep_polling),
+            ),
+            html.Section(
+                _build_refresh_controls(
+                    initial_snapshot,
+                    refresh_enabled=refresh_enabled,
+                    initial_loading=initial_loading,
+                    initial_error=bool(error),
+                ),
+                id="refresh-control-strip",
+                className="cube-refresh-strip",
+                **{"aria-label": "Dashboard controls"},
+            ),
+            (
+                _build_refresh_progress(
+                    stage_delays,
+                    initial_loading=initial_loading,
+                    initial_error=bool(error),
+                )
+                if refresh_enabled
+                else None
+            ),
+            html.Div(
+                error,
+                id="error-log",
+                className="error-log has-errors" if error else "error-log",
+                **{"aria-live": "polite"},
+            ),
+        ],
+        id="shared-refresh-shell",
+        style=dict(style) if style is not None else None,
+    )
+
+
 def build_initial_load_layout(
     *,
     stage_delays: Mapping[str, float] | None = None,
     error: str | None = None,
     retry_enabled: bool = True,
     keep_polling: bool = False,
+    include_shared_refresh_shell: bool = True,
 ) -> html.Div:
     """Render the usable app shell before the first connector call begins."""
     loading = error is None
     return html.Div(
         [
+            (
+                build_shared_refresh_shell(
+                    None,
+                    refresh_enabled=True,
+                    stage_delays=stage_delays,
+                    initial_loading=loading,
+                    initial_error=error,
+                    keep_polling=keep_polling,
+                )
+                if include_shared_refresh_shell
+                else None
+            ),
             dcc.Interval(
                 id="initial-load-trigger",
                 interval=500,
@@ -4293,27 +4426,11 @@ def build_initial_load_layout(
                 disabled=error is not None and not keep_polling,
             ),
             html.H1("Cube Risk & PL", className="sr-only"),
-            html.Section(
-                _build_refresh_controls(
-                    None,
-                    refresh_enabled=True,
-                    initial_loading=loading,
-                    initial_error=error is not None,
-                    id_prefix="bootstrap-",
-                ),
-                id="bootstrap-refresh-control-strip",
-                className="cube-refresh-strip",
-                **{"aria-label": "Dashboard controls"},
-            ),
-            _build_refresh_progress(
-                stage_delays,
-                initial_loading=loading,
-                initial_error=error is not None,
-            ),
             html.Div(
                 [
                     html.P(
                         error or "Cube is preparing its first validated snapshot.",
+                        id="initial-load-message",
                         className="initial-load-message",
                     ),
                     html.Button(
@@ -4329,12 +4446,6 @@ def build_initial_load_layout(
                 className="initial-load-actions",
                 hidden=error is None,
             ),
-            html.Div(
-                error or "",
-                id="bootstrap-error-log",
-                className="error-log has-errors" if error else "error-log",
-                **{"aria-live": "polite"},
-            ),
         ],
         className="app-shell cube-app-shell cube-initial-load-shell",
     )
@@ -4347,6 +4458,7 @@ def build_layout(
     refresh_enabled: bool = False,
     pl_enabled: bool = False,
     stage_delays: Mapping[str, float] | None = None,
+    include_shared_refresh_shell: bool = True,
 ) -> html.Div:
     """Build the application layout without registering routes or callbacks."""
     risk_values = ordered_unique(risk_data, "risk type")
@@ -4389,38 +4501,17 @@ def build_layout(
         for field in FILTER_DIMENSION_FIELDS
     ]
     top_book_open_rows = default_top_book_open_rows(risk_data)
-    applied_forced_dates = (
-        {
-            str(source): pd.Timestamp(value).date().isoformat()
-            for source, value in initial_snapshot.forced_dates.items()
-        }
-        if initial_snapshot is not None
-        else {}
-    )
-    applied_view_date = (
-        pd.Timestamp(initial_snapshot.forced_view_date).date().isoformat()
-        if initial_snapshot is not None
-        and initial_snapshot.forced_view_date is not None
-        else None
-    )
-    applied_commodity_market = bool(
-        initial_snapshot.commodity_market_enabled
-        if initial_snapshot is not None
-        else False
-    )
-    applied_risk_checker = bool(
-        initial_snapshot.risk_checker_enabled if initial_snapshot is not None else True
-    )
-    refresh_controls = _build_refresh_controls(
-        initial_snapshot,
-        refresh_enabled=refresh_enabled,
-    )
-    refresh_progress = (
-        _build_refresh_progress(stage_delays) if refresh_enabled else None
-    )
-
     return html.Div(
         [
+            (
+                build_shared_refresh_shell(
+                    initial_snapshot,
+                    refresh_enabled=refresh_enabled,
+                    stage_delays=stage_delays,
+                )
+                if include_shared_refresh_shell
+                else None
+            ),
             dcc.Store(
                 id="open-rows-store",
                 data=default_open_rows(risk_data, risk_options[0]["value"]),
@@ -4463,39 +4554,6 @@ def build_layout(
                 id="detail-component-request-store",
                 data={"measure": "risk", "component": "total"},
             ),
-            dcc.Store(
-                id="data-revision-store",
-                data=initial_snapshot.revision if initial_snapshot is not None else 0,
-            ),
-            html.Span(
-                initial_snapshot.revision if initial_snapshot is not None else 0,
-                id="refresh-commit-revision",
-                hidden=True,
-            ),
-            # Backend-affecting settings mirror the one process-wide committed
-            # snapshot. They are intentionally memory stores: opening a stale
-            # browser must never overwrite shared financial data. AutoPL is
-            # browser-only scheduling and remains local below.
-            dcc.Store(
-                id="perspective-risk-cube-forced-risk-v1", data=applied_forced_dates
-            ),
-            dcc.Store(id="perspective-risk-cube-view-date-v1", data=applied_view_date),
-            dcc.Store(
-                id="perspective-risk-cube-auto-refresh-v1",
-                data=True,
-                storage_type="local",
-            ),
-            dcc.Store(
-                id="perspective-risk-cube-commodity-market-v1",
-                data=applied_commodity_market,
-            ),
-            dcc.Store(
-                id="perspective-risk-cube-risk-checker-v1",
-                data=applied_risk_checker,
-            ),
-            dcc.Store(id="force-risk-draft-store", data={}),
-            dcc.Store(id="force-risk-render-store", data={}),
-            dcc.Store(id="refresh-result-store", data=0),
             (
                 dcc.Store(id="pl-adjustment-revision-store", data=0)
                 if pl_enabled
@@ -4506,12 +4564,6 @@ def build_layout(
             dcc.Store(id="promotion-toggle-store", data=True),
             # Region toggle: True = region column shown in hierarchy, False = hidden
             dcc.Store(id="region-toggle-store", data=False),
-            dcc.Interval(
-                id="auto-refresh-interval",
-                interval=15 * 60_000,
-                n_intervals=0,
-                disabled=True,
-            ),
             html.Div(
                 [
                     dcc.Checklist(
@@ -4523,13 +4575,6 @@ def build_layout(
                 style={"display": "none"},
             ),
             html.H1("Cube Risk & PL", className="sr-only"),
-            html.Section(
-                refresh_controls,
-                id="refresh-control-strip",
-                className="cube-refresh-strip",
-                **{"aria-label": "Dashboard controls"},
-            ),
-            refresh_progress,
             # New top-level controls: dates/readiness, dimension filters, quick search
             html.Details(
                 [
@@ -4948,7 +4993,6 @@ def build_layout(
                 # retaining the stable layout contract.
                 hidden=not refresh_enabled,
             ),
-            html.Div(id="error-log", className="error-log", **{"aria-live": "polite"}),
         ],
         className="app-shell cube-app-shell",
     )
@@ -4973,6 +5017,7 @@ __all__ = [
     "build_risk_checker_inventory",
     "build_risk_date_editor",
     "build_risk_table",
+    "build_shared_refresh_shell",
     "build_small_table",
     "build_top_book_exposures",
     "build_tree_rows",
