@@ -45,6 +45,8 @@ PL_SEND_COLUMNS = (
 )
 PL_SEND_KEY = (PORTFOLIO, CONCERTO_FIELD)
 ADJUSTMENT_KEY = (MARKET_DATE, PORTFOLIO, CONCERTO_FIELD)
+HISTORICAL_PL_COLUMNS = (MARKET_DATE, PORTFOLIO, CONCERTO_FIELD, PL)
+HISTORICAL_PL_KEY = ADJUSTMENT_KEY
 
 FrameSource: TypeAlias = pd.DataFrame | str | Path
 
@@ -190,6 +192,40 @@ def load_plsend_mapping(source: FrameSource) -> pd.DataFrame:
             f"PLSEND mapping contains ConcertoField values assigned to multiple pairs: {names}"
         )
     return frame.reset_index(drop=True)
+
+
+def load_historical_pl(source: FrameSource) -> pd.DataFrame:
+    """Load one governed daily P&L value per Portfolio and ConcertoField."""
+    frame = _read_frame(source, label="historical P&L")
+    actual_columns = tuple(str(column).strip() for column in frame.columns)
+    if actual_columns != HISTORICAL_PL_COLUMNS:
+        raise PLSendValidationError(
+            "historical P&L must have exactly these columns in order: "
+            f"{list(HISTORICAL_PL_COLUMNS)}; found {list(actual_columns)}"
+        )
+    frame.columns = list(HISTORICAL_PL_COLUMNS)
+    frame = _normalise_text_columns(
+        frame,
+        [PORTFOLIO, CONCERTO_FIELD],
+        label="historical P&L",
+    )
+    frame = _normalise_market_dates(frame, label="historical P&L")
+    frame = _normalise_pl(frame, label="historical P&L")
+
+    duplicate_keys = frame.duplicated(list(HISTORICAL_PL_KEY), keep=False)
+    if duplicate_keys.any():
+        keys = (
+            frame.loc[duplicate_keys, list(HISTORICAL_PL_KEY)]
+            .drop_duplicates()
+            .to_dict("records")
+        )
+        raise PLSendValidationError(
+            "historical P&L contains duplicate Market Date + Portfolio + "
+            f"ConcertoField keys: {keys}"
+        )
+    return frame.sort_values(list(HISTORICAL_PL_KEY), kind="stable").reset_index(
+        drop=True
+    )
 
 
 def load_portfolio_governance(source: FrameSource) -> pd.DataFrame:
@@ -654,6 +690,8 @@ def build_saved_pl_frame(
 __all__ = [
     "ADJUSTMENT",
     "ADJUSTMENT_KEY",
+    "HISTORICAL_PL_COLUMNS",
+    "HISTORICAL_PL_KEY",
     "FrameSource",
     "MAPPING_COLUMNS",
     "MARKET_DATE",
@@ -673,6 +711,7 @@ __all__ = [
     "collapse_pl_send_rows",
     "empty_pl_send_frame",
     "load_plsend_mapping",
+    "load_historical_pl",
     "load_portfolio_governance",
     "normalize_market_date",
     "normalize_pl_send_rows",

@@ -10,9 +10,17 @@ from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
 
+import pytest
+from dash import page_registry
+from dash.exceptions import UnsupportedRelativePath
+
 from feeds.s01_sources import build_production_refresh_manager
 from ui import s07_events as events
-from ui.s05_staticdata import STATIC_FILE_OPTIONS, build_static_data_page
+from ui.s05_staticdata import (
+    STATIC_FILE_OPTIONS,
+    build_static_data_page,
+    build_static_data_table,
+)
 from ui.s07_events import STARTUP_COORDINATOR_CONFIG_KEY, StartupCoordinator
 from ui.s09_factory import build_app
 
@@ -43,6 +51,39 @@ def _component_id_key(component_id: object) -> str:
 def _callback_outputs(metadata: dict) -> list[object]:
     output = metadata["output"]
     return list(output) if isinstance(output, (list, tuple)) else [output]
+
+
+def _callback_for_output(app, component_id: str, component_property: str):
+    metadata = next(
+        metadata
+        for metadata in app.callback_map.values()
+        if any(
+            output.component_id == component_id
+            and output.component_property == component_property
+            for output in _callback_outputs(metadata)
+        )
+    )
+    return metadata["callback"].__wrapped__
+
+
+def _native_page(
+    app,
+    page_path: str = "/",
+    *,
+    browser_path: str | None = None,
+):
+    """Materialize one native page using this app's Flask service context."""
+    routes_prefix = app.config.routes_pathname_prefix
+    layout_path = f"{routes_prefix}_dash-layout"
+    response = app.server.test_client().get(layout_path)
+    assert response.status_code == 200
+
+    route = _callback_for_output(app, "_pages_content", "children")
+    pathname = (
+        app.get_relative_path(page_path) if browser_path is None else browser_path
+    )
+    with app.server.test_request_context(layout_path):
+        return route(pathname, "")
 
 
 def _wait_for_phase(
@@ -103,16 +144,53 @@ class _StartupManager:
         self.health.revision = 1
 
 
-def test_manager_backed_app_paints_loading_shell_before_source_io() -> None:
+def test_manager_backed_risk_page_mounts_loading_shell_before_source_io() -> None:
     manager = build_production_refresh_manager()
 
     app = build_app(refresh_manager=manager)
     response = app.server.test_client().get("/_dash-layout")
     health = app.server.test_client().get("/healthz").get_json()
+    base_layout = app.layout() if callable(app.layout) else app.layout
+    base_components = list(_walk(base_layout))
+    base_ids = {
+        component_id
+        for item in base_components
+        if isinstance((component_id := getattr(item, "id", None)), str)
+    }
+    risk_page, _metadata = _native_page(app)
+    risk_ids = {getattr(item, "id", None) for item in _walk(risk_page)}
+    shared_shell = next(
+        item
+        for item in base_components
+        if getattr(item, "id", None) == "shared-refresh-shell"
+    )
+    refresh_progress = next(
+        item
+        for item in base_components
+        if getattr(item, "id", None) == "refresh-progress"
+    )
+    mounted_ids = [
+        _component_id_key(component_id)
+        for item in [*base_components, *_walk(risk_page)]
+        if (component_id := getattr(item, "id", None)) is not None
+    ]
 
     assert response.status_code == 200
-    assert b"initial-load-trigger" in response.data
-    assert b"refresh-progress-function" in response.data
+    assert b'"id":"_pages_content"' in response.data
+    assert b"initial-load-trigger" not in response.data
+    assert b'"id":"static-data-page"' not in response.data
+    assert {
+        "_pages_location",
+        "shared-refresh-shell",
+        "refresh-progress-function",
+    } <= base_ids
+    assert "app-location" not in base_ids
+    assert shared_shell.style == {"display": "none"}
+    assert refresh_progress.hidden is True
+    assert refresh_progress.to_plotly_json()["props"]["data-initial-load"] == "false"
+    assert {"cube-page-container", "initial-load-trigger"} <= risk_ids
+    assert "refresh-progress-function" not in risk_ids
+    assert len(mounted_ids) == len(set(mounted_ids))
     assert manager.health.revision == 0
     assert health["status"] == "starting"
     coordinator = app.server.config[STARTUP_COORDINATOR_CONFIG_KEY]
@@ -182,23 +260,42 @@ def test_startup_failure_is_visible_and_retryable() -> None:
     assert "checker service unavailable" in str(status.error)
 
 
-def test_layout_response_schedules_refresh_and_warm_layout_recovers() -> None:
+def test_only_mounted_risk_shell_requests_start_and_warm_page_skips_shell() -> None:
     manager = build_production_refresh_manager()
     app = build_app(refresh_manager=manager)
     client = app.server.test_client()
 
-    cold = client.get("/_dash-layout")
-    assert cold.status_code == 200
-    assert b"initial-load-trigger" in cold.data
-
     coordinator = app.server.config[STARTUP_COORDINATOR_CONFIG_KEY]
+    base = client.get("/_dash-layout")
+    static_page, _metadata = _native_page(app, "/static-data")
+    static_ids = {getattr(item, "id", None) for item in _walk(static_page)}
+
+    assert base.status_code == 200
+    assert b"initial-load-trigger" not in base.data
+    assert "static-data-page" in static_ids
+    assert "initial-load-trigger" not in static_ids
+    assert coordinator.status().phase == "idle"
+    assert manager.health.revision == 0
+
+    cold_page, _metadata = _native_page(app)
+    cold_ids = {getattr(item, "id", None) for item in _walk(cold_page)}
+    assert "initial-load-trigger" in cold_ids
+    assert coordinator.status().phase == "idle"
+
+    start = client.post("/startz")
+    assert start.status_code == 200
+    assert start.get_json()["started_new_worker"] is True
     _wait_for_phase(coordinator, "succeeded")
-    warm = client.get("/_dash-layout")
+    warm_page, _metadata = _native_page(app)
+    warm_ids = {
+        component_id
+        for item in _walk(warm_page)
+        if isinstance((component_id := getattr(item, "id", None)), str)
+    }
 
     assert manager.health.revision == 1
-    assert warm.status_code == 200
-    assert b"initial-load-trigger" not in warm.data
-    assert b"risk-type-tabs" in warm.data
+    assert "initial-load-trigger" not in warm_ids
+    assert "risk-type-tabs" in warm_ids
 
 
 def test_start_endpoint_is_idempotent_and_progress_has_attempt_identity() -> None:
@@ -246,7 +343,13 @@ def test_public_endpoint_urls_do_not_reuse_internal_route_prefix() -> None:
     layout = client.get("/internal/_dash-layout")
 
     assert layout.status_code == 200
-    endpoint_props = layout.get_json()["props"]["children"][1]["props"]
+    layout_component = app.layout() if callable(app.layout) else app.layout
+    endpoint = next(
+        item
+        for item in _walk(layout_component)
+        if getattr(item, "id", None) == "backend-endpoints"
+    )
+    endpoint_props = endpoint.to_plotly_json()["props"]
     assert endpoint_props["data-progress-url"] == "/proxy/internal/progressz"
     assert endpoint_props["data-start-url"] == "/proxy/internal/startz"
     assert client.get("/internal/progressz").status_code == 200
@@ -268,6 +371,35 @@ def test_browser_progress_copy_never_claims_an_unconfirmed_refresh() -> None:
     assert "server_boot_id" in source
     assert 'refreshProgressState.mode === "bootstrap"' in source
     assert "const startupAttemptMatches" in source
+    assert "attributeOldValue: true" in source
+    assert "transitionedFromRunning" in source
+    assert 'state.mode === "bootstrap"' in source
+    assert "hasNewError ? 5000 : 300" in source
+    assert "revision <= renderedDataRevisionFloor()" in source
+    assert 'setProps("data-revision-store", { data: revision })' in source
+    revision_sync = source.index("const syncCommittedDataRevision")
+    assert (
+        'refreshProgressState?.mode === "bootstrap"'
+        in source[revision_sync : revision_sync + 500]
+    )
+    revision_sync_source = source[revision_sync : revision_sync + 1_300]
+    assert (
+        'const commitNode = document.getElementById("refresh-commit-revision")'
+        in revision_sync_source
+    )
+    assert "normalizedRevision(commitNode?.textContent)" in revision_sync_source
+    assert "progress?.running === false" in revision_sync_source
+    assert "|| !commitNode" in revision_sync_source
+    assert "Math.max" in revision_sync_source
+    assert 'document.getElementById("data-revision-store")' not in (
+        revision_sync_source
+    )
+    assert "const claimSessionReload" in source
+    assert "dashIsLoading() || Date.now() < handoffDeadline" in source
+    assert "cube-bootstrap-ready-reload:${bootId}:${revision}" in source
+    assert "cube-progress-transport-reload:${bootId}" in source
+    assert "cube-progress-recovery-reload-at" not in source
+    assert "Date.now() - lastRecovery >= 60000" not in source
     reload_guard = source.index("disconnectedFor >= 45000")
     assert (
         'refreshProgressState.mode === "bootstrap"'
@@ -288,14 +420,91 @@ def test_warm_manager_keeps_the_shell_recovery_callback_registered() -> None:
 
     app = build_app(refresh_manager=manager)
     coordinator = app.server.config[STARTUP_COORDINATOR_CONFIG_KEY]
+    operating_dates = _callback_for_output(app, "operating-date-banner", "children")(
+        manager.health.revision
+    )
+    risk_page, _metadata = _native_page(app)
+    base_layout = app.layout() if callable(app.layout) else app.layout
+    components = [*list(_walk(base_layout)), *list(_walk(risk_page))]
+    ids = {
+        component_id
+        for item in components
+        if isinstance((component_id := getattr(item, "id", None)), str)
+    }
+    auto_interval = next(
+        item
+        for item in components
+        if getattr(item, "id", None) == "auto-refresh-interval"
+    )
 
     assert coordinator is not None
     assert coordinator.status().phase == "succeeded"
     assert "cube-page-container.children" in app.callback_map
+    assert manager.snapshot.market_date.date().isoformat() in str(operating_dates)
+    assert auto_interval.interval == 15 * 60_000
+    assert "operating-date-banner" in ids
+    assert "unmapped-books-summary" in ids
+    assert "raw-data-summary" not in ids
+
+
+def test_long_financial_callback_cannot_own_live_revision() -> None:
+    manager = build_production_refresh_manager()
+    manager.refresh(force_risk=True, force_pl=True)
+    app = build_app(refresh_manager=manager)
+    metadata = next(
+        metadata
+        for metadata in app.callback_map.values()
+        if any(
+            output.component_id == "refresh-commit-revision"
+            for output in _callback_outputs(metadata)
+        )
+    )
+    inputs = {(item["id"], item["property"]) for item in metadata["inputs"]}
+    outputs = {
+        (output.component_id, output.component_property)
+        for output in _callback_outputs(metadata)
+    }
+
+    assert inputs == {
+        ("auto-refresh-interval", "n_intervals"),
+        ("refresh-portfolios-button", "n_clicks"),
+        ("refresh-pl-button", "n_clicks"),
+        ("reload-risk-button", "n_clicks"),
+        ("force-risk-apply-button", "n_clicks"),
+        ("commo-market-toggle", "n_clicks"),
+        ("risk-checker-toggle", "n_clicks"),
+    }
+    assert (
+        "perspective-risk-cube-commodity-market-v1",
+        "data",
+    ) not in outputs
+    assert ("perspective-risk-cube-risk-checker-v1", "data") not in outputs
+    assert ("refresh-commit-revision", "children") in outputs
+    assert ("data-revision-store", "data") not in outputs
+
+    layout = app.layout() if callable(app.layout) else app.layout
+    commit_revision = next(
+        item
+        for item in _walk(layout)
+        if getattr(item, "id", None) == "refresh-commit-revision"
+    )
+    assert commit_revision.hidden is True
+    assert commit_revision.children == manager.health.revision
+
+
+def test_composed_app_defaults_to_one_second_risk_product_hold(monkeypatch) -> None:
+    monkeypatch.delenv("RISK_PRODUCT_DELAY_SECONDS", raising=False)
+    from s01_app import create_app
+
+    app = create_app()
+    coordinator = app.server.config[STARTUP_COORDINATOR_CONFIG_KEY]
+
+    assert coordinator._manager.stage_delays == {"risk_product": 1.0}
 
 
 def test_every_callback_output_has_one_nonduplicate_owner() -> None:
     app = build_app(refresh_manager=build_production_refresh_manager())
+    _native_page(app)
     owners: dict[tuple[str, str], list[str]] = defaultdict(list)
 
     for callback_key, metadata in app.callback_map.items():
@@ -314,38 +523,173 @@ def test_every_callback_output_has_one_nonduplicate_owner() -> None:
     }
     assert duplicates == {}
     assert len(owners[("risk-grid", "children")]) == 1
-    assert len(owners[("data-revision-store", "data")]) == 1
+    assert ("data-revision-store", "data") not in owners
+    assert len(owners[("refresh-commit-revision", "children")]) == 1
     assert len(owners[("cube-page-container", "children")]) == 1
+    assert len(owners[("_pages_content", "children")]) == 1
+    assert len(owners[("shared-refresh-shell", "children")]) == 1
+    assert len(owners[("shared-refresh-shell", "style")]) == 1
+    assert ("app-page-container", "children") not in owners
+    assert ("cube-page-container", "style") not in owners
+    assert ("static-data-page-container", "style") not in owners
 
 
-def test_static_data_route_owns_a_separate_page_and_concerto_catalog() -> None:
+def test_native_pages_mount_one_exact_page_and_explicit_404() -> None:
     app = build_app(refresh_manager=build_production_refresh_manager())
-    route_metadata = next(
-        metadata
-        for metadata in app.callback_map.values()
-        if any(
-            output.component_id == "static-data-page-container"
-            and output.component_property == "style"
-            for output in _callback_outputs(metadata)
-        )
-    )
-    route = route_metadata["callback"].__wrapped__
+    nav = _callback_for_output(app, "cube-nav-link", "className")
 
-    assert route("/") == (
-        {},
-        {"display": "none"},
-        "app-nav-link cube-nav-link is-active",
-        "app-nav-link cube-nav-link",
+    static_page, metadata = _native_page(app, "/static-data")
+    static_ids = {getattr(item, "id", None) for item in _walk(static_page)}
+    cube_class, static_class, shell_style = nav(app.get_relative_path("/static-data/"))
+    assert metadata == {"title": "Cube — Static Data"}
+    assert cube_class == "app-nav-link cube-nav-link"
+    assert static_class == "app-nav-link cube-nav-link is-active"
+    assert shell_style == {"display": "none"}
+    assert {"static-data-page", "static-data-file-selector"} <= static_ids
+    assert "cube-page-container" not in static_ids
+    assert "initial-load-trigger" not in static_ids
+
+    cube_page, metadata = _native_page(app)
+    cube_ids = {getattr(item, "id", None) for item in _walk(cube_page)}
+    cube_class, static_class, shell_style = nav(app.get_relative_path("/"))
+    assert metadata == {"title": "Cube — Risk"}
+    assert cube_class == "app-nav-link cube-nav-link is-active"
+    assert static_class == "app-nav-link cube-nav-link"
+    assert shell_style == {}
+    assert {"cube-page-container", "initial-load-trigger"} <= cube_ids
+    assert "static-data-page" not in cube_ids
+
+    not_found, metadata = _native_page(app, "/nested/static-data")
+    not_found_ids = {getattr(item, "id", None) for item in _walk(not_found)}
+    cube_class, static_class, shell_style = nav(
+        app.get_relative_path("/nested/static-data")
     )
-    assert route("/static-data") == (
-        {"display": "none"},
-        {},
-        "app-nav-link cube-nav-link",
-        "app-nav-link cube-nav-link is-active",
+    return_link = next(
+        item
+        for item in _walk(not_found)
+        if getattr(item, "children", None) == "Return to Risk"
+    )
+    assert metadata == {"title": "Cube — Page not found"}
+    assert cube_class == "app-nav-link cube-nav-link"
+    assert static_class == "app-nav-link cube-nav-link"
+    assert shell_style == {"display": "none"}
+    assert {"not-found-page", "not-found-page-container"} <= not_found_ids
+    assert return_link.href == app.get_relative_path("/")
+
+
+def test_native_pages_match_the_public_prefix_exactly() -> None:
+    app = build_app(
+        refresh_manager=build_production_refresh_manager(),
+        dash_kwargs={
+            "routes_pathname_prefix": "/internal/",
+            "requests_pathname_prefix": "/proxy/internal/",
+        },
+    )
+    nav = _callback_for_output(app, "cube-nav-link", "className")
+
+    static_page, _metadata = _native_page(app, "/static-data")
+    static_ids = {getattr(item, "id", None) for item in _walk(static_page)}
+    cube_class, static_class, shell_style = nav("/proxy/internal/static-data/")
+    assert cube_class == "app-nav-link cube-nav-link"
+    assert static_class == "app-nav-link cube-nav-link is-active"
+    assert shell_style == {"display": "none"}
+    assert "static-data-page" in static_ids
+
+    not_found, _metadata = _native_page(app, "/nested/static-data")
+    not_found_ids = {getattr(item, "id", None) for item in _walk(not_found)}
+    cube_class, static_class, shell_style = nav("/proxy/internal/nested/static-data")
+    assert cube_class == "app-nav-link cube-nav-link"
+    assert static_class == "app-nav-link cube-nav-link"
+    assert shell_style == {"display": "none"}
+    assert "not-found-page" in not_found_ids
+
+    with pytest.raises(UnsupportedRelativePath):
+        _native_page(app, browser_path="/internal/static-data")
+
+
+def test_repeated_apps_keep_native_page_services_isolated() -> None:
+    cold_manager = build_production_refresh_manager()
+    warm_manager = build_production_refresh_manager()
+    warm_manager.refresh(force_risk=True, force_pl=True)
+
+    cold_app = build_app(
+        refresh_manager=cold_manager,
+        dash_kwargs={
+            "routes_pathname_prefix": "/cold-internal/",
+            "requests_pathname_prefix": "/cold/",
+        },
+    )
+    warm_app = build_app(
+        refresh_manager=warm_manager,
+        dash_kwargs={
+            "routes_pathname_prefix": "/warm-internal/",
+            "requests_pathname_prefix": "/warm/",
+        },
+    )
+
+    assert tuple(page_registry) == (
+        "pages.risk",
+        "pages.static_data",
+        "pages.not_found_404",
+    )
+    assert page_registry["pages.static_data"]["relative_path"] == "/warm/static-data"
+    assert cold_app.get_relative_path("/static-data") == "/cold/static-data"
+    assert warm_app.get_relative_path("/static-data") == "/warm/static-data"
+
+    # Route the older app after the newer factory reset/re-registered Dash's
+    # process-global catalogue. Stable layouts must still resolve the active
+    # Flask app's manager rather than capture the latest factory closure.
+    cold_page, _metadata = _native_page(cold_app)
+    warm_page, _metadata = _native_page(warm_app)
+    cold_ids = {
+        component_id
+        for item in _walk(cold_page)
+        if isinstance((component_id := getattr(item, "id", None)), str)
+    }
+    warm_ids = {
+        component_id
+        for item in _walk(warm_page)
+        if isinstance((component_id := getattr(item, "id", None)), str)
+    }
+
+    assert "initial-load-trigger" in cold_ids
+    assert "risk-type-tabs" not in cold_ids
+    assert "initial-load-trigger" not in warm_ids
+    assert "risk-type-tabs" in warm_ids
+    assert cold_manager.health.revision == 0
+    assert warm_manager.health.revision == 1
+
+
+def test_static_data_page_defers_its_default_csv_until_callback_mount() -> None:
+    page = build_static_data_page()
+    page_ids = {getattr(item, "id", None) for item in _walk(page)}
+    table_container = next(
+        item
+        for item in _walk(page)
+        if getattr(item, "id", None) == "static-data-table-container"
+    )
+
+    assert {"static-data-page", "static-data-file-selector"} <= page_ids
+    assert table_container.children is None
+    assert not any(
+        str(component_id).startswith("static-data-table-")
+        and component_id != "static-data-table-container"
+        for component_id in page_ids
+        if component_id is not None
     )
 
     options = {option["value"] for option in STATIC_FILE_OPTIONS}
     assert "s08_concerto.csv" in options
     assert "s08_plsend.csv" not in options
-    page_ids = {getattr(item, "id", None) for item in _walk(build_static_data_page())}
-    assert {"static-data-page", "static-data-file-selector"} <= page_ids
+
+
+def test_static_data_columns_use_only_supported_dash_properties() -> None:
+    table_layout = build_static_data_table("s01_readiness.csv")
+    table = next(
+        item
+        for item in _walk(table_layout)
+        if getattr(item, "id", None) == "static-data-table-s01_readiness"
+    )
+
+    assert table.columns
+    assert all("resizable" not in column for column in table.columns)

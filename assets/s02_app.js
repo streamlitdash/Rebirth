@@ -724,6 +724,9 @@
     };
 
     let uiHookTimer = null;
+    // Assigned by the refresh controller below. Keeping DOM discovery in the
+    // existing observer avoids adding another document-wide MutationObserver.
+    let syncRefreshLifecycleNodes = () => {};
     const syncUiHooks = () => {
       if (uiHookTimer) clearTimeout(uiHookTimer);
       uiHookTimer = setTimeout(() => {
@@ -745,22 +748,33 @@
     const uiHookObserver = new MutationObserver((mutations) => {
       let themeButtonAdded = false;
       let cubeAdded = false;
+      let refreshLifecycleChanged = false;
       const plotlyGraphsAdded = new Set();
       const inspectHook = (element) => {
         if (element.matches?.("#theme-toggle")) themeButtonAdded = true;
         if (element.matches?.(".cube-motion")) cubeAdded = true;
         if (element.matches?.(".js-plotly-plot")) plotlyGraphsAdded.add(element);
+        if (
+          element.matches?.("#refresh-status, #bootstrap-refresh-status, #refresh-progress")
+          || element.querySelector?.("#refresh-status, #bootstrap-refresh-status, #refresh-progress")
+        ) refreshLifecycleChanged = true;
       };
 
-      mutations.forEach((mutation) => Array.from(mutation.addedNodes).forEach((node) => {
-        if (node.nodeType !== 1) return;
-        inspectHook(node);
-        node.querySelectorAll?.("#theme-toggle, .cube-motion, .js-plotly-plot")
-          .forEach(inspectHook);
-      }));
+      mutations.forEach((mutation) => {
+        Array.from(mutation.addedNodes).forEach((node) => {
+          if (node.nodeType !== 1) return;
+          inspectHook(node);
+          node.querySelectorAll?.("#theme-toggle, .cube-motion, .js-plotly-plot")
+            .forEach(inspectHook);
+        });
+        Array.from(mutation.removedNodes).forEach((node) => {
+          if (node.nodeType === 1) inspectHook(node);
+        });
+      });
 
       if (themeButtonAdded) syncUiHooks();
       if (cubeAdded) scheduleCubeRegistration();
+      if (refreshLifecycleChanged) syncRefreshLifecycleNodes();
       if (plotlyGraphsAdded.size)
         schedulePlotlyTheme(activeTheme, plotlyGraphsAdded, 40);
     });
@@ -843,6 +857,9 @@
     let backendStartRequest = null;
     let backendStartNextAttempt = 0;
     let backendStartFailures = 0;
+    let refreshStatusObserver = null;
+    let observedRefreshStatusNode = null;
+    let lastPublishedDataRevision = 0;
     const BACKEND_PROGRESS_POLL_MS = 1000;
     const BACKEND_PROGRESS_REQUEST_TIMEOUT_MS = 30000;
     const BACKEND_PROGRESS_FAILURE_LIMIT = 2;
@@ -946,6 +963,91 @@
       progress.server_boot_id,
     ]) : "";
 
+    const normalizedRevision = (value) => {
+      if (
+        (typeof value !== "number" && typeof value !== "string")
+        || (typeof value === "string" && !value.trim())
+      ) return null;
+      const revision = Number(value);
+      return Number.isSafeInteger(revision) && revision >= 0 ? revision : null;
+    };
+
+    const renderedDataRevisionFloor = () => {
+      let floor = lastPublishedDataRevision;
+      const store = document.getElementById("data-revision-store");
+      [
+        store?.data,
+        store?.dataset?.revision,
+        store?.getAttribute?.("data-revision"),
+      ].forEach((value) => {
+        const revision = normalizedRevision(value);
+        if (revision !== null) floor = Math.max(floor, revision);
+      });
+      document.querySelectorAll("[data-risk-view-token]").forEach((node) => {
+        try {
+          const token = JSON.parse(node.dataset.riskViewToken || "{}");
+          const revision = normalizedRevision(token.data_revision);
+          if (revision !== null) floor = Math.max(floor, revision);
+        } catch (_error) {
+          // A malformed/stale table token must not block a newer valid revision.
+        }
+      });
+      document.querySelectorAll("[data-snapshot-revision]").forEach((node) => {
+        const revision = normalizedRevision(node.dataset.snapshotRevision);
+        if (revision !== null) floor = Math.max(floor, revision);
+      });
+      const baseline = normalizedRevision(refreshProgressState?.baselineRevision);
+      if (baseline !== null) floor = Math.max(floor, baseline);
+      lastPublishedDataRevision = Math.max(lastPublishedDataRevision, floor);
+      return floor;
+    };
+
+    const syncCommittedDataRevision = (progress) => {
+      if (refreshProgressState?.mode === "bootstrap") return false;
+      // Risk render callbacks target page-local outputs. Hold the common
+      // revision signal on other Dash Pages and publish it when Risk mounts.
+      if (
+        !document.getElementById("cube-page-container")
+        || !document.getElementById("risk-type-tabs")
+      ) return false;
+      const commitNode = document.getElementById("refresh-commit-revision");
+      const progressRevision = progress?.running === false
+        ? normalizedRevision(progress.revision)
+        : null;
+      const commitRevision = normalizedRevision(commitNode?.textContent);
+      const candidates = [progressRevision, commitRevision]
+        .filter((value) => value !== null);
+      const revision = candidates.length ? Math.max(...candidates) : null;
+      const setProps = window.dash_clientside?.set_props;
+      // dcc.Store renders no DOM node; its colocated commit signal is the
+      // mount sentinel before addressing the Store through Dash's registry.
+      if (
+        revision === null
+        || !commitNode
+        || revision <= renderedDataRevisionFloor()
+        || typeof setProps !== "function"
+      ) return false;
+      try {
+        setProps("data-revision-store", { data: revision });
+        lastPublishedDataRevision = revision;
+        return true;
+      } catch (_error) {
+        // A transient Dash mount race must not poison backend progress polling.
+        return false;
+      }
+    };
+
+    const claimSessionReload = (key) => {
+      try {
+        if (window.sessionStorage.getItem(key)) return false;
+        window.sessionStorage.setItem(key, String(Date.now()));
+        return true;
+      } catch (_error) {
+        // Without durable session state, reloading could recreate a loop.
+        return false;
+      }
+    };
+
     const requestBackendProgress = async (force = false) => {
       const now = Date.now();
       if (!force && now < backendProgressNextPoll) {
@@ -1010,6 +1112,7 @@
           backendProgressLastSuccessAt = Date.now();
           backendProgressNextPoll = Date.now() + BACKEND_PROGRESS_POLL_MS;
           lastBackendProgress = progress;
+          syncCommittedDataRevision(progress);
           return progress;
         } catch (error) {
           backendProgressFailures += 1;
@@ -1100,6 +1203,15 @@
       document.getElementById("refresh-status")
       || document.getElementById("bootstrap-refresh-status")
     );
+
+    const refreshLifecycleVisible = () => {
+      const shell = document.getElementById("shared-refresh-shell");
+      if (!shell) return true;
+      const style = window.getComputedStyle(shell);
+      return style.display !== "none"
+        && style.visibility !== "hidden"
+        && shell.getClientRects().length > 0;
+    };
 
     const refreshErrorNode = () => (
       document.getElementById("error-log")
@@ -1247,11 +1359,24 @@
           finishRefreshProgress();
           return;
         }
-        if (dashIsLoading() && Date.now() < handoffDeadline) {
+        // Never interrupt Dash while it is materialising the validated tree.
+        if (dashIsLoading() || Date.now() < handoffDeadline) {
           setTimeout(recoverMount, 1000);
           return;
         }
-        window.location.reload();
+        const latestProgress = lastBackendProgress || progress;
+        const bootId = String(latestProgress.server_boot_id || "unknown");
+        const revision = normalizedRevision(latestProgress.revision) || 0;
+        const recoveryKey = `cube-bootstrap-ready-reload:${bootId}:${revision}`;
+        if (claimSessionReload(recoveryKey)) {
+          window.location.reload();
+          return;
+        }
+        setProgressDetail(
+          "refresh-progress-function",
+          "Dashboard handoff is still pending; polling continues without repeated reloads",
+        );
+        setTimeout(recoverMount, 1000);
       };
       setTimeout(recoverMount, 3000);
       return true;
@@ -1260,26 +1385,62 @@
     const startRefreshProgress = (mode) => {
       const panel = document.getElementById("refresh-progress");
       if (!panel) return;
+      // The Python busy Store is authoritative at completion, but Dash holds
+      // callbacks downstream of a long-running Output until that request
+      // returns. Disable page-local date actions synchronously so a second
+      // Apply cannot be queued while the first transaction is in flight.
+      const setProps = window.dash_clientside?.set_props;
+      ["force-risk-apply-button", "force-risk-cancel-button"].forEach((id) => {
+        const action = document.getElementById(id);
+        if (!action) return;
+        try {
+          if (typeof setProps === "function") setProps(id, { disabled: true });
+          else action.disabled = true;
+        } catch (_error) {
+          action.disabled = true;
+        }
+      });
       setGlobalLoaderVisible(true);
       clearRefreshProgressTimers();
       const reloadAll = mode === "reload";
       const bootstrap = mode === "bootstrap";
       const portfolioOnly = mode === "portfolios";
+      const commoditySetting = mode === "commo";
+      const checkerSetting = mode === "checker";
+      const dateSettings = mode === "dates";
+      const settingsOnly = commoditySetting || checkerSetting || dateSettings;
       const fullRiskLoad = reloadAll || bootstrap;
       const automatic = mode === "automatic";
       const requestedFunction = bootstrap
         ? "RiskRefreshManager.refresh(initial_load)"
         : reloadAll ? "RiskRefreshManager.refresh(force_risk=True)"
         : portfolioOnly ? "RiskRefreshManager.refresh_portfolios()"
+        : commoditySetting ? "RiskRefreshManager.refresh(commodity_market)"
+        : checkerSetting ? "RiskRefreshManager.refresh(risk_checker)"
+        : dateSettings ? "RiskRefreshManager.refresh(forced_dates)"
         : "RiskRefreshManager.refresh(force_pl=True)";
       const requestedSource = fullRiskLoad
         ? "all connector sources"
         : portfolioOnly ? "portfolio mapping connector only"
+        : commoditySetting ? "commodity market setting"
+        : checkerSetting ? "risk checker setting"
+        : dateSettings ? "staged risk and market dates"
         : automatic ? "automatic 15-minute refresh" : "manual P&L refresh";
       const riskProductDelay = Number(panel.dataset.riskProductDelay || 0);
       const title = document.getElementById("refresh-progress-title");
       const elapsed = document.getElementById("refresh-progress-elapsed");
-      if (title) title.textContent = bootstrap ? "Loading Cube data" : reloadAll ? "Reloading all risk" : portfolioOnly ? "Refreshing portfolios" : automatic ? "Automatic refresh" : "Refreshing P&L";
+      const operationTitle = bootstrap
+        ? "Loading Cube data"
+        : reloadAll ? "Reloading all risk"
+        : portfolioOnly ? "Refreshing portfolios"
+        : commoditySetting ? "Updating Commo market"
+        : checkerSetting ? "Updating RiskChecker"
+        : dateSettings ? "Applying date settings"
+        : automatic ? "Automatic refresh"
+        : "Refreshing P&L";
+      if (title) title.textContent = bootstrap
+        ? operationTitle
+        : `${operationTitle} · Current snapshot remains usable`;
       panel.hidden = false;
       panel.classList.remove("is-complete", "is-error");
       panel.classList.add("is-running");
@@ -1312,6 +1473,8 @@
         "refresh-progress-product",
         portfolioOnly
           ? "Reloading portfolio mapping and rebuilding dependent views"
+          : settingsOnly
+            ? "Applying settings through one atomic refresh"
           : fullRiskLoad
             ? "Preparing Risk & dRisk product calls"
             : "Checking readiness before conditional risk and market/P&L refresh",
@@ -1333,8 +1496,13 @@
       const startedAt = Date.now();
       refreshProgressState = {
         mode,
+        panel,
         startedAt,
         sawRunning: false,
+        sawDashRunning: false,
+        dashCallbackComplete: false,
+        dashStatusNode: null,
+        followingExistingWriter: false,
         sawBackendRunning: false,
         sawBackendAttempt: false,
         baselineProgressKey: null,
@@ -1351,6 +1519,7 @@
         initialErrorText: (refreshErrorNode()?.textContent || "").trim(),
         initialStatusText: (refreshStatusNode()?.textContent || "").trim(),
       };
+      syncRefreshLifecycleNodes();
       const updateElapsed = () => {
         if (elapsed && refreshProgressState) {
           elapsed.textContent = `${Math.floor((Date.now() - startedAt) / 1000)}s elapsed`;
@@ -1458,27 +1627,139 @@
     if (!(hasNewError && state.mode === "bootstrap")) {
       setTimeout(() => {
         if (!refreshProgressState && panel) panel.hidden = true;
-      }, hasNewError ? 5000 : 1600);
+      }, hasNewError ? 5000 : 300);
     }
   };
+
+  const abandonRefreshProgress = (state) => {
+    if (!state || refreshProgressState !== state) return;
+    clearRefreshProgressTimers();
+    refreshProgressState = null;
+    setGlobalLoaderVisible(false);
+  };
+
+  const handleRefreshStatusTransition = (node) => {
+    const state = refreshProgressState;
+    if (!state || !node) return;
+    const running = node.classList.contains("is-refreshing");
+    if (running) {
+      state.sawDashRunning = true;
+      state.sawRunning = true;
+      state.dashCallbackComplete = false;
+      state.dashStatusNode = node;
+      return;
+    }
+    if (
+      state.mode === "bootstrap"
+      || !state.sawDashRunning
+      || state.dashStatusNode !== node
+      || state.dashCallbackComplete
+    ) return;
+
+    // Dash's `running` output is applied before the request and removed only
+    // after its response. Observing both class states closes the sub-second
+    // race where the one-second poll never sees a fast refresh in flight.
+    state.dashCallbackComplete = true;
+    const statusText = (node.textContent || "").trim();
+    state.followingExistingWriter = /already running; following its live progress/i
+      .test(statusText);
+    if (state.followingExistingWriter) {
+      // This callback has ended, but another browser/task still owns the
+      // financial writer. Keep following real backend progress without an
+      // invented timeout or an unconfirmed success state.
+      void requestBackendProgress(true).then((progress) => {
+        if (!refreshProgressState || refreshProgressState !== state) return;
+        if (progress?.running) {
+          state.sawBackendRunning = true;
+          state.sawBackendAttempt = true;
+          renderBackendProgress(progress);
+        } else if (progress) {
+          finishRefreshProgress();
+        }
+      });
+      return;
+    }
+
+    syncCommittedDataRevision(lastBackendProgress);
+    finishRefreshProgress();
+  };
+
+  const syncRefreshStatusObserver = () => {
+    const node = refreshStatusNode();
+    if (node === observedRefreshStatusNode) {
+      handleRefreshStatusTransition(node);
+      return;
+    }
+    refreshStatusObserver?.disconnect();
+    observedRefreshStatusNode = node;
+    refreshStatusObserver = null;
+    if (!node) return;
+    refreshStatusObserver = new MutationObserver((mutations) => {
+      if (mutations.some((mutation) => mutation.attributeName === "class")) {
+        const state = refreshProgressState;
+        const transitionedFromRunning = mutations.some((mutation) => (
+          /(^|\s)is-refreshing(?:\s|$)/.test(mutation.oldValue || "")
+        ));
+        if (state && transitionedFromRunning) {
+          state.sawDashRunning = true;
+          state.sawRunning = true;
+          state.dashStatusNode = node;
+        }
+        handleRefreshStatusTransition(node);
+      }
+    });
+    refreshStatusObserver.observe(node, {
+      attributes: true,
+      attributeFilter: ["class"],
+      attributeOldValue: true,
+    });
+    // Automatic refreshes can already be running when the poll first creates
+    // their progress state; seed that confirmed DOM state immediately.
+    handleRefreshStatusTransition(node);
+  };
+
+  syncRefreshLifecycleNodes = () => {
+    syncRefreshStatusObserver();
+    if (
+      document.getElementById("cube-page-container")
+      && document.getElementById("risk-type-tabs")
+    ) {
+      syncCommittedDataRevision(lastBackendProgress);
+    }
+    const state = refreshProgressState;
+    if (!state || state.panel?.isConnected) return;
+    const replacement = document.getElementById("refresh-progress");
+    if (state.mode === "bootstrap") {
+      // The cold shell is expected to be replaced by the validated layout.
+      // Preserve bootstrap recovery and follow the newly mounted panel.
+      if (replacement) state.panel = replacement;
+      return;
+    }
+    // A normal page unmount must not leave clocks, loaders, or stale state
+    // alive against a detached hero.
+    abandonRefreshProgress(state);
+  };
+  syncRefreshLifecycleNodes();
 
   let refreshProgressTickRunning = false;
   const refreshProgressPoll = setInterval(async () => {
     if (refreshProgressTickRunning) return;
     refreshProgressTickRunning = true;
     try {
+      syncRefreshLifecycleNodes();
       const running = refreshStatusNode()?.classList.contains("is-refreshing") || false;
+      const lifecycleVisible = refreshLifecycleVisible();
       // Checking Dash's global loading tree is only useful during a
       // refresh attempt. In particular, an ordinary Risk Explorer
       // tab callback must not activate the cube loader.
       const dashLoading = (running || Boolean(refreshProgressState))
         ? dashIsLoading()
         : false;
-      if (running && !refreshProgressState) {
+      if (running && !refreshProgressState && lifecycleVisible) {
         const initialLoad = document.getElementById("refresh-progress")?.dataset.initialLoad === "true";
         startRefreshProgress(initialLoad ? "bootstrap" : "automatic");
       }
-      setGlobalLoaderVisible(running || Boolean(refreshProgressState));
+      setGlobalLoaderVisible(Boolean(refreshProgressState) || (running && lifecycleVisible));
       if (!refreshProgressState) return;
 
       if (running || dashLoading) refreshProgressState.sawRunning = true;
@@ -1587,25 +1868,24 @@
             disconnectedFor >= 45000
             && refreshProgressState.mode === "bootstrap"
           ) {
-            const recoveryKey = "cube-progress-recovery-reload-at";
-            let lastRecovery = 0;
-            try {
-              lastRecovery = Number(window.sessionStorage.getItem(recoveryKey) || 0);
-            } catch (_error) {
-              lastRecovery = 0;
-            }
-            if (Date.now() - lastRecovery >= 60000) {
-              try {
-                window.sessionStorage.setItem(recoveryKey, String(Date.now()));
-              } catch (_error) {
-                // A restricted browser can still perform the reload.
-              }
+            const bootId = String(refreshProgressState.serverBootId || "unknown");
+            const recoveryKey = `cube-progress-transport-reload:${bootId}`;
+            if (claimSessionReload(recoveryKey)) {
               window.location.reload();
               return;
             }
+            setProgressDetail(
+              "refresh-progress-product",
+              "Automatic reload is unavailable or already attempted; progress polling continues",
+            );
           }
         }
-        if (!running && !dashLoading && (refreshProgressState.sawRunning || statusChanged)) {
+        if (
+          !refreshProgressState.followingExistingWriter
+          && !running
+          && !dashLoading
+          && (refreshProgressState.sawRunning || statusChanged)
+        ) {
           finishRefreshProgress();
         }
       }
@@ -1913,12 +2193,17 @@
     }
 
     const refreshTrigger = event.target.closest(
-      "#refresh-portfolios-button, #refresh-pl-button, #reload-risk-button, #initial-load-retry"
+      "#refresh-portfolios-button, #refresh-pl-button, #reload-risk-button, "
+      + "#commo-market-toggle, #risk-checker-toggle, #force-risk-apply-button, "
+      + "#initial-load-retry"
     );
     if (refreshTrigger) {
       const mode = refreshTrigger.id === "reload-risk-button"
         ? "reload"
         : refreshTrigger.id === "refresh-portfolios-button" ? "portfolios"
+        : refreshTrigger.id === "commo-market-toggle" ? "commo"
+        : refreshTrigger.id === "risk-checker-toggle" ? "checker"
+        : refreshTrigger.id === "force-risk-apply-button" ? "dates"
         : refreshTrigger.id === "initial-load-retry" ? "bootstrap" : "pl";
       startRefreshProgress(mode);
     }
@@ -2004,6 +2289,12 @@
     if (plotlyThemeTimer) clearTimeout(plotlyThemeTimer);
     if (uiHookTimer) clearTimeout(uiHookTimer);
     if (cubeHookTimer) clearTimeout(cubeHookTimer);
+    clearRefreshProgressTimers();
+    refreshProgressState = null;
+    setGlobalLoaderVisible(false);
+    refreshStatusObserver?.disconnect();
+    refreshStatusObserver = null;
+    observedRefreshStatusNode = null;
     clearInterval(refreshProgressPoll);
     riskGridObservers.forEach((observer) => observer.disconnect());
     riskGridObservers.clear();

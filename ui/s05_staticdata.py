@@ -19,6 +19,7 @@ _STATIC_FILE_CATALOG = [
     {"label": "Top Thresholds", "value": "s07_thresholds.csv"},
     {"label": "Concerto Mapping", "value": "s08_concerto.csv"},
     {"label": "Reported Underlying Mapping", "value": "s09_reported.csv"},
+    {"label": "Historical P&L", "value": "s10_historical_pl.csv"},
 ]
 STATIC_FILE_OPTIONS = [
     option for option in _STATIC_FILE_CATALOG if (DATA_DIR / option["value"]).is_file()
@@ -26,7 +27,7 @@ STATIC_FILE_OPTIONS = [
 
 
 def _build_static_data_table(file_key: str) -> html.Div:
-    """Build a filterable, sortable, resizable DataTable for a static CSV data file."""
+    """Build a filterable, sortable DataTable for a static CSV data file."""
     approved_files = {option["value"] for option in STATIC_FILE_OPTIONS}
     if file_key not in approved_files or Path(file_key).name != file_key:
         return html.Div(
@@ -58,10 +59,7 @@ def _build_static_data_table(file_key: str) -> html.Div:
         file_key,
     )
 
-    columns = [
-        {"name": col, "id": col, "resizable": True, "editable": False}
-        for col in df.columns
-    ]
+    columns = [{"name": col, "id": col, "editable": False} for col in df.columns]
 
     return html.Div(
         [
@@ -123,8 +121,8 @@ def _build_static_data_table(file_key: str) -> html.Div:
 def build_static_data_page() -> html.Div:
     """Build the Static Data Files viewer page.
 
-    Displays a dropdown selector for static CSV data files with a filterable,
-    sortable, and resizable DataTable.
+    Displays a dropdown selector for static CSV data files with a filterable
+    and sortable DataTable.
     """
     if not STATIC_FILE_OPTIONS:
         return html.Div(
@@ -144,7 +142,7 @@ def build_static_data_page() -> html.Div:
                                 className="static-data-page-title",
                             ),
                             html.P(
-                                "Select a static CSV data file to view with per-column filtering, sorting, and column resizing.",
+                                "Select a static CSV data file to view with per-column filtering and sorting.",
                                 className="static-data-page-note",
                             ),
                         ]
@@ -165,7 +163,6 @@ def build_static_data_page() -> html.Div:
                 className="static-data-header",
             ),
             html.Div(
-                _build_static_data_table(STATIC_FILE_OPTIONS[0]["value"]),
                 id="static-data-table-container",
                 className="static-data-container",
             ),

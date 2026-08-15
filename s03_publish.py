@@ -30,6 +30,7 @@ RUNTIME_DIRECTORIES = (
     "core",
     "data",
     "feeds",
+    "pages",
     "ui",
 )
 IGNORED_NAMES = ("__pycache__", "*.pyc", "*.pyo", "*.log")

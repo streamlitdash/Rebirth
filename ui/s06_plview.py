@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dash import dash_table, dcc, html
+from core.s04_pl import HISTORICAL_PL_COLUMNS
 
 
 DISPLAY_COLUMNS = (
@@ -102,6 +103,58 @@ def _preview_table() -> dash_table.DataTable:
         ],
         style_data_conditional=[
             {"if": {"filter_query": "{PL} < 0", "column_id": "PL"}, "color": "#B42318"},
+        ],
+    )
+
+
+def _historical_table() -> dash_table.DataTable:
+    """Build the read-only daily Portfolio/ConcertoField history table."""
+    return dash_table.DataTable(
+        id="pl-history-grid",
+        columns=[
+            {
+                "name": column,
+                "id": column,
+                **({"type": "numeric"} if column == "PL" else {}),
+            }
+            for column in HISTORICAL_PL_COLUMNS
+        ],
+        data=[],
+        editable=False,
+        filter_action="native",
+        sort_action="native",
+        sort_mode="multi",
+        page_action="native",
+        page_size=25,
+        fixed_rows={"headers": True},
+        style_table={"overflowX": "auto", "maxHeight": "560px"},
+        style_header={
+            "backgroundColor": "#F7F8FA",
+            "color": "#111111",
+            "fontWeight": "850",
+            "border": "1px solid #D9DEE5",
+        },
+        style_cell={
+            "backgroundColor": "#FFFFFF",
+            "color": "#111111",
+            "border": "1px solid #E2E6EA",
+            "fontFamily": '"Segoe UI Variable Text", "Segoe UI", Arial, sans-serif',
+            "fontSize": "13px",
+            "padding": "8px 10px",
+            "textAlign": "left",
+            "minWidth": "140px",
+            "whiteSpace": "nowrap",
+        },
+        style_cell_conditional=[
+            {
+                "if": {"column_id": "PL"},
+                "fontWeight": "850",
+                "fontVariantNumeric": "tabular-nums",
+                "textAlign": "right",
+            }
+        ],
+        style_data_conditional=[
+            {"if": {"filter_query": "{PL} < 0", "column_id": "PL"}, "color": "#B42318"}
         ],
     )
 
@@ -288,12 +341,12 @@ def _editor_table(table_id: str, *, portfolio_editable: bool) -> dash_table.Data
     )
 
 
-def build_pl_send_sections() -> list[html.Details]:
-    """Return the governed PL workflow as one parent with four sections."""
+def build_pl_send_sections() -> list[html.Div | html.Details]:
+    """Return independently collapsible governed P&L sections and their state."""
     preview = html.Details(
         [
             html.Summary(
-                "Preview PL",
+                "P&L Preview",
                 id="pl-preview-summary",
                 n_clicks=0,
                 className="aux-summary",
@@ -327,7 +380,7 @@ def build_pl_send_sections() -> list[html.Details]:
     by_sog = html.Details(
         [
             html.Summary(
-                "Send SOG PL",
+                "SOG P&L",
                 id="pl-sog-summary",
                 n_clicks=0,
                 className="aux-summary",
@@ -441,7 +494,7 @@ def build_pl_send_sections() -> list[html.Details]:
     by_portfolio = html.Details(
         [
             html.Summary(
-                "Send Portfolio PL",
+                "Portfolio P&L",
                 id="pl-portfolio-summary",
                 n_clicks=0,
                 className="aux-summary",
@@ -573,14 +626,94 @@ def build_pl_send_sections() -> list[html.Details]:
         ],
         className="aux-details",
     )
-    workflow = html.Details(
+    history = html.Details(
         [
             html.Summary(
-                "PL",
-                id="pl-workflow-summary",
+                "Histo Data",
+                id="pl-history-summary",
                 n_clicks=0,
                 className="aux-summary",
             ),
+            html.Div(
+                [
+                    html.Div(
+                        [
+                            html.Div(
+                                [
+                                    html.Label(
+                                        "Portfolio / Book",
+                                        htmlFor="pl-history-portfolio-filter",
+                                    ),
+                                    dcc.Dropdown(
+                                        id="pl-history-portfolio-filter",
+                                        options=[],
+                                        value=[],
+                                        multi=True,
+                                        placeholder="All portfolios",
+                                    ),
+                                ],
+                                className="pl-editor-filter",
+                            ),
+                            html.Div(
+                                [
+                                    html.Label(
+                                        "ConcertoField",
+                                        htmlFor="pl-history-concerto-filter",
+                                    ),
+                                    dcc.Dropdown(
+                                        id="pl-history-concerto-filter",
+                                        options=[],
+                                        value=[],
+                                        multi=True,
+                                        placeholder="All Concerto fields",
+                                    ),
+                                ],
+                                className="pl-editor-filter",
+                            ),
+                        ],
+                        className="pl-editor-toolbar",
+                    ),
+                    html.P(
+                        "Track validated daily P&L at Market Date + Portfolio + "
+                        "ConcertoField grain. The selectors apply to both the chart "
+                        "and the table.",
+                        className="pl-editor-guide",
+                    ),
+                    dcc.Loading(
+                        dcc.Graph(
+                            id="pl-history-chart",
+                            figure={
+                                "data": [],
+                                "layout": {
+                                    "title": "Historical P&L",
+                                    "xaxis": {"title": "Market Date"},
+                                    "yaxis": {"title": "P&L"},
+                                },
+                            },
+                            config={"displaylogo": False, "responsive": True},
+                            responsive=True,
+                            style={"minHeight": "360px"},
+                        ),
+                        delay_show=120,
+                    ),
+                    html.Div(
+                        _historical_table(),
+                        className="pl-send-table",
+                    ),
+                    html.Div(
+                        "Open Histo Data to load its validated rows.",
+                        id="pl-history-status",
+                        className="pl-send-status",
+                        role="status",
+                    ),
+                ],
+                className="pl-send-panel",
+            ),
+        ],
+        className="aux-details",
+    )
+    state = html.Div(
+        [
             dcc.Store(id="pl-send-sog-effective-store", data={}),
             dcc.Store(id="pl-send-portfolio-effective-store", data={}),
             dcc.Store(id="pl-send-sog-drafts-store", data={}),
@@ -589,14 +722,11 @@ def build_pl_send_sections() -> list[html.Details]:
             dcc.Store(id="pl-send-portfolio-active-scope-store", data={}),
             dcc.Store(id="pl-sog-adjustment-revision-store", data=0),
             dcc.Store(id="pl-portfolio-adjustment-revision-store", data=0),
-            html.Div(
-                [preview, by_sog, by_portfolio, save],
-                className="pl-workflow-sections",
-            ),
         ],
-        className="aux-details pl-workflow-details",
+        id="pl-workflow-state",
+        hidden=True,
     )
-    return [workflow]
+    return [state, preview, by_sog, by_portfolio, save, history]
 
 
 __all__ = [

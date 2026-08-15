@@ -203,12 +203,44 @@ input:focus-visible {
   gap: 8px;
 }
 
+.refresh-control-topline {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+
 .refresh-control-actions {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
 }
+
+.operating-date-banner {
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.operating-date-card {
+  display: grid;
+  align-content: center;
+  min-width: 170px;
+  min-height: 54px;
+  padding: 7px 11px;
+  border: 1px solid var(--outline-strong);
+  border-radius: 8px;
+  background: var(--surface-raised);
+}
+
+.operating-market-date { min-width: 146px; }
+.operating-date-label { color: var(--text-muted); font-size: 10px; font-weight: 900; letter-spacing: 0.08em; }
+.operating-date-value { color: var(--text); font-size: 18px; font-weight: 950; font-variant-numeric: tabular-nums; line-height: 1.15; }
+.operating-date-scope { color: var(--text-muted); font-size: 10px; font-weight: 700; }
+.operating-risk-date-values { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 12px; }
+.operating-risk-date { display: grid; }
 
 .refresh-portfolios-button,
 .reload-risk-button,
@@ -388,6 +420,14 @@ input:focus-visible {
   color: var(--text);
   font-size: 13px;
   font-weight: 850;
+}
+
+.refresh-progress-note {
+  margin: -2px 0 9px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.4;
 }
 
 .refresh-function-label { color: var(--text-muted); font-size: 11px; font-weight: 720; }
@@ -604,7 +644,6 @@ details > summary::-webkit-details-marker { display: none; }
 
 .status-panel,
 .unmapped-panel,
-.raw-data-panel,
 .detail-shell,
 .risk-panel,
 .aggregate-pl-panel,
@@ -1096,9 +1135,7 @@ body.is-range-selecting :is(.risk-table, .cell-selection-table) * { cursor: cell
 :root[data-theme="dark"] .modebar { background: var(--surface-raised) !important; }
 :root[data-theme="dark"] .modebar-btn path { fill: var(--text-muted) !important; }
 
-/* 12. Governed PL workflow and stable native DataTables ---------------- */
-.pl-workflow-sections { display: grid; gap: 10px; padding: 10px; background: var(--surface-soft); }
-.pl-workflow-sections > .aux-details { margin: 0; }
+/* 12. Governed PL sections and stable native DataTables ---------------- */
 .pl-send-panel { padding: 14px; border: 0; }
 .pl-send-panel > label { display: block; margin-bottom: 6px; color: var(--text); font-size: 12px; font-weight: 800; }
 .pl-editor-toolbar { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; margin-bottom: 10px; }
@@ -1197,8 +1234,7 @@ body.is-pl-datatable-range-dragging * { cursor: cell !important; user-select: no
 #save-pl-button { border: 1px solid #111111; background: #111111; color: #FFFFFF; }
 
 /* 13. Supporting panels and Intraday Cashflows -------------------------- */
-.unmapped-panel,
-.raw-data-panel { margin-top: 14px; padding: 14px; border-radius: var(--radius); }
+.unmapped-panel { margin-top: 14px; padding: 14px; border-radius: var(--radius); }
 .unmapped-empty { color: var(--text); font-weight: 800; }
 .error-log { display: none; margin-top: 16px; padding: 12px 14px; border: 1px solid var(--negative); border-radius: 8px; background: var(--danger-surface); color: var(--negative); font-size: 12px; font-weight: 700; white-space: pre-wrap; }
 .error-log.has-errors { display: block; }
@@ -1271,8 +1307,7 @@ body.is-pl-datatable-range-dragging * { cursor: cell !important; user-select: no
 .detail-panel { min-width: 0; }
 .detail-chart { width: 100%; min-width: 0; }
 .detail-tenor-view-radio { display: flex; flex-wrap: wrap; gap: 8px 14px; }
-.pl-send-table--editor,
-.pl-workflow-details { min-width: 0; }
+.pl-send-table--editor { min-width: 0; }
 .quick-search-heading-copy,
 .quick-search-result-set { min-width: 0; }
 .quick-search-loading { min-height: 24px; }
@@ -1299,6 +1334,8 @@ body.is-pl-datatable-range-dragging * { cursor: cell !important; user-select: no
 @media (max-width: 920px) {
   .quick-search-heading { grid-template-columns: 1fr; }
   .date-control-grid { grid-template-columns: 1fr; }
+  .refresh-control-topline { grid-template-columns: 1fr; }
+  .operating-date-banner { justify-content: flex-start; }
 }
 
 @media (max-width: 760px) {
@@ -1337,6 +1374,9 @@ body.is-pl-datatable-range-dragging * { cursor: cell !important; user-select: no
   .refresh-pl-button { flex: 1 1 calc(50% - 4px); }
   .refresh-product-card { grid-template-columns: auto minmax(0, 1fr); }
   .refresh-product-card :is(#refresh-progress-source, #refresh-progress-count, #refresh-progress-hold) { justify-self: start; }
+  .operating-date-banner { display: grid; grid-template-columns: 1fr; }
+  .operating-date-card,
+  .operating-market-date { min-width: 0; }
 }
 
 /* Static Data Files ------------------------------------------------------ */
@@ -1403,7 +1443,7 @@ body.is-pl-datatable-range-dragging * { cursor: cell !important; user-select: no
   font-style: italic;
 }
 
-/* Enable column resizing for static data tables */
+/* Keep static data columns readable while the table scrolls horizontally. */
 .static-data-panel .dash-table-container .dash-cell {
   min-width: 80px !important;
   max-width: none !important;
@@ -1411,14 +1451,6 @@ body.is-pl-datatable-range-dragging * { cursor: cell !important; user-select: no
 
 .static-data-panel .dash-table-container .dash-header {
   min-width: 80px !important;
-}
-
-.static-data-panel .dash-table-container .dash-cell[resizable="true"] {
-  cursor: col-resize !important;
-}
-
-.static-data-panel .dash-table-container .dash-cell[resizable="true"]:hover {
-  border-right: 3px solid var(--focus) !important;
 }
 
 /* Dark mode overrides for static data DataTable (hardcoded inline styles need !important override) */

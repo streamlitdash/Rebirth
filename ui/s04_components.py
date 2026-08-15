@@ -3732,21 +3732,9 @@ def build_unmapped_books_table(frame: pd.DataFrame) -> html.Div:
     columns = list(
         dict.fromkeys(value for value in requested_columns if value in display_frame)
     )
-    rows = []
-    for record in display_frame[columns].to_dict("records"):
-        cells = []
-        for column in columns:
-            value = record[column]
-            if column in {"Risk", "dRisk", "PL"}:
-                cells.append(
-                    html.Td(
-                        format_number(value),
-                        className=f"detail-number {number_sign_class(value)}",
-                    )
-                )
-            else:
-                cells.append(html.Td(str(value)))
-        rows.append(html.Tr(cells))
+    table_frame = display_frame[columns].copy()
+    table_frame = table_frame.astype(object).where(pd.notna(table_frame), None)
+    numeric_columns = {"Tenor Swap Order", "Tenor Option Order", "Risk", "dRisk", "PL"}
     return html.Div(
         [
             html.Div(
@@ -3755,135 +3743,68 @@ def build_unmapped_books_table(frame: pd.DataFrame) -> html.Div:
                 className="unmapped-note",
             ),
             html.Div(
-                html.Table(
-                    [
-                        html.Thead(html.Tr([html.Th(column) for column in columns])),
-                        html.Tbody(rows),
+                dash_table.DataTable(
+                    id="unmapped-books-table",
+                    columns=[
+                        {
+                            "name": column,
+                            "id": column,
+                            **(
+                                {"type": "numeric", "format": {"specifier": ",.0f"}}
+                                if column in numeric_columns
+                                else {}
+                            ),
+                        }
+                        for column in columns
                     ],
-                    className="detail-table",
+                    data=table_frame.to_dict("records"),
+                    editable=False,
+                    filter_action="native",
+                    sort_action="native",
+                    sort_mode="multi",
+                    page_action="native",
+                    page_size=25,
+                    fixed_rows={"headers": True},
+                    style_table={"overflowX": "auto", "maxHeight": "520px"},
+                    style_header={
+                        "backgroundColor": "#F7F8FA",
+                        "color": "#111111",
+                        "fontWeight": "850",
+                    },
+                    style_cell={
+                        "backgroundColor": "#FFFFFF",
+                        "color": "#111111",
+                        "border": "1px solid #E2E6EA",
+                        "fontFamily": (
+                            '"Segoe UI Variable Text", "Segoe UI", Arial, sans-serif'
+                        ),
+                        "fontSize": "12px",
+                        "padding": "7px 9px",
+                        "textAlign": "left",
+                        "minWidth": "110px",
+                        "whiteSpace": "nowrap",
+                    },
+                    style_cell_conditional=[
+                        {
+                            "if": {"column_id": list(numeric_columns)},
+                            "fontVariantNumeric": "tabular-nums",
+                            "textAlign": "right",
+                        }
+                    ],
+                    style_data_conditional=[
+                        {
+                            "if": {
+                                "filter_query": f"{{{column}}} < 0",
+                                "column_id": column,
+                            },
+                            "color": "#B42318",
+                        }
+                        for column in ("Risk", "dRisk", "PL")
+                    ],
                 ),
                 className="unmapped-table-wrap",
             ),
         ]
-    )
-
-
-def build_raw_data_table(frame: pd.DataFrame) -> html.Div:
-    canonical_columns = [
-        "Source Type",
-        "Risk Date",
-        "Market Status",
-        "Risk Type",
-        "Risk Greek",
-        "Split",
-        "Display Bucket",
-        "Group",
-        "Underlying",
-        "Promotion Reason",
-        "Promotion Score",
-        "Risk Threshold",
-        "dRisk Threshold",
-        "PL Threshold",
-        "Tenor Swap",
-        "Tenor Swap Order",
-        "Tenor Option",
-        "Tenor Option Order",
-        "Portfolio",
-        *PORTFOLIO_METADATA_COLUMNS,
-        "Risk",
-        "dRisk",
-        "PL",
-        "Move",
-        "Current",
-        "Open",
-    ]
-    total_rows = len(frame)
-    raw = frame.head(5_000).copy()
-    columns = [column for column in canonical_columns if column in raw]
-    for column in ["Risk Date"]:
-        if column in raw:
-            raw[column] = pd.to_datetime(raw[column], errors="coerce").dt.strftime(
-                "%Y-%m-%d"
-            )
-    raw = raw[columns].replace({np.nan: None})
-    numeric_columns = [
-        column
-        for column in [
-            "Promotion Score",
-            "Risk Threshold",
-            "dRisk Threshold",
-            "PL Threshold",
-            "Tenor Swap Order",
-            "Tenor Option Order",
-            "Risk",
-            "dRisk",
-            "PL",
-            "Move",
-            "Current",
-            "Open",
-        ]
-        if column in raw
-    ]
-    return html.Div(
-        [
-            html.Div(
-                f"{total_rows:,} unaggregated rows. "
-                + (
-                    "For browser safety, the first 5,000 are loaded; use a server-side export for the complete dataset. "
-                    if total_rows > 5_000
-                    else ""
-                )
-                + "Use the column filters or sort controls to inspect this page.",
-                className="unmapped-note",
-            ),
-            dash_table.DataTable(
-                id="raw-data-table",
-                data=raw.to_dict("records"),
-                columns=[
-                    {
-                        "name": column,
-                        "id": column,
-                        "type": "numeric" if column in numeric_columns else "text",
-                    }
-                    for column in columns
-                ],
-                filter_action="native",
-                sort_action="native",
-                sort_mode="multi",
-                page_action="native",
-                page_size=30,
-                fixed_rows={"headers": True},
-                style_table={"overflowX": "auto", "maxHeight": "680px"},
-                style_header={
-                    "backgroundColor": "#eaf1fb",
-                    "color": "#172033",
-                    "fontSize": "12px",
-                    "fontWeight": "800",
-                    "border": "1px solid #cbd5e1",
-                },
-                style_cell={
-                    "fontFamily": "Inter, Segoe UI, Arial, sans-serif",
-                    "fontSize": "12px",
-                    "padding": "7px 9px",
-                    "minWidth": "105px",
-                    "maxWidth": "240px",
-                    "whiteSpace": "normal",
-                    "color": "#111827",
-                },
-                style_data_conditional=[
-                    {
-                        "if": {
-                            "filter_query": f"{{{column}}} < 0",
-                            "column_id": column,
-                        },
-                        "color": "#b91c1c",
-                        "fontWeight": "700",
-                    }
-                    for column in numeric_columns
-                ],
-            ),
-        ],
-        className="raw-data-panel",
     )
 
 
@@ -3960,6 +3881,66 @@ def _build_theme_toggle() -> html.Button:
     )
 
 
+def build_operating_date_content(
+    snapshot: RefreshSnapshotProtocol | None,
+) -> list[html.Div]:
+    """Return the prominent committed Market/Risk date cards."""
+    if snapshot is None:
+        market_date = "Loading…"
+        market_status = "Cold start"
+        grouped_risk_dates: list[tuple[str, list[str]]] = []
+    else:
+        market_date = pd.Timestamp(snapshot.market_date).date().isoformat()
+        market_status = str(snapshot.market_status)
+        grouped: dict[str, list[str]] = {}
+        for source_type, value in sorted(snapshot.risk_dates.items()):
+            date_value = pd.Timestamp(value).date().isoformat()
+            grouped.setdefault(date_value, []).append(str(source_type))
+        grouped_risk_dates = sorted(grouped.items(), reverse=True)
+
+    risk_values = (
+        [
+            html.Span(
+                [
+                    html.Strong(date_value, className="operating-date-value"),
+                    html.Small(
+                        f"{len(source_types)} source"
+                        + ("s" if len(source_types) != 1 else ""),
+                        className="operating-date-scope",
+                    ),
+                ],
+                className="operating-risk-date",
+                title=", ".join(source_types),
+            )
+            for date_value, source_types in grouped_risk_dates
+        ]
+        if grouped_risk_dates
+        else [
+            html.Strong(
+                "Loading…",
+                className="operating-date-value",
+            )
+        ]
+    )
+    return [
+        html.Div(
+            [
+                html.Span("MARKET DATE", className="operating-date-label"),
+                html.Strong(market_date, className="operating-date-value"),
+                html.Small(market_status, className="operating-date-scope"),
+            ],
+            className="operating-date-card operating-market-date",
+        ),
+        html.Div(
+            [
+                html.Span("RISK DATES", className="operating-date-label"),
+                html.Div(risk_values, className="operating-risk-date-values"),
+            ],
+            className="operating-date-card",
+        ),
+    ]
+
+
 def _build_refresh_controls(
     initial_snapshot: RefreshSnapshotProtocol | None,
     *,
@@ -3992,102 +3973,119 @@ def _build_refresh_controls(
     if initial_snapshot is not None:
         refreshed_at = initial_snapshot.refreshed_at.strftime("%H:%M:%S UTC")
         status_text = (
-            f"Last success {refreshed_at} · Automatic refresh On · "
+            f"Last success {refreshed_at} · "
             f"T-1 risk {int(((initial_snapshot.risk_status['Age'] == 0) & ~initial_snapshot.risk_status['Force Risk'].astype(bool)).sum())} · "
-            f"Forced risk {int((initial_snapshot.risk_status['Force Risk'].astype(bool)).sum())} · "
+            f"Forced risk {int((initial_snapshot.risk_status['Force Risk'].astype(bool)).sum())}"
         )
         status_class = "refresh-status"
     elif initial_error:
         status_text = "Initial data load failed · no snapshot was published"
         status_class = "refresh-status is-error"
-    else:
+    elif initial_loading:
         status_text = "Opening Cube · loading the first validated snapshot"
         status_class = "refresh-status is-refreshing"
+    else:
+        status_text = "Open Risk to load the first validated snapshot"
+        status_class = "refresh-status"
 
     return html.Div(
         [
             html.Div(
                 [
-                    html.Button(
-                        "Refresh Portfolios",
-                        id=f"{id_prefix}refresh-portfolios-button",
-                        n_clicks=0,
-                        disabled=controls_disabled,
-                        className="refresh-portfolios-button",
-                        title="Reload the portfolio mapping only",
-                        type="button",
+                    html.Div(
+                        [
+                            html.Button(
+                                "Refresh Portfolios",
+                                id=f"{id_prefix}refresh-portfolios-button",
+                                n_clicks=0,
+                                disabled=controls_disabled,
+                                className="refresh-portfolios-button",
+                                title="Reload the portfolio mapping only",
+                                type="button",
+                            ),
+                            html.Button(
+                                "Refresh Risk",
+                                id=f"{id_prefix}reload-risk-button",
+                                n_clicks=0,
+                                disabled=controls_disabled,
+                                className="reload-risk-button",
+                                title="Refresh Risk (Shift+F8)",
+                                type="button",
+                                **{"aria-keyshortcuts": "Shift+F8"},
+                            ),
+                            html.Button(
+                                "Refresh PL",
+                                id=f"{id_prefix}refresh-pl-button",
+                                n_clicks=0,
+                                disabled=controls_disabled,
+                                className="refresh-pl-button",
+                                title="Refresh PL (Shift+F9)",
+                                type="button",
+                                **{"aria-keyshortcuts": "Shift+F9"},
+                            ),
+                            html.Button(
+                                f"Commo: {'On' if commodity_enabled else 'Off'}",
+                                id=f"{id_prefix}commo-market-toggle",
+                                n_clicks=0,
+                                disabled=controls_disabled,
+                                className=(
+                                    "data-source-toggle is-on"
+                                    if commodity_enabled
+                                    else "data-source-toggle is-off"
+                                ),
+                                title=(
+                                    "Commodity market data is On"
+                                    if commodity_enabled
+                                    else "Commodity market data is Off"
+                                ),
+                                type="button",
+                                **{"aria-pressed": str(commodity_enabled).lower()},
+                            ),
+                            html.Button(
+                                f"RiskChecker: {'On' if checker_enabled else 'Off'}",
+                                id=f"{id_prefix}risk-checker-toggle",
+                                n_clicks=0,
+                                disabled=controls_disabled,
+                                className=(
+                                    "data-source-toggle is-on"
+                                    if checker_enabled
+                                    else "data-source-toggle is-off"
+                                ),
+                                title=(
+                                    "Risk checker is On"
+                                    if checker_enabled
+                                    else "Risk checker is Off"
+                                ),
+                                type="button",
+                                **{"aria-pressed": str(checker_enabled).lower()},
+                            ),
+                            html.Button(
+                                "AutoPL: On",
+                                id=f"{id_prefix}auto-refresh-toggle",
+                                n_clicks=0,
+                                disabled=controls_disabled,
+                                className="data-source-toggle auto-refresh-toggle is-on",
+                                title="Automatic 15-minute P&L refresh is On. Activate to turn it Off.",
+                                type="button",
+                                **{
+                                    "aria-label": "AutoPL is On",
+                                    "aria-pressed": "true",
+                                },
+                            ),
+                            theme_toggle,
+                        ],
+                        className="refresh-control-actions",
+                        role="group",
+                        **{"aria-label": "Dashboard controls"},
                     ),
-                    html.Button(
-                        "Refresh Risk",
-                        id=f"{id_prefix}reload-risk-button",
-                        n_clicks=0,
-                        disabled=controls_disabled,
-                        className="reload-risk-button",
-                        title="Refresh Risk (Shift+F8)",
-                        type="button",
-                        **{"aria-keyshortcuts": "Shift+F8"},
+                    html.Div(
+                        build_operating_date_content(initial_snapshot),
+                        id=f"{id_prefix}operating-date-banner",
+                        className="operating-date-banner",
+                        **{"aria-label": "Committed market and risk dates"},
                     ),
-                    html.Button(
-                        "Refresh PL",
-                        id=f"{id_prefix}refresh-pl-button",
-                        n_clicks=0,
-                        disabled=controls_disabled,
-                        className="refresh-pl-button",
-                        title="Refresh PL (Shift+F9)",
-                        type="button",
-                        **{"aria-keyshortcuts": "Shift+F9"},
-                    ),
-                    html.Button(
-                        "Commo",
-                        id=f"{id_prefix}commo-market-toggle",
-                        n_clicks=0,
-                        disabled=controls_disabled,
-                        className=(
-                            "data-source-toggle is-on"
-                            if commodity_enabled
-                            else "data-source-toggle is-off"
-                        ),
-                        title=(
-                            "Commodity market data is On"
-                            if commodity_enabled
-                            else "Commodity market data is Off"
-                        ),
-                        type="button",
-                        **{"aria-pressed": str(commodity_enabled).lower()},
-                    ),
-                    html.Button(
-                        "Riskchecker",
-                        id=f"{id_prefix}risk-checker-toggle",
-                        n_clicks=0,
-                        disabled=controls_disabled,
-                        className=(
-                            "data-source-toggle is-on"
-                            if checker_enabled
-                            else "data-source-toggle is-off"
-                        ),
-                        title=(
-                            "Risk checker is On"
-                            if checker_enabled
-                            else "Risk checker is Off"
-                        ),
-                        type="button",
-                        **{"aria-pressed": str(checker_enabled).lower()},
-                    ),
-                    html.Button(
-                        "AutoPL",
-                        id=f"{id_prefix}auto-refresh-toggle",
-                        n_clicks=0,
-                        disabled=controls_disabled,
-                        className="data-source-toggle auto-refresh-toggle is-on",
-                        title="Automatic 15-minute P&L refresh is On. Activate to turn it Off.",
-                        type="button",
-                        **{"aria-label": "AutoPL", "aria-pressed": "true"},
-                    ),
-                    theme_toggle,
                 ],
-                className="refresh-control-actions",
-                role="group",
-                **{"aria-label": "Dashboard controls"},
+                className="refresh-control-topline",
             ),
             html.Div(
                 status_text,
@@ -4194,6 +4192,10 @@ def _build_refresh_progress(
                 role="status",
                 **{"aria-live": "polite", "aria-atomic": "true"},
             ),
+            html.P(
+                "The current committed snapshot stays usable while a staged refresh runs; refresh controls are locked until it finishes.",
+                className="refresh-progress-note",
+            ),
             html.Ol(
                 [
                     html.Li(
@@ -4274,17 +4276,148 @@ def _build_refresh_progress(
     )
 
 
+def build_shared_refresh_shell(
+    initial_snapshot: RefreshSnapshotProtocol | None,
+    *,
+    refresh_enabled: bool,
+    stage_delays: Mapping[str, float] | None = None,
+    initial_loading: bool = False,
+    initial_error: str | None = None,
+    keep_polling: bool = False,
+    data_revision: int | None = None,
+    style: Mapping[str, str] | None = None,
+) -> html.Div:
+    """Build the one persistent refresh lifecycle mounted above Dash Pages."""
+    applied_forced_dates = (
+        {
+            str(source): pd.Timestamp(value).date().isoformat()
+            for source, value in initial_snapshot.forced_dates.items()
+        }
+        if initial_snapshot is not None
+        else {}
+    )
+    applied_view_date = (
+        pd.Timestamp(initial_snapshot.forced_view_date).date().isoformat()
+        if initial_snapshot is not None
+        and initial_snapshot.forced_view_date is not None
+        else None
+    )
+    applied_commodity_market = bool(
+        initial_snapshot.commodity_market_enabled
+        if initial_snapshot is not None
+        else False
+    )
+    applied_risk_checker = bool(
+        initial_snapshot.risk_checker_enabled if initial_snapshot is not None else True
+    )
+    revision = initial_snapshot.revision if initial_snapshot is not None else 0
+    rendered_revision = (
+        revision if data_revision is None else max(0, int(data_revision))
+    )
+    error = str(initial_error or "")
+
+    return html.Div(
+        [
+            dcc.Store(id="data-revision-store", data=rendered_revision),
+            html.Span(revision, id="refresh-commit-revision", hidden=True),
+            # Backend-affecting settings mirror the one process-wide committed
+            # snapshot. AutoPL alone is browser-local scheduling state.
+            dcc.Store(
+                id="perspective-risk-cube-forced-risk-v1",
+                data=applied_forced_dates,
+            ),
+            dcc.Store(
+                id="perspective-risk-cube-view-date-v1",
+                data=applied_view_date,
+            ),
+            dcc.Store(
+                id="perspective-risk-cube-auto-refresh-v1",
+                data=True,
+                storage_type="local",
+            ),
+            dcc.Store(
+                id="perspective-risk-cube-commodity-market-v1",
+                data=applied_commodity_market,
+            ),
+            dcc.Store(
+                id="perspective-risk-cube-risk-checker-v1",
+                data=applied_risk_checker,
+            ),
+            dcc.Store(id="force-risk-draft-store", data={}),
+            dcc.Store(id="force-risk-render-store", data={}),
+            dcc.Store(id="refresh-result-store", data=0),
+            dcc.Store(id="refresh-busy-store", data=False),
+            dcc.Interval(
+                id="auto-refresh-interval",
+                interval=15 * 60_000,
+                n_intervals=0,
+                disabled=True,
+            ),
+            # Once Risk starts revision 1 this common poll survives navigation,
+            # allowing the shell to receive the terminal snapshot even if the
+            # cold page and its own interval unmount.
+            dcc.Interval(
+                id="shared-refresh-bootstrap-interval",
+                interval=500,
+                n_intervals=0,
+                disabled=not (initial_loading or keep_polling),
+            ),
+            html.Section(
+                _build_refresh_controls(
+                    initial_snapshot,
+                    refresh_enabled=refresh_enabled,
+                    initial_loading=initial_loading,
+                    initial_error=bool(error),
+                ),
+                id="refresh-control-strip",
+                className="cube-refresh-strip",
+                **{"aria-label": "Dashboard controls"},
+            ),
+            (
+                _build_refresh_progress(
+                    stage_delays,
+                    initial_loading=initial_loading,
+                    initial_error=bool(error),
+                )
+                if refresh_enabled
+                else None
+            ),
+            html.Div(
+                error,
+                id="error-log",
+                className="error-log has-errors" if error else "error-log",
+                **{"aria-live": "polite"},
+            ),
+        ],
+        id="shared-refresh-shell",
+        style=dict(style) if style is not None else None,
+    )
+
+
 def build_initial_load_layout(
     *,
     stage_delays: Mapping[str, float] | None = None,
     error: str | None = None,
     retry_enabled: bool = True,
     keep_polling: bool = False,
+    include_shared_refresh_shell: bool = True,
 ) -> html.Div:
     """Render the usable app shell before the first connector call begins."""
     loading = error is None
     return html.Div(
         [
+            (
+                build_shared_refresh_shell(
+                    None,
+                    refresh_enabled=True,
+                    stage_delays=stage_delays,
+                    initial_loading=loading,
+                    initial_error=error,
+                    keep_polling=keep_polling,
+                )
+                if include_shared_refresh_shell
+                else None
+            ),
             dcc.Interval(
                 id="initial-load-trigger",
                 interval=500,
@@ -4297,27 +4430,11 @@ def build_initial_load_layout(
                 disabled=error is not None and not keep_polling,
             ),
             html.H1("Cube Risk & PL", className="sr-only"),
-            html.Section(
-                _build_refresh_controls(
-                    None,
-                    refresh_enabled=True,
-                    initial_loading=loading,
-                    initial_error=error is not None,
-                    id_prefix="bootstrap-",
-                ),
-                id="bootstrap-refresh-control-strip",
-                className="cube-refresh-strip",
-                **{"aria-label": "Dashboard controls"},
-            ),
-            _build_refresh_progress(
-                stage_delays,
-                initial_loading=loading,
-                initial_error=error is not None,
-            ),
             html.Div(
                 [
                     html.P(
                         error or "Cube is preparing its first validated snapshot.",
+                        id="initial-load-message",
                         className="initial-load-message",
                     ),
                     html.Button(
@@ -4333,12 +4450,6 @@ def build_initial_load_layout(
                 className="initial-load-actions",
                 hidden=error is None,
             ),
-            html.Div(
-                error or "",
-                id="bootstrap-error-log",
-                className="error-log has-errors" if error else "error-log",
-                **{"aria-live": "polite"},
-            ),
         ],
         className="app-shell cube-app-shell cube-initial-load-shell",
     )
@@ -4351,6 +4462,7 @@ def build_layout(
     refresh_enabled: bool = False,
     pl_enabled: bool = False,
     stage_delays: Mapping[str, float] | None = None,
+    include_shared_refresh_shell: bool = True,
 ) -> html.Div:
     """Build the application layout without registering routes or callbacks."""
     risk_values = ordered_unique(risk_data, "risk type")
@@ -4393,38 +4505,17 @@ def build_layout(
         for field in FILTER_DIMENSION_FIELDS
     ]
     top_book_open_rows = default_top_book_open_rows(risk_data)
-    applied_forced_dates = (
-        {
-            str(source): pd.Timestamp(value).date().isoformat()
-            for source, value in initial_snapshot.forced_dates.items()
-        }
-        if initial_snapshot is not None
-        else {}
-    )
-    applied_view_date = (
-        pd.Timestamp(initial_snapshot.forced_view_date).date().isoformat()
-        if initial_snapshot is not None
-        and initial_snapshot.forced_view_date is not None
-        else None
-    )
-    applied_commodity_market = bool(
-        initial_snapshot.commodity_market_enabled
-        if initial_snapshot is not None
-        else False
-    )
-    applied_risk_checker = bool(
-        initial_snapshot.risk_checker_enabled if initial_snapshot is not None else True
-    )
-    refresh_controls = _build_refresh_controls(
-        initial_snapshot,
-        refresh_enabled=refresh_enabled,
-    )
-    refresh_progress = (
-        _build_refresh_progress(stage_delays) if refresh_enabled else None
-    )
-
     return html.Div(
         [
+            (
+                build_shared_refresh_shell(
+                    initial_snapshot,
+                    refresh_enabled=refresh_enabled,
+                    stage_delays=stage_delays,
+                )
+                if include_shared_refresh_shell
+                else None
+            ),
             dcc.Store(
                 id="open-rows-store",
                 data=default_open_rows(risk_data, risk_options[0]["value"]),
@@ -4467,44 +4558,6 @@ def build_layout(
                 id="detail-component-request-store",
                 data={"measure": "risk", "component": "total"},
             ),
-            dcc.Store(
-                id="data-revision-store",
-                data=initial_snapshot.revision if initial_snapshot is not None else 0,
-            ),
-            # Backend-affecting settings mirror the one process-wide committed
-            # snapshot. They are intentionally memory stores: opening a stale
-            # browser must never overwrite shared financial data. AutoPL is
-            # browser-only scheduling and remains local below.
-            dcc.Store(
-                id="perspective-risk-cube-forced-risk-v1", data=applied_forced_dates
-            ),
-            dcc.Store(id="perspective-risk-cube-view-date-v1", data=applied_view_date),
-            dcc.Store(
-                id="perspective-risk-cube-auto-refresh-v1",
-                data=True,
-                storage_type="local",
-            ),
-            dcc.Store(
-                id="perspective-risk-cube-commodity-market-v1",
-                data=applied_commodity_market,
-            ),
-            dcc.Store(
-                id="perspective-risk-cube-risk-checker-v1",
-                data=applied_risk_checker,
-            ),
-            # AutoPL hydrates from local storage after this full layout replaces
-            # the shell. The one-shot barrier updates its status only after the
-            # browser value has settled; it never mutates backend data on mount.
-            dcc.Store(id="preference-hydrated-store", data=False),
-            dcc.Interval(
-                id="preference-hydration-trigger",
-                interval=250,
-                n_intervals=0,
-                max_intervals=1,
-            ),
-            dcc.Store(id="force-risk-draft-store", data={}),
-            dcc.Store(id="force-risk-render-store", data={}),
-            dcc.Store(id="refresh-result-store", data=0),
             (
                 dcc.Store(id="pl-adjustment-revision-store", data=0)
                 if pl_enabled
@@ -4515,12 +4568,6 @@ def build_layout(
             dcc.Store(id="promotion-toggle-store", data=True),
             # Region toggle: True = region column shown in hierarchy, False = hidden
             dcc.Store(id="region-toggle-store", data=False),
-            dcc.Interval(
-                id="auto-refresh-interval",
-                interval=60 * 60_000,
-                n_intervals=0,
-                disabled=True,
-            ),
             html.Div(
                 [
                     dcc.Checklist(
@@ -4532,13 +4579,6 @@ def build_layout(
                 style={"display": "none"},
             ),
             html.H1("Cube Risk & PL", className="sr-only"),
-            html.Section(
-                refresh_controls,
-                id="refresh-control-strip",
-                className="cube-refresh-strip",
-                **{"aria-label": "Dashboard controls"},
-            ),
-            refresh_progress,
             # New top-level controls: dates/readiness, dimension filters, quick search
             html.Details(
                 [
@@ -4957,22 +4997,6 @@ def build_layout(
                 # retaining the stable layout contract.
                 hidden=not refresh_enabled,
             ),
-            html.Details(
-                [
-                    html.Summary(
-                        "Raw Data",
-                        id="raw-data-summary",
-                        n_clicks=0,
-                        className="aux-summary",
-                    ),
-                    html.Div(id="raw-data-grid", className="raw-data-panel"),
-                ],
-                id="raw-data-details",
-                open=False,
-                className="aux-details",
-                hidden=not refresh_enabled,
-            ),
-            html.Div(id="error-log", className="error-log", **{"aria-live": "polite"}),
         ],
         className="app-shell cube-app-shell",
     )
@@ -4993,10 +5017,11 @@ __all__ = [
     "build_line_chart",
     "build_layout",
     "build_initial_load_layout",
-    "build_raw_data_table",
+    "build_operating_date_content",
     "build_risk_checker_inventory",
     "build_risk_date_editor",
     "build_risk_table",
+    "build_shared_refresh_shell",
     "build_small_table",
     "build_top_book_exposures",
     "build_tree_rows",
