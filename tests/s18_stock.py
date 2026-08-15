@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 import pytest
-from dash import dash_table, no_update
+from dash import dash_table, html, no_update
 from flask import Flask
 from plotly.utils import PlotlyJSONEncoder
 
@@ -479,6 +479,83 @@ def test_stock_hierarchy_progressively_renders_only_open_branches() -> None:
         _hierarchy_paths(tree)
     )
     assert effective == open_tokens
+
+
+def test_stock_hierarchy_uses_risk_explorer_semantic_table_contract() -> None:
+    current, prior = _comparison_legs()
+    mapped = map_stock_comparison_portfolios(current, prior, _config())
+
+    tree, open_tokens = build_stock_hierarchy_with_state(
+        mapped,
+        promotion_threshold=10.0,
+    )
+    assert open_tokens == []
+    assert {"risk-table-wrap", "stock-hierarchy-table-wrap"} <= set(
+        str(tree.className).split()
+    )
+
+    tables = [item for item in _walk(tree) if isinstance(item, html.Table)]
+    assert len(tables) == 1
+    table = tables[0]
+    assert {"risk-table", "stock-hierarchy-table"} <= set(str(table.className).split())
+    assert table.role == "treegrid"
+    assert any(isinstance(item, html.Caption) for item in table.children)
+    assert any(isinstance(item, html.Thead) for item in table.children)
+    body = next(item for item in table.children if isinstance(item, html.Tbody))
+    rows = [item for item in body.children if isinstance(item, html.Tr)]
+    assert rows
+    assert "total-row" in str(rows[0].className).split()
+    assert all(len(row.children) == 8 for row in rows)
+
+    activity_rows = [
+        row
+        for row in rows
+        if row.to_plotly_json()["props"].get("data-stock-hierarchy-level") == "Activity"
+    ]
+    assert activity_rows
+    assert all(
+        {"group-row", "hierarchy-total-row", "stock-hierarchy-row"}
+        <= set(str(row.className).split())
+        for row in activity_rows
+    )
+    assert all(isinstance(row.children[0], html.Th) for row in rows)
+    assert all("index-cell" in str(row.children[0].className) for row in rows)
+
+    toggles = [
+        item
+        for item in _walk(tree)
+        if isinstance(item, html.Button)
+        and isinstance(item.id, dict)
+        and item.id.get("type") == STOCK_HIERARCHY_TOGGLE_TYPE
+    ]
+    assert toggles
+    assert all("row-toggle" in str(toggle.className).split() for toggle in toggles)
+    assert {toggle.children for toggle in toggles} == {"▸"}
+
+    macro_path = stock_hierarchy_path_token(("Macro",))
+    opened_tree, effective_open_tokens = build_stock_hierarchy_with_state(
+        mapped,
+        promotion_threshold=10.0,
+        open_path_tokens=[macro_path],
+    )
+    assert effective_open_tokens == [macro_path]
+    macro_toggle = next(
+        item
+        for item in _walk(opened_tree)
+        if isinstance(item, html.Button)
+        and isinstance(item.id, dict)
+        and item.id.get("path") == macro_path
+    )
+    assert macro_toggle.children == "−"
+    assert macro_toggle.to_plotly_json()["props"]["aria-expanded"] == "true"
+
+    metric_cells = [item for item in _walk(tree) if isinstance(item, html.Td)]
+    assert any(
+        "number-positive" in str(cell.className).split() for cell in metric_cells
+    )
+    assert any(
+        "number-negative" in str(cell.className).split() for cell in metric_cells
+    )
 
 
 def test_closed_10k_stock_page_is_bounded_and_keeps_source_rows_lazy() -> None:

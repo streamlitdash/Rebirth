@@ -857,6 +857,13 @@ details > summary::-webkit-details-marker { display: none; }
 
 .risk-table { min-width: 1120px; }
 .risk-table.top-book-table { min-width: 720px; }
+.stock-hierarchy-table-wrap { max-height: min(68vh, 720px); border: 1px solid var(--outline); border-radius: 8px; }
+.stock-hierarchy-table { min-width: 1120px; }
+.stock-hierarchy-table .stock-hierarchy-position-count,
+.stock-hierarchy-table .stock-hierarchy-position-count-header { min-width: 78px; }
+.stock-hierarchy-table .stock-hierarchy-level-label { margin-left: 8px; color: var(--text-muted); font-size: 10px; font-weight: 750; text-transform: uppercase; }
+.stock-hierarchy-table .stock-hierarchy-metric { display: block; }
+.stock-hierarchy-table .stock-hierarchy-row:hover > :not(.index-cell) { background: var(--surface-soft); }
 
 .risk-table th,
 .risk-table td,

@@ -34,9 +34,9 @@ from core.s08_stock import (
     STOCK_HIERARCHY_LABEL_COLUMN,
     STOCK_HIERARCHY_LEAF_COLUMN,
     STOCK_HIERARCHY_LEVEL_COLUMN,
-    STOCK_HIERARCHY_PARENT_PATH_COLUMN,
     STOCK_HIERARCHY_PATH_COLUMN,
     STOCK_HIERARCHY_POSITION_COUNT_COLUMN,
+    STOCK_PROMOTION_BUCKET_COLUMN,
     STOCK_PROMOTION_THRESHOLD_DEFAULT,
     filter_stock_comparison,
     map_stock_comparison_portfolios,
@@ -59,7 +59,6 @@ STOCK_HIERARCHY_METRICS = (
     MARKET_VALUE_CHANGE_COLUMN,
 )
 STOCK_HIERARCHY_TOGGLE_TYPE = "stock-hierarchy-toggle"
-_STOCK_HIERARCHY_GRID = "minmax(220px, 2fr) 88px repeat(6, minmax(108px, 1fr))"
 
 
 @dataclass(frozen=True)
@@ -147,13 +146,8 @@ def _hierarchy_metric_cell(value: object, *, label: str) -> html.Span:
     numeric = float(value)
     return html.Span(
         f"{numeric:,.2f}",
-        className="stock-hierarchy-metric",
+        className="copy-value stock-hierarchy-metric",
         title=f"{label}: {numeric:,.2f}",
-        style={
-            "textAlign": "right",
-            "fontVariantNumeric": "tabular-nums",
-            "color": "#B42318" if numeric < 0 else "#111111",
-        },
         **{"data-stock-metric": label, "data-stock-value": str(numeric)},
     )
 
@@ -228,26 +222,37 @@ def toggle_stock_hierarchy_open_tokens(
     ]
 
 
-def _stock_hierarchy_row_contents(
+def _stock_number_sign_class(value: object) -> str:
+    return "number-negative" if float(value) < 0 else "number-positive"
+
+
+def _stock_hierarchy_row_cells(
     row: pd.Series,
     *,
     expandable: bool,
     is_open: bool,
+    total: bool = False,
 ) -> list[object]:
+    """Build semantic cells using the Risk Explorer table vocabulary."""
+
     level = str(row[STOCK_HIERARCHY_LEVEL_COLUMN])
     label = str(row[STOCK_HIERARCHY_LABEL_COLUMN])
     path = tuple(row[STOCK_HIERARCHY_PATH_COLUMN])
+    depth = int(row[STOCK_HIERARCHY_DEPTH_COLUMN])
     index_children: list[object] = []
-    if expandable:
+    if total:
+        index_children.append(html.Span(label, className="row-label-text"))
+    elif expandable:
         index_children.append(
             html.Button(
-                "⌄" if is_open else "›",
+                "−" if is_open else "▸",
                 id={
                     "type": STOCK_HIERARCHY_TOGGLE_TYPE,
                     "path": stock_hierarchy_path_token(path),
                 },
                 n_clicks=0,
-                className="aggregate-row-toggle stock-hierarchy-toggle",
+                className="row-toggle stock-hierarchy-toggle",
+                type="button",
                 title="Close branch" if is_open else "Open branch",
                 **{
                     "aria-label": ("Collapse" if is_open else "Expand")
@@ -258,48 +263,64 @@ def _stock_hierarchy_row_contents(
         )
     else:
         index_children.append(
-            html.Span(
-                "", className="stock-hierarchy-toggle-spacer", **{"aria-hidden": "true"}
+            html.Button(
+                "",
+                type="button",
+                className="row-toggle stock-hierarchy-toggle",
+                disabled=True,
+                tabIndex=-1,
+                **{"aria-hidden": "true"},
             )
         )
-    index_children.extend(
-        [
-            html.Strong(label),
-            html.Small(
-                level,
-                style={"marginLeft": "8px", "color": "#667085"},
+    if not total:
+        index_children.extend(
+            [
+                html.Span(label, className="row-label-text"),
+                html.Span(level, className="stock-hierarchy-level-label"),
+            ]
+        )
+
+    cells: list[object] = [
+        html.Th(
+            index_children,
+            className=(
+                "index-cell total-index stock-hierarchy-index"
+                if total
+                else f"index-cell level-{max(depth - 1, 0)} stock-hierarchy-index"
             ),
-        ]
-    )
-    return [
-        html.Span(index_children, title=f"{level}: {label}"),
-        html.Span(
-            f"{int(row[STOCK_HIERARCHY_POSITION_COUNT_COLUMN]):,}",
-            style={
-                "textAlign": "right",
-                "fontVariantNumeric": "tabular-nums",
-            },
-            title="Preserved Stock comparison rows",
+            scope="row",
+            style={} if total else {"paddingLeft": f"{14 + max(depth - 1, 0) * 18}px"},
+            title=f"{level}: {label}",
+            **{"data-metric": "index", "data-copy-value": label},
         ),
-        *[
-            _hierarchy_metric_cell(row[column], label=column)
-            for column in STOCK_HIERARCHY_METRICS
-        ],
+        html.Td(
+            html.Span(
+                f"{int(row[STOCK_HIERARCHY_POSITION_COUNT_COLUMN]):,}",
+                className="copy-value",
+                title="Preserved Stock comparison rows",
+            ),
+            className="metric-cell stock-hierarchy-position-count number-positive",
+            **{
+                "data-metric": STOCK_HIERARCHY_POSITION_COUNT_COLUMN,
+                "data-copy-value": str(int(row[STOCK_HIERARCHY_POSITION_COUNT_COLUMN])),
+            },
+        ),
     ]
-
-
-def _stock_hierarchy_row_style(*, depth: int, total: bool = False) -> dict[str, object]:
-    return {
-        "display": "grid",
-        "gridTemplateColumns": _STOCK_HIERARCHY_GRID,
-        "gap": "10px",
-        "alignItems": "center",
-        "minWidth": "1040px",
-        "padding": "8px 10px" if total else "7px 10px",
-        "backgroundColor": "#F8FAFC" if total else "#FFFFFF",
-        "borderBottom": "1px solid #D9E0E7" if total else "1px solid #E5E9ED",
-        "marginLeft": "16px" if depth > 1 else "0",
-    }
+    cells.extend(
+        html.Td(
+            _hierarchy_metric_cell(row[column], label=column),
+            className=(
+                "metric-cell stock-hierarchy-metric-cell "
+                f"{_stock_number_sign_class(row[column])}"
+            ),
+            **{
+                "data-metric": column,
+                "data-copy-value": f"{float(row[column]):.12g}",
+            },
+        )
+        for column in STOCK_HIERARCHY_METRICS
+    )
+    return cells
 
 
 def build_stock_hierarchy(
@@ -348,16 +369,8 @@ def build_stock_hierarchy_with_state(
             [],
         )
 
-    rows_by_parent: dict[tuple[str, ...], list[pd.Series]] = {}
-    root: pd.Series | None = None
-    for _, row in summary.iterrows():
-        path = tuple(row[STOCK_HIERARCHY_PATH_COLUMN])
-        if not path:
-            root = row
-            continue
-        parent = tuple(row[STOCK_HIERARCHY_PARENT_PATH_COLUMN])
-        rows_by_parent.setdefault(parent, []).append(row)
-    if root is None:  # pragma: no cover - protected by the pure summary contract
+    root = summary.iloc[0]
+    if tuple(root[STOCK_HIERARCHY_PATH_COLUMN]):  # pragma: no cover
         raise RuntimeError("Stock hierarchy summary is missing its total row")
 
     visible_expandable_paths = {
@@ -375,43 +388,44 @@ def build_stock_hierarchy_with_state(
         )
     ]
 
-    def node(row: pd.Series) -> object:
+    def hierarchy_row(row: pd.Series) -> html.Tr:
         path = tuple(row[STOCK_HIERARCHY_PATH_COLUMN])
         depth = int(row[STOCK_HIERARCHY_DEPTH_COLUMN])
-        children = rows_by_parent.get(path, [])
         expandable = not bool(row[STOCK_HIERARCHY_LEAF_COLUMN])
         is_open = path in effective_open_paths
         path_label = " / ".join(path)
-        accessibility = {"aria-expanded": str(is_open).lower()} if expandable else {}
-        return html.Div(
-            [
-                html.Div(
-                    _stock_hierarchy_row_contents(
-                        row,
-                        expandable=expandable,
-                        is_open=is_open,
-                    ),
-                    className="stock-hierarchy-summary",
-                    style=_stock_hierarchy_row_style(depth=depth),
-                ),
-                (
-                    html.Div(
-                        [node(child) for child in children],
-                        role="group",
-                        className="stock-hierarchy-children",
-                    )
-                    if is_open and children
-                    else None
-                ),
-            ],
-            role="treeitem",
-            className=(
-                f"stock-hierarchy-node stock-hierarchy-depth-{depth}"
-                + (" stock-hierarchy-leaf" if not expandable else "")
+        level = str(row[STOCK_HIERARCHY_LEVEL_COLUMN])
+        row_kind = "-".join(level.casefold().replace("(", "").replace(")", "").split())
+        classes = [
+            "group-row",
+            f"group-level-{max(depth - 1, 0)}",
+            f"group-kind-{row_kind}",
+            "stock-hierarchy-row",
+            f"stock-hierarchy-depth-{depth}",
+        ]
+        if depth == 1:
+            classes.append("hierarchy-total-row")
+        if (
+            level == STOCK_PROMOTION_BUCKET_COLUMN
+            and str(row[STOCK_HIERARCHY_LABEL_COLUMN]) == "Promoted"
+        ):
+            classes.append("promoted-underlying-row")
+        if not expandable:
+            classes.append("stock-hierarchy-leaf")
+        accessibility = {
+            "aria-level": str(depth),
+            **({"aria-expanded": str(is_open).lower()} if expandable else {}),
+        }
+        return html.Tr(
+            _stock_hierarchy_row_cells(
+                row,
+                expandable=expandable,
+                is_open=is_open,
             ),
+            className=" ".join(classes),
             **{
                 "data-stock-hierarchy-path": path_label,
-                "data-stock-hierarchy-level": str(row[STOCK_HIERARCHY_LEVEL_COLUMN]),
+                "data-stock-hierarchy-level": level,
                 "data-stock-position-count": str(
                     int(row[STOCK_HIERARCHY_POSITION_COUNT_COLUMN])
                 ),
@@ -419,51 +433,78 @@ def build_stock_hierarchy_with_state(
             },
         )
 
-    root_children = rows_by_parent.get((), [])
+    header = html.Thead(
+        html.Tr(
+            [
+                html.Th(
+                    "Stock hierarchy",
+                    className="index-header stock-hierarchy-index-header",
+                    scope="col",
+                    **{"data-metric": "index"},
+                ),
+                html.Th(
+                    "Rows",
+                    className="metric-header stock-hierarchy-position-count-header",
+                    scope="col",
+                    title="Preserved Stock comparison rows",
+                    **{"data-metric": STOCK_HIERARCHY_POSITION_COUNT_COLUMN},
+                ),
+                *[
+                    html.Th(
+                        column,
+                        className="metric-header stock-hierarchy-metric-header",
+                        scope="col",
+                        title=column,
+                        **{"data-metric": column},
+                    )
+                    for column in STOCK_HIERARCHY_METRICS
+                ],
+            ]
+        )
+    )
+    total_row = html.Tr(
+        _stock_hierarchy_row_cells(
+            root,
+            expandable=False,
+            is_open=True,
+            total=True,
+        ),
+        className="total-row stock-hierarchy-total-row",
+        **{
+            "data-stock-hierarchy-path": "",
+            "data-stock-hierarchy-level": "Total",
+            "data-stock-position-count": str(
+                int(root[STOCK_HIERARCHY_POSITION_COUNT_COLUMN])
+            ),
+        },
+    )
+    visible_rows = [hierarchy_row(row) for _, row in summary.iloc[1:].iterrows()]
     component = html.Div(
         [
-            html.Div(
+            html.Div("", className="selection-summary", **{"aria-live": "polite"}),
+            html.Table(
                 [
-                    html.Strong("Stack"),
-                    html.Strong("Rows", style={"textAlign": "right"}),
-                    *[
-                        html.Strong(label, style={"textAlign": "right"})
-                        for label in STOCK_HIERARCHY_METRICS
-                    ],
-                ],
-                className="stock-hierarchy-header",
-                style={
-                    "display": "grid",
-                    "gridTemplateColumns": _STOCK_HIERARCHY_GRID,
-                    "gap": "10px",
-                    "minWidth": "1040px",
-                    "padding": "9px 10px",
-                    "backgroundColor": "#E3E5E7",
-                    "borderBottom": "1px solid #D9E0E7",
-                },
-            ),
-            html.Div(
-                _stock_hierarchy_row_contents(
-                    root,
-                    expandable=False,
-                    is_open=True,
-                ),
-                className="stock-hierarchy-total",
-                style=_stock_hierarchy_row_style(depth=0, total=True),
-                **{
-                    "data-stock-hierarchy-path": "",
-                    "data-stock-hierarchy-level": "Total",
-                    "data-stock-position-count": str(
-                        int(root[STOCK_HIERARCHY_POSITION_COUNT_COLUMN])
+                    html.Caption(
+                        "Stock hierarchy and dated comparison metrics",
+                        className="sr-only",
                     ),
-                },
+                    header,
+                    html.Tbody([total_row, *visible_rows]),
+                ],
+                className="risk-table stock-hierarchy-table",
+                role="treegrid",
+                **{"aria-label": "Stock hierarchy and dated comparison metrics"},
             ),
-            html.Div([node(child) for child in root_children]),
         ],
         id="stock-hierarchy-stack",
-        role="tree",
-        style={"overflowX": "auto", "border": "1px solid #D9E0E7"},
-        **{"data-stock-promotion-threshold": str(threshold)},
+        className="risk-table-wrap stock-hierarchy-table-wrap",
+        **{
+            "data-stock-promotion-threshold": str(threshold),
+            "data-stock-open-paths": json.dumps(
+                effective_open_tokens,
+                separators=(",", ":"),
+            ),
+        },
     )
     return component, effective_open_tokens
 

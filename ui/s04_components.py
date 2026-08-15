@@ -3714,6 +3714,12 @@ def build_unmapped_books_table(frame: pd.DataFrame) -> html.Div:
         )
 
     total_rows = len(frame)
+    portfolio_count = (
+        frame["Portfolio"].dropna().astype(str).str.strip().replace("", pd.NA).nunique()
+        if "Portfolio" in frame
+        else 0
+    )
+    portfolio_label = "portfolio" if portfolio_count == 1 else "portfolios"
     display_frame = frame.head(2_000).copy()
     requested_columns = [
         "Portfolio",
@@ -3740,7 +3746,10 @@ def build_unmapped_books_table(frame: pd.DataFrame) -> html.Div:
     return html.Div(
         [
             html.Div(
-                f"{total_rows:,} rows are excluded because Portfolio is missing from config. "
+                f"{total_rows:,} normalized P&L rows across {portfolio_count:,} "
+                f"{portfolio_label} are excluded from mapped dashboard totals because "
+                "their Portfolio value has no matching config entry. "
+                "They remain visible here for remediation. "
                 + ("The first 2,000 are shown." if total_rows > 2_000 else ""),
                 className="unmapped-note",
             ),

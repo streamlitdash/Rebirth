@@ -583,6 +583,31 @@ def test_unmapped_inspector_exposes_tenor_ranks() -> None:
     assert table.page_size == 25
 
 
+def test_unmapped_note_distinguishes_rows_from_portfolios() -> None:
+    frame = pd.DataFrame(
+        {
+            "Portfolio": ["BOOK-MISSING-A", "BOOK-MISSING-A", "BOOK-MISSING-B"],
+            "Risk Type": ["IR", "IR", "FX"],
+            "Risk Greek": ["Delta", "Gamma", "Delta"],
+            "Risk": [10.0, 20.0, 30.0],
+            "dRisk": [1.0, 2.0, 3.0],
+            "PL": [0.5, 1.0, 1.5],
+        }
+    )
+
+    note = next(
+        item
+        for item in _walk(build_unmapped_books_table(frame))
+        if getattr(item, "className", None) == "unmapped-note"
+    )
+
+    assert note.children == (
+        "3 normalized P&L rows across 2 portfolios are excluded from mapped "
+        "dashboard totals because their Portfolio value has no matching config "
+        "entry. They remain visible here for remediation. "
+    )
+
+
 def test_semantic_total_rows_are_bold_divided_across_the_full_row() -> None:
     frame = pd.DataFrame(
         {
