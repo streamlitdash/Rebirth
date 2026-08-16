@@ -1,4 +1,4 @@
-"""Pure PL-send mapping, aggregation, adjustment, and export rules.
+"""Pure P&L-send mapping, aggregation, and adjustment rules.
 
 This module deliberately performs no application, connector, or filesystem I/O
 other than reading explicitly supplied CSV paths.  Dash callbacks and production
@@ -18,7 +18,6 @@ import numpy as np
 import pandas as pd
 
 from core.s01_schema import (
-    PL_ADJUSTMENT_METADATA_COLUMNS,
     PL_SIGNOFF_COLUMN,
     PORTFOLIO_COLUMN,
     PORTFOLIO_MAPPED_COLUMN,
@@ -40,7 +39,6 @@ CONCERTO_FIELD = "ConcertoField"
 PL = "PL"
 ADJUSTMENT = "Adjustment"
 MARKET_DATE = "Market Date"
-RECORD_TYPE = "Record Type"
 ACTIVITY = "Activity"
 CATEGORY = "Category"
 SUB_CATEGORY = "Sub Category"
@@ -1228,79 +1226,6 @@ def apply_adjustment_overlay(
     )
 
 
-def build_saved_pl_frame(
-    raw_pl: pd.DataFrame,
-    mapping: FrameSource,
-    portfolio_governance: FrameSource,
-    adjustment_rows: pd.DataFrame | None = None,
-    *,
-    include_adjustments: bool = True,
-) -> pd.DataFrame:
-    """Return every raw P&L row plus separately flagged governed adjustments."""
-    if not isinstance(raw_pl, pd.DataFrame):
-        raise TypeError("raw saved P&L must be a pandas DataFrame")
-    mapped_mask = _portfolio_mapped_mask(raw_pl, label="raw saved P&L")
-    unmapped_mask = ~mapped_mask
-    mapped_input = raw_pl.loc[mapped_mask].copy()
-    raw, _, governed_portfolios = _mapped_raw_rows(
-        mapped_input,
-        mapping,
-        portfolio_governance,
-        label="raw saved P&L",
-    )
-    unmapped = raw_pl.loc[unmapped_mask].copy(deep=True)
-    if not unmapped.empty:
-        unmapped[CONCERTO_FIELD] = pd.NA
-        raw = pd.concat([raw, unmapped], ignore_index=True, sort=False)
-    raw[ADJUSTMENT] = False
-    raw[RECORD_TYPE] = "Unadjusted"
-
-    original_columns = [
-        column
-        for column in raw_pl.columns
-        if column not in {CONCERTO_FIELD, ADJUSTMENT, RECORD_TYPE}
-    ]
-    output_columns = [
-        *[column for column in original_columns if column in raw],
-        CONCERTO_FIELD,
-        ADJUSTMENT,
-        RECORD_TYPE,
-    ]
-    base_output = raw.reindex(columns=output_columns)
-    if not include_adjustments or adjustment_rows is None or adjustment_rows.empty:
-        return base_output.reset_index(drop=True)
-
-    adjustments = collapse_pl_send_rows(
-        adjustment_rows,
-        mapping,
-        portfolio_governance,
-        require_adjustment=True,
-    )
-    for metadata_column in PL_ADJUSTMENT_METADATA_COLUMNS:
-        if metadata_column in output_columns and metadata_column in governed_portfolios:
-            metadata = governed_portfolios[[PORTFOLIO, metadata_column]].rename(
-                columns={metadata_column: f"_Governed {metadata_column}"}
-            )
-            adjustments = adjustments.merge(
-                metadata,
-                on=PORTFOLIO,
-                how="left",
-                validate="many_to_one",
-            )
-            adjustments[metadata_column] = adjustments.pop(
-                f"_Governed {metadata_column}"
-            )
-    if PORTFOLIO_MAPPED_COLUMN in output_columns:
-        adjustments[PORTFOLIO_MAPPED_COLUMN] = True
-    adjustments[RECORD_TYPE] = "Adjustment"
-    adjustment_output = adjustments.reindex(columns=output_columns)
-    return pd.concat(
-        [base_output, adjustment_output],
-        ignore_index=True,
-        sort=False,
-    )
-
-
 __all__ = [
     "ACTIVITY",
     "ADJUSTMENT",
@@ -1343,7 +1268,6 @@ __all__ = [
     "PREDICT_TYPE",
     "PREDICTED_TYPE",
     "PRODUCT",
-    "RECORD_TYPE",
     "RISK_GREEK",
     "RISK_TYPE",
     "SIGNOFF_GROUP",
@@ -1351,7 +1275,6 @@ __all__ = [
     "UNDERLYING",
     "apply_adjustment_overlay",
     "build_pl_send_base",
-    "build_saved_pl_frame",
     "collapse_pl_send_rows",
     "empty_pl_send_frame",
     "load_plsend_mapping",

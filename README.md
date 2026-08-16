@@ -41,11 +41,33 @@ The clean suite covers schemas, dates, adapters, market routing, tenor order,
 P&L, adjustment storage, UI components, native pages, feed caching, and a full
 fake-data refresh. Run it locally; its collected count grows as
 connector and page contracts are extended.
-The exact final gates are recorded in
-[`RECONSTRUCTION.md`](RECONSTRUCTION.md).
 Dash 4.4 emits an upstream deprecation warning for native DataTable; that warning
 is expected here because the governed editor deliberately does not use AG Grid.
 It is not a failed quality gate, and the pinned Dash version is lifecycle-tested.
+
+## Repository provenance
+
+This checkout was reconstructed from supplied Rebirth source fragments. When
+recovery inputs disagreed, a complete internally consistent supplied
+implementation took precedence, followed by agreeing fragments, the clean
+reference implementation for missing structure, and finally the smallest
+explicit correction needed to make the combined public contract executable.
+Transfer damage such as duplicated fragments, lost indentation, Markdown
+fences inside source, orphaned tails, and proved token corruption was repaired;
+financial formulas were not guessed from contradictory fragments.
+
+The fixture boundary is deliberate. The checked-in application covers checker
+readiness, Risk, Open, Current, portfolio governance, thresholds, reported
+Underlying mapping, Stock, New Trades, XGAMMA, Colossus comparison, and local
+P&L actions with visibly synthetic data. It calculates P&L through the real
+validated pipeline rather than loading an unexplained output. Private
+credentials, endpoints, market libraries, and unrecovered connector bodies are
+not fabricated. Recovered site-owned bodies remain comment-only beside their
+active CSV fallbacks so a production copy can switch them deliberately.
+
+The source, tests, and this README are the complete maintained record. Do not
+rely on an old test count or a removed migration guide; run the quality gates
+above against the current checkout.
 
 ## The mental model
 
@@ -81,6 +103,12 @@ Standard ecosystem names such as `README.md`, `.gitattributes`,
 `requirements.txt`, `plotly-cloud.toml`, and `__init__.py` are unavoidable
 tooling exceptions.
 
+This root `README.md` is the repository's only maintained Markdown document.
+Architecture, connector switching, scheduler/storage setup, saved views,
+operations, and production handoff all live here so separate guides cannot
+drift from the code. A deployment regression test enforces that invariant while
+ignoring only transient tool caches such as `.pytest_cache` and `.venv`.
+
 ### Root
 
 | File | Responsibility |
@@ -97,7 +125,7 @@ tooling exceptions.
 | `s01_schema.py` | Canonical Portfolio identity plus one registry for Product, Activity, SignoffGroup, Category, Sub Category, and their roles. |
 | `s02_pipeline.py` | Product catalogue, strict validation, date rules, market/risk joins, P&L, portfolio enrichment, refresh transaction, and progress. |
 | `s03_search.py` | Revision-local indexed Risk Search and full-MarketBook Search. |
-| `s04_pl.py` | Pure PLSEND mapping, aggregation, governance, canonical filtered Colossus/Predict history validation and period analysis, overlays, and saved-P&L construction. |
+| `s04_pl.py` | Pure PLSEND mapping, aggregation, governance, canonical filtered Colossus/Predict history validation and period analysis, and adjustment overlays. |
 | `s05_storage.py` | Validated, transactional `adjustments/date/portfolio--hash.csv` repository. |
 | `s06_reporting.py` | Exact CSV validation and post-P&L attachment of `Reported Underlying`. |
 | `s07_stock.py` | Strict dated Stock comparison, Stock-local filtering, and authoritative `many_to_one` Portfolio mapping. |
@@ -142,15 +170,15 @@ as an unsafe one-line switch. There are no separate `_disabled` source folders.
 | `s03_aggregate.py` | Canonical-to-display conversion, Risk include/exclude filters, hierarchy aggregation, and tenor detail preparation. |
 | `s04_components.py` | Pure Dash component, table, current/historical market chart, date-panel, shell, page, and selected New Trades detail builders. |
 | `s05_staticdata.py` | Path-safe selector and table builder for approved fixture/static CSV files. |
-| `s06_plview.py` | The native P&L page, Aggregate P&L, Send All, sender disclosures, the shared P&L Explorer filter bar, Validate/Histo sections, and editable DataTables. |
+| `s06_plview.py` | The native P&L page, one authoritative saved-view filter, Aggregate P&L, Send All, sender disclosures, Validate/Histo sections, and editable DataTables. |
 | `s07_events.py` | Startup coordinator and Risk/search/date callbacks. |
-| `s08_plevents.py` | Adjustment editors, individual/all send and write actions, the sole P&L Explorer filter reducer, and filtered Colossus/Predict history callbacks. |
+| `s08_plevents.py` | The sole P&L filter reducer, scoped adjustment editors, individual/all send actions, and filtered Colossus/Predict history callbacks. |
 | `s09_factory.py` | Dash/Flask construction, native Dash Pages registration, shared shell, health, and progress endpoints. |
 | `s10_stock.py` | Dated Stock comparison controls, independent filters, promotion stack, source table, and replaceable source composition. |
 | `s11_saved_views.py` | Reusable collapsed shared-view editor, Base/reset requests, and callback registration without duplicate filter outputs. |
 | `s12_plhistory.py` | Pure expandable P&L-history hierarchy, period-cell comparison, type selector, and observed-series chart builders. |
 | `s13_validate_pl.py` | Archive-backed Validate P&L with an official-date selector, governed six-level mapped hierarchy, and explicit nonduplicating Unmapped Colossus audit. |
-| `s14_pl_explorer.py` | Shared case-insensitive include/exclude filter authority for Validate P&L and Histo P&L. |
+| `s14_pl_filters.py` | Shared case-insensitive include/exclude filter authority for every P&L page consumer. |
 
 ### `pages/`
 
@@ -182,7 +210,8 @@ while tests and hosted workers can construct more than one app factory.
 - `tools/s03_archive_official_risk.py` is the zero-argument, idempotent Python
   entry point used by the scheduled official archive job.
 - `jobs/archive_official_risk.ipynb` is the thin Jupyter Scheduler notebook;
-  `jobs/README.md` documents its recurring-job setup.
+  its recurring-job setup and storage contract are documented in the
+  JupyterHub scheduling section below.
 - Tests are uniquely numbered from `s01_schema.py` through
   `s29_risk_archive.py`:
   schema, checker/dates, adapters, MarketBook, P&L/storage, UI, integration,
@@ -204,11 +233,11 @@ while tests and hosted workers can construct more than one app factory.
 | `tests/s02_checker.py` | Checker date, readiness completion, inventory, and progress-delay validation. |
 | `tests/s03_adapters.py` | Executable IR, Commodity, and Credit personal-adapter examples. |
 | `tests/s04_market.py` | Dynamic status routing, full MarketBook, risk-only join, and tenor order. |
-| `tests/s05_pl.py` | P&L mapping/overlay/export and transactional adjustment storage. |
+| `tests/s05_pl.py` | P&L mapping/overlay and transactional adjustment storage. |
 | `tests/s06_ui.py` | Lazy chevrons, the two-axis tenor contract, dynamic status/Move axes, exact-cell Quick Market history, selected New Trades detail, semantic total-row styling, and visible market ranks. |
 | `tests/s07_integration.py` | End-to-end fake refresh, trading-timezone dates, one-call status routing/transitions, Portfolio-only preservation, and force validation. |
 | `tests/s08_feeds.py` | Fake Source Type/Underlying partition reuse, official-cutoff handling, and Colossus source coverage. |
-| `tests/s09_plui.py` | Separate Aggregate/Explorer filter ownership, Send All and individual sender behavior, filtered Histo table/chart parity, and no-config factory behavior. |
+| `tests/s09_plui.py` | One-page-filter ownership, filtered Aggregate/Send All/individual sender behavior, filtered Histo table/chart parity, and no-config factory behavior. |
 | `tests/s10_reads.py` | Defensive targeted reads copy only the requested committed frame. |
 | `tests/s11_fixtures.py` | ProductSpec-driven fake schemas, axes, and exact deterministic generation. |
 | `tests/s12_startup.py` | Shell-first startup, one writer, pod-restart recovery, public/internal prefix routing, active-call watchdog, and retryable failures. |
@@ -663,14 +692,18 @@ The stylesheet has one coherent pastel system rather than page-specific theme
 overrides:
 
 - the page canvas is plain white with light pastel-grey outlines;
-- index columns, including their headers, use `#C4DEF5` with black text and
-  2px black dotted edges;
-- semantic Total columns, and the Cross view P&L column, use `#F7E5B7` with
-  black text and 2px black dotted edges;
-- risk/group and total rows use black dotted separators above and below;
+- index columns, including their headers, use the invariant pastel-blue index
+  token (`#C4D5F5` in light mode) with black text and 2px black solid edges;
+- semantic Total columns, and the Cross view P&L column, use `#FFFEE0` with
+  black text and 2px black solid edges;
+- table separators are always solid: ordinary hierarchy emphasis uses 1px
+  rules and total/index emphasis uses 2px rules; there are no dotted or dashed
+  table borders;
 - negative numbers remain red, while risk rows and totals remain bold;
 - disclosure chevrons are plain controls, with no circle or yellow badge; and
-- dark mode keeps both pastel fills and black text so contrast is not inverted.
+- dark mode keeps both pastel fills and black text so contrast is not inverted,
+  while all date inputs, disabled forced-date fields, date ranges, and calendar
+  popovers inherit the dark surface and text tokens.
 
 Yellow is therefore a semantic total/P&L cue, not a general highlight colour.
 The same rules cover the main tables, searches, previews, and editable native
@@ -712,16 +745,26 @@ other page's live selection.
 
 The named-view catalogue is nevertheless shared by all three pages. A view
 created in Risk is offered in Stock and P&L, but it affects Stock or P&L only
-after the user explicitly selects it there. The collapsed **Saved views**
-disclosure above each filter row keeps this occasional control out of the way;
-the full include/exclude explanation is inside that disclosure and disappears
-when it is closed. The page-local **Exclude rows matching any selected value**
-checkbox sits inside the same grey panel as the five selectors.
-Its always-present **Base / No view** option clears that page's five filters and
+after the user explicitly selects it there. Each page has one collapsed
+**Saved views** disclosure. Its summary shows **Saved views** and the current
+view name—**Base / No view** initially, or the selected named view—so the active
+context stays visible without permanently showing the editor.
+
+Opening the disclosure reveals the view selector, new-name input, **Save New**
+or **Update View**, **Delete**, status/persistence copy, and the full
+include/exclude guidance. The authoritative five filters sit directly below
+those controls inside the same disclosure in the exact order Activity, Signoff
+Group, Portfolio, Category, and Sub Category. The page-local **Exclude rows
+matching any selected value** checkbox is part of that same filter panel.
+Closing Saved views therefore hides both the editor and selectors without
+changing their values or the filtered result.
+
+The always-present **Base / No view** option clears that page's five filters and
 restores include mode. With Base active, **Save New** creates a named view; with
 a named view active, the same action becomes **Update View** and atomically
-replaces that view's filter definition. Deleting a named view returns the page
-to Base.
+replaces that view's filter definition. Saving or selecting a named view updates
+the collapsed summary label; deleting or resetting it returns the page and
+label to Base.
 
 Named views are validated JSON under `data/saved_views/shared/`. Applying one
 submits a small component request to the active page's existing sole
@@ -854,27 +897,38 @@ The governed send workflow lives on the native `/pnl` page. It is no longer
 mounted inside Risk, and its controls remain independent top-level sections
 rather than one nested parent. Aggregate P&L is always visible; its Risk Type
 rows use page-local chevrons to reveal or hide the corresponding Risk Greek
-rows. Its independent filter row is Activity, Signoff Group, Portfolio,
-Category, then Sub Category, with include/exclude mode and a P&L-local selection
-from the shared saved-view catalogue. That Aggregate filter row stays in place
-and does not govern the historical explorers:
+rows.
 
-1. **Send All P&L** — build the complete governed effective P&L once, including
-   saved adjustments, then send defensive copies to both the SOG and Portfolio
-   destinations. Both destinations are attempted independently and the status
-   reports full success, partial delivery, or total failure.
-2. **SOG P&L** — filter by SignoffGroup, edit governed rows, save adjustments,
-   then call `send_sog_pl` for that SOG.
-3. **Portfolio P&L** — filter one Portfolio, edit governed rows, save
+The page has exactly one filter state. Its five selectors are nested in the
+P&L **Saved views** disclosure in the order Activity, Signoff Group, Portfolio,
+Category, and Sub Category, followed by the include/exclude mode. The exact
+component IDs are `pnl-activity-filter`, `pnl-signoffgroup-filter`,
+`pnl-portfolio-filter`, `pnl-category-filter`,
+`pnl-subcategory-filter`, and `pnl-filter-exclude-selected`. Include mode is OR
+within one selector and AND across populated selectors; exclude mode removes a
+row if it matches any selected value in any populated selector. Matching is
+case-insensitive and displayed values keep their canonical spelling.
+
+That one state is authoritative for the Aggregate table, Send All, the SOG and
+Portfolio selectors/editors/senders, Validate P&L, and both the Histo P&L table
+and chart. A saved P&L view stores those exact values and mode. For example, if
+Portfolio B and D are selected, **Send All P&L** sends only the governed B-or-D
+scope (plus applicable saved adjustments), never the unfiltered page payload.
+Changing the page filter invalidates a previously loaded editor until that
+editor is reloaded under the new governed scope.
+
+1. **Aggregate P&L** — rebuild the mapped totals and expandable Risk Type/Greek
+   hierarchy from the filtered rows.
+2. **Send All P&L** — build the filtered governed effective P&L once, including
+   in-scope saved adjustments, then send defensive copies to both the SOG and
+   Portfolio destinations. Both destinations are attempted independently and
+   the status reports full success, partial delivery, or total failure.
+3. **SOG P&L** — choose an in-scope SignoffGroup, edit governed rows, save
+   adjustments, then call `send_sog_pl` for that SOG.
+4. **Portfolio P&L** — choose an in-scope Portfolio, edit governed rows, save
    adjustments, then call `send_portfolio_pl` for that Portfolio.
-4. **Write PL to S3** — build the full raw output plus separately flagged
-   adjustment rows, call a configured `write_pl` function, and download CSV.
-5. **P&L Explorer** — immediately below Write PL, a second namespaced filter
-   row governs both Validate P&L and Histo P&L. Its order is Activity, Signoff
-   Group, Portfolio, Category, Sub Category. Include mode is OR within one
-   selector and AND across populated selectors; exclude mode removes a row if
-   it matches any selected value in any populated selector. Matching is
-   case-insensitive, while displayed values retain their canonical spelling.
+5. **P&L Explorer** — contains Validate P&L and Histo P&L under the same page
+   filter rather than creating another filter bar.
 6. **Validate P&L** — select one completed official date and compare the Risk
    Explorer snapshot's Risk, dRisk, and Predict P&L (`P`) with Colossus P&L
    (`C`) in a Signoff Group → Risk Type → Risk Greek → Underlying → Product →
@@ -884,7 +938,7 @@ and does not govern the historical explorers:
 
 The former user-facing Raw Data disclosure has been removed. **Aggregate P&L**
 and **Unmapped Books** remain on the native Risk page; Send All, SOG, Portfolio,
-Write, P&L Explorer, Validate P&L, and Histo belong only to `/pnl`.
+P&L Explorer, Validate P&L, and Histo belong only to `/pnl`.
 
 There is one history root: `data/histo` by default, overrideable with
 `PL_HISTORICAL_PATH`. **Validate P&L**, **Histo P&L**, and the Quick Market
@@ -969,20 +1023,14 @@ only observed daily rows—an absent date is not fabricated as zero P&L.
 
 The checked-in SOG and Portfolio sender boundaries reject delivery with an
 explicit fixture-mode error, so the demo cannot falsely claim that rows reached
-an external system. No S3 writer is wired by default; Write P&L uses an atomic
-local fallback under `saved_pl/` and still downloads the CSV. Supply authorized
-senders and `write_pl` in `PLSendConfig` for production.
+an external system. Supply only the two authorized sender functions in
+`PLSendConfig` for production.
 
 ```python
 def send_sog_pl(rows: pd.DataFrame) -> None:
     # Exact columns: Risk Type, Risk Greek, Portfolio, SignoffGroup,
     # ConcertoField, PL, Adjustment
     my_sender.send_sog(rows)
-
-
-def write_pl(rows: pd.DataFrame, market_date: str, revision: int) -> None:
-    # rows contains every raw unadjusted row plus separate adjustment rows.
-    my_s3_writer.put_csv(rows, date=market_date, revision=revision)
 ```
 
 The workflow is genuinely lazy. SOG, Portfolio, Validate P&L, and Histo P&L
@@ -1029,13 +1077,9 @@ When Show adjustments is On, an adjustment replaces a base row with the same:
 Market Date + Portfolio + ConcertoField
 ```
 
-When Off, the repository is ignored. The saved full-P&L output contains both
-unadjusted raw rows and separate `Record Type = Adjustment` rows; it does not
-erase the audit trail by overwriting raw rows. Unadjusted records retain the
-complete committed columns—Risk, dRisk, P&L, Product, Portfolio, Activity,
-SignoffGroup, Category/registered metadata, tenor ranks, dates, market values,
-availability, and status—while adjustment records add the governed fields that
-exist at their Portfolio + ConcertoField grain.
+When Off, the repository is ignored. The application persists only the governed
+adjustment files described above; it no longer constructs or writes a separate
+full-P&L export.
 
 ## Official Risk archive and Validate P&L
 
@@ -1101,10 +1145,10 @@ TOTAL. The status audits filtered, mapped, matched, Predict-only, mapped
 Colossus-only, and Unmapped counts. Missing P or C values stay blank rather than
 being zero-filled.
 
-The P&L Explorer filter bar immediately above Validate P&L is the sole filter
-authority for both Validate and Histo. It is separate from Aggregate P&L's top
-filter bar. Filter changes close stale hierarchy branches and clear historical
-cell selections before rerendering the table and chart from the same filtered
+The single P&L page filter nested under Saved views is the authority for
+Aggregate P&L, sending, Validate, and Histo. Filter changes close stale
+historical hierarchy branches and clear historical cell selections before
+rerendering Validate, the Histo table, and its chart from the same filtered
 frame.
 
 ### JupyterHub scheduling
@@ -1480,7 +1524,7 @@ page copies or second content router. Its prefix-safe routes are:
 | Path | Page-owned content |
 |---|---|
 | `/` | Risk dashboard, including Aggregate P&L and Unmapped Books. |
-| `/pnl` | Always-open filtered Aggregate P&L plus Send All, SOG/Portfolio editing and sending, Write PL, and a separately filtered P&L Explorer containing official Validate P&L and expandable Colossus/Predict history. |
+| `/pnl` | One saved-view filter governing the expandable Aggregate P&L, Send All, SOG/Portfolio editing and sending, official Validate P&L, and expandable Colossus/Predict history. |
 | `/stock` | A lazy Activity → Promotion → temporary Group → CPTY → CRDS stack over the filtered two-date comparison. |
 | `/static-data` | The Statics fixture/static CSV selector and table. |
 | `/404` | Native fallback for unknown paths. |
@@ -1662,7 +1706,6 @@ the committed prior snapshot remains readable while the next one is built.
 | `RISK_CUBE_PROJECT_ROOT` | unset | Repository root used when Jupyter Scheduler stages the notebook outside its input folder. |
 | `CONCERTO_MAPPING_PATH` | `data/s08_concerto.csv` | Governed P&L-send mapping. |
 | `PL_ADJUSTMENT_PATH` | `adjustments` | Adjustment root. |
-| `PL_LOCAL_FALLBACK_PATH` | `saved_pl` | Local Write P&L fallback. |
 | `SAVED_FILTER_VIEWS_PATH` | `data/saved_views` | Runtime-local root whose `shared/` child holds the validated Risk/Stock/P&L view catalogue. |
 | `GUNICORN_TIMEOUT_SECONDS` | `300` | Gunicorn request timeout. |
 
@@ -1816,8 +1859,8 @@ docstrings and type hints are the source of truth.
   indexes. `search_combine_udl_options` and `search_market_udl_options` return
   bounded dropdown slices; `pivot_combined_hierarchy` serves Quick Risk and
   `pivot_market_exact` serves Quick Market without connector I/O.
-- `build_pl_send_base`, `collapse_pl_send_rows`,
-  `apply_adjustment_overlay`, and `build_saved_pl_frame` own P&L governance.
+- `build_pl_send_base`, `collapse_pl_send_rows`, and
+  `apply_adjustment_overlay` own P&L governance.
 - `load_plsend_mapping`, `load_portfolio_governance`,
   `normalize_pl_send_rows`, and `validate_pl_send_rows` guard those operations;
   `load_pl_history` remains the strict paired legacy-root reader, while
@@ -1865,14 +1908,14 @@ docstrings and type hints are the source of truth.
 - `StartupCoordinator` owns the background revision-1 worker;
   `register_callbacks` owns Risk/search/date interaction.
 - `build_pl_page` and `build_pl_send_sections` build the native sender page,
-  its Send All panel, three sender/write disclosures, and the P&L Explorer;
-  `PLSendConfig` supplies their external boundaries, and
-  `register_pl_send_callbacks` owns lazy loading, editing, save, send, and write
-  actions.
-- `pl_explorer_filter_options`, `pl_explorer_filter_map`, and
-  `apply_pl_explorer_filters` provide one case-insensitive filter contract for
-  Validate P&L and both the Histo hierarchy and chart. The Explorer dropdowns
-  have one namespaced callback owner and do not reuse Aggregate P&L state.
+  its one saved-view filter, Send All panel, SOG/Portfolio disclosures, and P&L
+  Explorer; `PLSendConfig` supplies the sender/history boundaries, and
+  `register_pl_send_callbacks` owns lazy loading, scoped editing, adjustment
+  save, sending, validation, and history actions.
+- `pl_filter_options`, `pl_external_filter_map`, and `apply_pl_filters` provide
+  the one case-insensitive filter contract for Aggregate P&L, all send paths,
+  Validate P&L, and both the Histo hierarchy and chart. The existing page
+  filter reducer is the sole owner of those dropdown values.
 - `build_pl_history_table_with_state`, `build_pl_history_figure`, and
   `build_pl_history_series_selector` render the expandable period table and its
   Colossus/Predict observed-series viewer.
@@ -1897,8 +1940,8 @@ market-owned order, risk-only left join, dynamic status routing, mapping
 governance, and adjustment keys.
 
 Replaceable site examples are the connector bodies, connector-owned Group
-values, product multipliers, threshold values, fake data, senders, and the S3
-writer. They are kept in obvious single boundaries rather than scattered
+values, product multipliers, threshold values, fake data, and the two sender
+boundaries. They are kept in obvious single boundaries rather than scattered
 through callbacks.
 
 ## What was intentionally removed
@@ -1940,8 +1983,8 @@ locate:
 5. Compare each saved full MarketBook with its risk-only join. Confirm that
    market-only tenors remain searchable and visible risk tenors follow the
    connector's order.
-6. Configure `CONCERTO_MAPPING_PATH`, adjustment storage, the two send functions,
-   and the S3 writer in a non-production environment first.
+6. Configure `CONCERTO_MAPPING_PATH`, adjustment storage, and the two send
+   functions in a non-production environment first.
 7. Exercise a connector timeout and malformed response. Confirm the active call
    and incident are visible, Retry is offered, and the last good snapshot stays
    readable.

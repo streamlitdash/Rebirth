@@ -537,6 +537,7 @@ def test_portfolio_is_rendered_as_a_filter_and_a_view_by_dimension() -> None:
     ]
     assert len(saved_view_notes) == 1
     assert "Risk selections remain independent" in saved_view_notes[0].children
+    assert filter_row in list(_walk(saved_view_bar))
     for selector in (aggregate_dimension, table_dimension):
         assert {option["value"] for option in selector.options} >= {"portfolio"}
         assert selector.value == "activity"

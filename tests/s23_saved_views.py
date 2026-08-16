@@ -34,6 +34,7 @@ from ui.s11_saved_views import (
     saved_view_apply_request,
     saved_view_request_matches_base,
     saved_view_request_values,
+    selected_saved_view_label,
 )
 
 
@@ -306,9 +307,14 @@ def test_repository_serializes_concurrent_writers(tmp_path: Path) -> None:
 
 def test_saved_view_editor_is_collapsed_with_an_always_present_base() -> None:
     filter_note = "Include mode help stays inside this disclosure."
+    filter_bar = html.Div(
+        dcc.Dropdown(id="test-authoritative-filter", value=[]),
+        id="test-authoritative-filter-bar",
+    )
     bar = build_saved_filter_view_bar(
         RISK_SAVED_VIEW_CONTROLS,
         filter_note=filter_note,
+        filter_bar=filter_bar,
     )
     components = list(_walk(bar))
     selector = next(
@@ -327,6 +333,12 @@ def test_saved_view_editor_is_collapsed_with_an_always_present_base() -> None:
     assert isinstance(bar, html.Details)
     assert bar.open is False
     assert any(isinstance(item, html.Summary) for item in components)
+    current_label = next(
+        item
+        for item in components
+        if getattr(item, "id", None) == RISK_SAVED_VIEW_CONTROLS.current_label_id
+    )
+    assert current_label.children == BASE_SAVED_VIEW_LABEL
     assert selector.value == BASE_SAVED_VIEW_ID
     assert selector.clearable is False
     assert selector.options[0] == {
@@ -349,6 +361,29 @@ def test_saved_view_editor_is_collapsed_with_an_always_present_base() -> None:
         and "saved-view-filter-note" in str(getattr(item, "className", "")).split()
     ]
     assert [note.children for note in notes] == [filter_note]
+    assert {
+        "test-authoritative-filter-bar",
+        "test-authoritative-filter",
+    } <= {getattr(item, "id", None) for item in components}
+    filter_wrapper = next(
+        item
+        for item in components
+        if "saved-view-filter-bar" in str(getattr(item, "className", "")).split()
+    )
+    assert filter_wrapper.children is filter_bar
+
+
+def test_selected_saved_view_label_uses_name_and_recovers_to_base() -> None:
+    options = [
+        {"label": BASE_SAVED_VIEW_LABEL, "value": BASE_SAVED_VIEW_ID},
+        {"label": "Credit books", "value": "credit-books"},
+    ]
+
+    assert selected_saved_view_label(BASE_SAVED_VIEW_ID, options) == (
+        BASE_SAVED_VIEW_LABEL
+    )
+    assert selected_saved_view_label("credit-books", options) == "Credit books"
+    assert selected_saved_view_label("deleted-view", options) == BASE_SAVED_VIEW_LABEL
 
 
 def test_request_store_is_validated_and_detects_later_manual_edits(
@@ -435,6 +470,7 @@ def test_generic_callbacks_never_own_filter_dropdown_values(tmp_path: Path) -> N
     ]
     assert (RISK_SAVED_VIEW_CONTROLS.apply_request_id, "data") in outputs
     assert (RISK_SAVED_VIEW_CONTROLS.applied_request_id, "data") in outputs
+    assert (RISK_SAVED_VIEW_CONTROLS.current_label_id, "children") in outputs
     assert not any(
         (component_id, "value") in outputs
         for component_id in RISK_SAVED_VIEW_CONTROLS.filter_ids.values()
@@ -600,9 +636,17 @@ def test_callbacks_save_update_delete_and_apply_base(
     mutate = _callback_for_output(app, controls.selector_id, "options")
     apply = _callback_for_output(app, controls.apply_request_id, "data")
     actions = _callback_for_output(app, controls.save_id, "children")
+    current_label = _callback_for_output(app, controls.current_label_id, "children")
     selected_values = [_filters()[key] for key in FILTER_KEYS]
 
     assert actions(BASE_SAVED_VIEW_ID) == ("Save New", True, False)
+    assert (
+        current_label(
+            BASE_SAVED_VIEW_ID,
+            [{"label": BASE_SAVED_VIEW_LABEL, "value": BASE_SAVED_VIEW_ID}],
+        )
+        == BASE_SAVED_VIEW_LABEL
+    )
     monkeypatch.setattr(
         saved_views_module,
         "ctx",
@@ -622,6 +666,7 @@ def test_callbacks_save_update_delete_and_apply_base(
     assert saved[2] == ""
     assert "Saved new view: Morning" in saved[3]
     assert actions(identifier) == ("Update View", False, True)
+    assert current_label(identifier, saved[0]) == "Morning"
     assert repository.get("stock", identifier).exclude_selected is True
 
     updated_filters = _filters("Updated")
@@ -637,6 +682,7 @@ def test_callbacks_save_update_delete_and_apply_base(
     assert updated[1] == identifier
     assert updated[2] is no_update
     assert "Updated view: Morning" in updated[3]
+    assert current_label(identifier, updated[0]) == "Morning"
     assert repository.get("pnl", identifier).filters["activity"] == ("Updated",)
     assert repository.get("risk", identifier).name == "Morning"
 
@@ -665,6 +711,7 @@ def test_callbacks_save_update_delete_and_apply_base(
     )
     assert deleted[0] == [{"label": BASE_SAVED_VIEW_LABEL, "value": BASE_SAVED_VIEW_ID}]
     assert deleted[1] == BASE_SAVED_VIEW_ID
+    assert current_label(deleted[1], deleted[0]) == BASE_SAVED_VIEW_LABEL
     assert "Deleted view: Morning" in deleted[3]
     assert repository.list("stock") == ()
 

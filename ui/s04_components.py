@@ -662,7 +662,7 @@ def build_quick_search_pivot(
 
 
 # ---------------------------------------------------------------------------
-# Heatmap companion table helpers (read.md strategy)
+# Heatmap companion table helpers
 # ---------------------------------------------------------------------------
 
 
@@ -5432,32 +5432,30 @@ def build_layout(
             build_saved_filter_view_bar(
                 RISK_SAVED_VIEW_CONTROLS,
                 filter_note=RISK_FILTER_NOTE,
-            )
-            if refresh_enabled
-            else None,
-            html.Div(
-                [
-                    html.Div(
-                        [
-                            *dimension_filter_controls,
-                            dcc.Checklist(
-                                id="risk-filter-exclude-selected",
-                                options=[
-                                    {
-                                        "label": (
-                                            "Exclude rows matching any selected value"
-                                        ),
-                                        "value": "exclude",
-                                    }
-                                ],
-                                value=[],
-                                className="risk-filter-mode filter-mode-control",
-                            ),
-                        ],
-                        className="controls filter-controls",
-                    ),
-                ],
-                className="dimension-filter-bar top-controls",
+                filter_bar=html.Div(
+                    [
+                        html.Div(
+                            [
+                                *dimension_filter_controls,
+                                dcc.Checklist(
+                                    id="risk-filter-exclude-selected",
+                                    options=[
+                                        {
+                                            "label": (
+                                                "Exclude rows matching any selected value"
+                                            ),
+                                            "value": "exclude",
+                                        }
+                                    ],
+                                    value=[],
+                                    className=("risk-filter-mode filter-mode-control"),
+                                ),
+                            ],
+                            className="controls filter-controls",
+                        ),
+                    ],
+                    className="dimension-filter-bar top-controls",
+                ),
             )
             if refresh_enabled
             else None,

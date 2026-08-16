@@ -60,6 +60,10 @@ class SavedFilterViewControls:
         return f"{self.prefix}-saved-view-status"
 
     @property
+    def current_label_id(self) -> str:
+        return f"{self.prefix}-saved-view-current-label"
+
+    @property
     def refresh_id(self) -> str:
         return f"{self.prefix}-saved-view-refresh"
 
@@ -86,11 +90,15 @@ def build_saved_filter_view_bar(
     *,
     initial_views: Sequence[SavedFilterView] = (),
     filter_note: str | None = None,
+    filter_bar: object | None = None,
 ) -> html.Details:
-    """Build a collapsed shared-view editor above a page's filter controls.
+    """Build one collapsed editor containing a page's filter authority.
 
     ``filter_note`` keeps page-specific include/exclude guidance inside this
-    disclosure so the copy disappears whenever Saved views is closed.
+    disclosure so the copy disappears whenever Saved views is closed.  A
+    supplied ``filter_bar`` is mounted in the same disclosure; this keeps the
+    five authoritative page selectors and their include/exclude mode out of
+    sight until the user opens Saved views.
     """
 
     return html.Details(
@@ -107,7 +115,8 @@ def build_saved_filter_view_bar(
                 [
                     html.Span("Saved views", className="saved-view-summary-title"),
                     html.Span(
-                        "Shared catalogue · Base clears page filters",
+                        BASE_SAVED_VIEW_LABEL,
+                        id=controls.current_label_id,
                         className="saved-view-summary-note",
                     ),
                 ],
@@ -204,6 +213,17 @@ def build_saved_filter_view_bar(
                         if filter_note
                         else []
                     ),
+                    *(
+                        [
+                            html.Div(
+                                filter_bar,
+                                className="saved-view-filter-bar",
+                                style={"gridColumn": "1 / -1"},
+                            )
+                        ]
+                        if filter_bar is not None
+                        else []
+                    ),
                 ],
                 className="saved-filter-view-panel",
             ),
@@ -250,6 +270,28 @@ def is_base_saved_view(value: object) -> bool:
     """Treat legacy empty selections as the always-present Base option."""
 
     return value in (None, "", BASE_SAVED_VIEW_ID)
+
+
+def selected_saved_view_label(
+    selected_identifier: object,
+    options: object,
+) -> str:
+    """Resolve the current view's human label from trusted Dropdown options."""
+
+    if is_base_saved_view(selected_identifier):
+        return BASE_SAVED_VIEW_LABEL
+    if isinstance(options, Sequence) and not isinstance(options, (str, bytes)):
+        for option in options:
+            if not isinstance(option, Mapping):
+                continue
+            if option.get("value") != selected_identifier:
+                continue
+            label = option.get("label")
+            if isinstance(label, str) and label.strip():
+                return label.strip()
+    # A missing catalogue entry is treated exactly like the selector's own
+    # invalid-value recovery: Base is the only durable selection left.
+    return BASE_SAVED_VIEW_LABEL
 
 
 def saved_view_control_values(
@@ -382,6 +424,14 @@ def register_saved_filter_view_callbacks(
         raise ValueError(
             "Saved view repository filter keys must match the configured UI fields"
         )
+
+    @app.callback(
+        Output(controls.current_label_id, "children"),
+        Input(controls.selector_id, "value"),
+        Input(controls.selector_id, "options"),
+    )
+    def sync_current_saved_view_label(selected_identifier, options):
+        return selected_saved_view_label(selected_identifier, options)
 
     @app.callback(
         Output(controls.selector_id, "options"),
@@ -548,5 +598,6 @@ __all__ = [
     "saved_view_request_id",
     "saved_view_request_matches_base",
     "saved_view_request_values",
+    "selected_saved_view_label",
     "selected_filter_payload",
 ]

@@ -135,15 +135,7 @@ PORTFOLIO_REPORTING_COLUMNS = tuple(
 PL_SIGNOFF_COLUMN = next(
     field.external_name for field in PORTFOLIO_FIELDS if "pl_signoff" in field.roles
 )
-PL_ADJUSTMENT_METADATA_COLUMNS = tuple(
-    field.external_name
-    for field in PORTFOLIO_FIELDS
-    if field.external_name != PL_SIGNOFF_COLUMN
-)
-
-
 __all__ = [
-    "PL_ADJUSTMENT_METADATA_COLUMNS",
     "PL_SIGNOFF_COLUMN",
     "PORTFOLIO_COLUMN",
     "PORTFOLIO_CONFIG_COLUMNS",

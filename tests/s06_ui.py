@@ -1088,8 +1088,8 @@ def test_semantic_total_rows_are_bold_divided_across_the_full_row() -> None:
     selector = stylesheet.split(".hierarchy-total-row > *", maxsplit=1)[1].split(
         "}", maxsplit=1
     )[0]
-    assert "border-top: 1px dotted #111111" in selector
-    assert "border-bottom: 1px dotted #111111" in selector
+    assert "border-top: 1px solid #111111" in selector
+    assert "border-bottom: 1px solid #111111" in selector
     assert "font-weight: 850" in selector
 
 

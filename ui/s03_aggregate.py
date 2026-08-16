@@ -467,7 +467,15 @@ def apply_filters(
                 f"Reporting-dimension filter {column!r} must be a sequence of values"
             )
         if selected:
-            matches = data[column].isin(selected)
+            selected_values = {
+                str(value).strip().casefold()
+                for value in selected
+                if str(value).strip()
+            }
+            if not selected_values:
+                continue
+            values = data[column].astype("string").str.strip().str.casefold()
+            matches = values.isin(selected_values).fillna(False)
             mask &= ~matches if exclude_selected else matches
     frame = data.loc[mask].copy()
     frame["abs pl"] = frame["pl"].abs()

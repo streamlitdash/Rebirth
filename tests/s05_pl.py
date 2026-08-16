@@ -1,4 +1,4 @@
-"""Governed P&L aggregation, overlay, export, and date/portfolio storage tests."""
+"""Governed P&L aggregation, overlay, history, and adjustment-storage tests."""
 
 from __future__ import annotations
 
@@ -36,7 +36,6 @@ from core.s04_pl import (
     UNDERLYING,
     apply_adjustment_overlay,
     build_pl_send_base,
-    build_saved_pl_frame,
     empty_pl_send_frame,
     load_historical_pl,
     load_pl_history,
@@ -589,29 +588,6 @@ def test_adjustment_overlay_replaces_same_date_portfolio_and_concerto_field() ->
         ["BOOK_A", 15.0],
         ["BOOK_B", 7.0],
     ]
-
-
-def test_saved_pl_keeps_unadjusted_rows_and_adds_adjustment_rows() -> None:
-    saved = build_saved_pl_frame(
-        _raw_pl(),
-        _mapping(),
-        _governance(),
-        _adjustments(("BOOK_A", 99.0)),
-    )
-
-    assert saved["Record Type"].value_counts().to_dict() == {
-        "Unadjusted": 3,
-        "Adjustment": 1,
-    }
-    assert saved.loc[saved["Record Type"].eq("Unadjusted"), "PL"].tolist() == [
-        10.0,
-        5.0,
-        7.0,
-    ]
-    adjustment = saved.loc[saved["Record Type"].eq("Adjustment")].iloc[0]
-    assert adjustment["Portfolio"] == "BOOK_A"
-    assert adjustment["PL"] == 99.0
-    assert bool(adjustment[ADJUSTMENT]) is True
 
 
 def test_governed_mapping_cannot_assign_one_pair_to_another_name() -> None:

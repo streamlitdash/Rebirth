@@ -1,8 +1,7 @@
-"""Callbacks for governed PL adjustments, SOG/portfolio sending, and saving."""
+"""Callbacks for governed P&L adjustment, filtering, sending, and exploration."""
 
 from __future__ import annotations
 
-import os
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -11,7 +10,7 @@ from threading import RLock
 from typing import Callable
 
 import pandas as pd
-from dash import ALL, Dash, Input, Output, Patch, State, ctx, dcc, html, no_update
+from dash import ALL, Dash, Input, Output, Patch, State, ctx, html, no_update
 from dash.exceptions import PreventUpdate
 from core.s01_schema import (
     PORTFOLIO_MAPPED_COLUMN,
@@ -35,7 +34,6 @@ from core.s04_pl import (
     SIGNOFF_GROUP,
     apply_adjustment_overlay,
     build_pl_send_base,
-    build_saved_pl_frame,
     collapse_pl_send_rows,
     load_pl_history,
     load_plsend_mapping,
@@ -73,20 +71,15 @@ from .s12_plhistory import (
     toggle_pl_history_expanded_periods,
     toggle_pl_history_open_tokens,
 )
-from .s14_pl_explorer import (
-    PL_EXPLORER_EXCLUDE_ID,
-    PL_EXPLORER_FILTER_COLUMNS,
-    PL_EXPLORER_FILTER_IDS,
-    apply_pl_explorer_filters,
-    pl_explorer_filter_map,
-    pl_explorer_filter_options,
+from .s14_pl_filters import (
+    PL_FILTER_EXCLUDE_ID,
+    apply_pl_filters,
+    pl_external_filter_map,
 )
 
 
 SendFunction = Callable[[pd.DataFrame], None]
-WritePLFunction = Callable[[pd.DataFrame, str, int], None]
 PLHistoryFunction = Callable[[], pd.DataFrame]
-_SAVE_LOCK = RLock()
 _CHECKED = "\N{BALLOT BOX WITH CHECK}"
 _UNCHECKED = "\N{BALLOT BOX}"
 _SELECTION_SUMMARY_SCRIPT = r"""
@@ -146,12 +139,8 @@ def _is_checked(value: object) -> bool:
 class PLSendConfig:
     mapping_source: str | Path
     adjustment_repository: AdjustmentRepositoryProtocol
-    saved_directory: str | Path
     send_sog_pl: SendFunction
     send_portfolio_pl: SendFunction
-    # Production boundary for writing the complete PL frame to site-owned s3.
-    # The market date is ISO formatted and revision is the committed snapshot.
-    write_pl: WritePLFunction | None = None
     # Strict layout: histo/YYYY-MM-DD/{histo,predicted}.csv at the governed
     # Risk Type/Risk Greek/Underlying/Product/Book daily leaf grain.
     history_source: str | Path | pd.DataFrame | PLHistoryFunction | None = None
@@ -397,7 +386,14 @@ def _matching_draft_rows(
     entry = (drafts or {}).get(scope_key)
     if not isinstance(entry, dict):
         return None
-    guards = ("revision", "market_date", "include_adjustments", "editor_epoch")
+    guards = (
+        "revision",
+        "market_date",
+        "include_adjustments",
+        "editor_epoch",
+        "filter_scope",
+        "allowed_portfolios",
+    )
     if any(entry.get(key) != store.get(key) for key in guards):
         return None
     if entry.get("scope_column") != scope_column:
@@ -456,6 +452,8 @@ def _drafts_with_scope(
         "market_date": store.get("market_date"),
         "include_adjustments": bool(store.get("include_adjustments")),
         "editor_epoch": store.get("editor_epoch", 0),
+        "filter_scope": store.get("filter_scope"),
+        "allowed_portfolios": list(store.get("allowed_portfolios", [])),
         "scope_column": scope_column,
         "scope_value": str(selected_scope),
         "rows": [dict(row) for row in rows],
@@ -551,32 +549,103 @@ def _effective_rows(
     config: PLSendConfig,
     *,
     include_adjustments: bool,
+    filter_values: Sequence[Sequence[object] | None] | None = None,
+    exclude_value: Sequence[object] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Build one section's independently overlaid, governed PL rows."""
+    """Build governed P&L after resolving the page filter to Portfolios."""
     mapping = load_plsend_mapping(config.mapping_source)
     governance = _governance(snapshot)
-    base = build_pl_send_base(snapshot.combined_pl, mapping, governance)
+    filter_scope = _pl_filter_scope(filter_values, exclude_value)
+    filtered_governance = apply_pl_filters(
+        governance,
+        filter_scope["filters"],
+        exclude_selected=bool(filter_scope["exclude_selected"]),
+    )
+    allowed_portfolios = set(filtered_governance[PORTFOLIO].astype(str))
+    raw_portfolios = snapshot.combined_pl[PORTFOLIO].astype(str)
+    filtered_raw = snapshot.combined_pl.loc[
+        raw_portfolios.isin(allowed_portfolios)
+    ].copy(deep=True)
+    base = build_pl_send_base(filtered_raw, mapping, filtered_governance)
     adjustments = (
         config.adjustment_repository.load(snapshot.market_date)
         if include_adjustments
         else None
     )
+    if adjustments is not None:
+        adjustment_portfolios = adjustments[PORTFOLIO].astype(str)
+        adjustments = adjustments.loc[
+            adjustment_portfolios.isin(allowed_portfolios)
+        ].copy(deep=True)
     effective = apply_adjustment_overlay(
         base,
         None
         if adjustments is None
         else adjustments.reindex(columns=list(PL_SEND_COLUMNS)),
         mapping,
-        governance,
+        filtered_governance,
         include_adjustments=include_adjustments,
     )
-    return effective, mapping, governance
+    return effective, mapping, filtered_governance
+
+
+def _pl_filter_scope(
+    filter_values: Sequence[Sequence[object] | None] | None,
+    exclude_value: Sequence[object] | None,
+) -> dict[str, object]:
+    """Return one deterministic filter payload for callbacks and stale guards."""
+
+    values = (
+        list(filter_values)
+        if filter_values is not None
+        else [None] * len(PL_FILTER_FIELDS)
+    )
+    external = pl_external_filter_map(values)
+    normalized = {
+        column: sorted(
+            {str(value).strip() for value in selected if str(value).strip()},
+            key=str.casefold,
+        )
+        for column, selected in external.items()
+    }
+    return {
+        "filters": normalized,
+        "exclude_selected": "exclude" in (exclude_value or []),
+    }
+
+
+def _filtered_store_governance(
+    governance: pd.DataFrame,
+    store: Mapping[str, object],
+) -> pd.DataFrame:
+    """Restrict editor governance to the filter scope serialized with its rows."""
+
+    allowed = store.get("allowed_portfolios")
+    if not isinstance(allowed, list):
+        raise ValueError("the PL editor filter scope is missing; reload the editor")
+    selected = {str(value) for value in allowed}
+    return governance.loc[governance[PORTFOLIO].astype(str).isin(selected)].copy(
+        deep=True
+    )
+
+
+def _require_current_filter_scope(
+    store: Mapping[str, object],
+    filter_values: Sequence[Sequence[object] | None],
+    exclude_value: Sequence[object] | None,
+) -> None:
+    """Fail closed when an editor store predates the current page filters."""
+
+    if store.get("filter_scope") != _pl_filter_scope(filter_values, exclude_value):
+        raise ValueError("the page filters changed; reload the PL editor")
 
 
 def _effective_store(
     snapshot,
     effective: pd.DataFrame,
     *,
+    filtered_governance: pd.DataFrame,
+    filter_scope: Mapping[str, object],
     include_adjustments: bool,
     editor_epoch: int = 0,
 ) -> dict[str, object]:
@@ -586,34 +655,12 @@ def _effective_store(
         "market_date": pd.Timestamp(snapshot.market_date).date().isoformat(),
         "include_adjustments": bool(include_adjustments),
         "editor_epoch": int(editor_epoch),
+        "filter_scope": dict(filter_scope),
+        "allowed_portfolios": sorted(
+            filtered_governance[PORTFOLIO].astype(str).unique().tolist()
+        ),
         "rows": effective.to_dict("records"),
     }
-
-
-def _write_pl_result(
-    config: PLSendConfig,
-    saved: pd.DataFrame,
-    *,
-    filename: str,
-    market_date: str,
-    revision: int,
-) -> str:
-    """Write through the injected boundary or an explicitly labelled fallback."""
-    if config.write_pl is not None:
-        config.write_pl(saved.copy(deep=True), market_date, revision)
-        return f"Wrote through the configured write_pl connector as {filename}"
-
-    directory = Path(config.saved_directory).expanduser().resolve()
-    destination = directory / filename
-    temporary = directory / f".{filename}.{uuid.uuid4().hex}.tmp"
-    with _SAVE_LOCK:
-        directory.mkdir(parents=True, exist_ok=True)
-        try:
-            saved.to_csv(temporary, index=False, encoding="utf-8", lineterminator="\n")
-            os.replace(temporary, destination)
-        finally:
-            temporary.unlink(missing_ok=True)
-    return f"No write_pl connector configured; saved local fallback to {destination}"
 
 
 def register_pl_aggregate_callbacks(
@@ -749,8 +796,16 @@ def register_pl_aggregate_callbacks(
                 selected_values,
                 strict=True,
             ):
-                available = {option["value"] for option in options[field.key]}
-                valid_values.append([value for value in selected if value in available])
+                available = {
+                    str(option["value"]).casefold(): str(option["value"])
+                    for option in options[field.key]
+                }
+                retained: list[str] = []
+                for raw in selected:
+                    value = available.get(str(raw).strip().casefold())
+                    if value is not None and value not in retained:
+                        retained.append(value)
+                valid_values.append(retained)
 
         result: list[object] = []
         for field, selected in zip(
@@ -874,75 +929,6 @@ def register_pl_send_callbacks(
                 return None
             raise
 
-    explorer_filter_outputs = [
-        output
-        for field in PL_FILTER_FIELDS
-        for output in (
-            Output(PL_EXPLORER_FILTER_IDS[field.key], "options"),
-            Output(PL_EXPLORER_FILTER_IDS[field.key], "value"),
-        )
-    ]
-
-    @app.callback(
-        *explorer_filter_outputs,
-        Output(PL_EXPLORER_EXCLUDE_ID, "value"),
-        Input("data-revision-store", "data"),
-        Input("pl-validate-summary", "n_clicks"),
-        Input("pl-history-summary", "n_clicks"),
-        *[
-            State(PL_EXPLORER_FILTER_IDS[field.key], "value")
-            for field in PL_FILTER_FIELDS
-        ],
-        State(PL_EXPLORER_EXCLUDE_ID, "value"),
-    )
-    def update_pl_explorer_filter_controls(
-        _revision,
-        validate_clicks,
-        history_clicks,
-        *current_values,
-    ):
-        """Sole owner for Explorer filter options and current selections."""
-
-        selections = current_values[: len(PL_FILTER_FIELDS)]
-        exclude_value = list(current_values[len(PL_FILTER_FIELDS)] or [])
-        frames: list[pd.DataFrame] = []
-        snapshot = current_pl_snapshot()
-        combined_pl = getattr(snapshot, "combined_pl", None)
-        if isinstance(combined_pl, pd.DataFrame):
-            frames.append(combined_pl)
-        with history_cache_lock:
-            cached_history = history_cache
-        if cached_history is not None:
-            frames.append(cached_history)
-        if int(validate_clicks or 0) % 2 or int(history_clicks or 0) % 2:
-            try:
-                loaded_history = current_pl_history()
-                if cached_history is None:
-                    frames.append(loaded_history)
-            except (PLSendValidationError, TypeError):
-                # A disclosure callback owns the visible load error. The filter
-                # reducer keeps any current-snapshot catalogue available.
-                pass
-        options = pl_explorer_filter_options(*frames)
-        result: list[object] = []
-        for column, selected in zip(
-            PL_EXPLORER_FILTER_COLUMNS,
-            selections,
-            strict=True,
-        ):
-            field_options = options[column]
-            canonical = {
-                str(option["value"]).casefold(): str(option["value"])
-                for option in field_options
-            }
-            retained = []
-            for raw in selected or []:
-                value = canonical.get(str(raw).strip().casefold())
-                if value is not None and value not in retained:
-                    retained.append(value)
-            result.extend((field_options, retained))
-        return (*result, exclude_value)
-
     def register_effective_store(
         *,
         store_id: str,
@@ -960,6 +946,8 @@ def register_pl_send_callbacks(
             Input("data-revision-store", "data"),
             Input(toggle_id, "value"),
             Input(section_revision_id, "data"),
+            *[Input(PL_FILTER_IDS[field.key], "value") for field in PL_FILTER_FIELDS],
+            Input(PL_FILTER_EXCLUDE_ID, "value"),
             State(filter_id, "value"),
             prevent_initial_call=True,
         )
@@ -968,17 +956,22 @@ def register_pl_send_callbacks(
             _revision,
             include_values,
             section_revision,
-            selected_scope,
+            *filter_values_mode_and_scope,
         ):
+            filter_values = filter_values_mode_and_scope[: len(PL_FILTER_FIELDS)]
+            exclude_value = filter_values_mode_and_scope[len(PL_FILTER_FIELDS)]
+            selected_scope = filter_values_mode_and_scope[-1]
             if not int(summary_clicks or 0) % 2:
                 return {}, no_update, no_update
             snapshot = current_pl_snapshot()
             if snapshot is None:
                 return {}, [], None
-            effective, _mapping, _governance_frame = _effective_rows(
+            effective, _mapping, filtered_governance = _effective_rows(
                 snapshot,
                 config,
                 include_adjustments="include" in (include_values or []),
+                filter_values=filter_values,
+                exclude_value=exclude_value,
             )
             values = sorted(effective[scope_column].astype(str).unique().tolist())
             selected = (
@@ -990,6 +983,8 @@ def register_pl_send_callbacks(
                 _effective_store(
                     snapshot,
                     effective,
+                    filtered_governance=filtered_governance,
+                    filter_scope=_pl_filter_scope(filter_values, exclude_value),
                     include_adjustments="include" in (include_values or []),
                     editor_epoch=int(section_revision or 0),
                 ),
@@ -1037,11 +1032,8 @@ def register_pl_send_callbacks(
             },
             "n_clicks",
         ),
-        *[
-            Input(PL_EXPLORER_FILTER_IDS[field.key], "value")
-            for field in PL_FILTER_FIELDS
-        ],
-        Input(PL_EXPLORER_EXCLUDE_ID, "value"),
+        *[Input(PL_FILTER_IDS[field.key], "value") for field in PL_FILTER_FIELDS],
+        Input(PL_FILTER_EXCLUDE_ID, "value"),
         State("pl-history-open-paths", "data"),
         State("pl-history-open-comparisons", "data"),
         State("pl-history-selection-store", "data"),
@@ -1103,7 +1095,7 @@ def register_pl_send_callbacks(
                 {},
             )
 
-        explorer_filters = pl_explorer_filter_map(
+        page_filters = pl_external_filter_map(
             [
                 activity_filter,
                 signoff_filter,
@@ -1112,9 +1104,9 @@ def register_pl_send_callbacks(
                 subcategory_filter,
             ]
         )
-        history = apply_pl_explorer_filters(
+        history = apply_pl_filters(
             history,
-            explorer_filters,
+            page_filters,
             exclude_selected="exclude" in (exclude_filter or []),
         )
 
@@ -1122,8 +1114,8 @@ def register_pl_send_callbacks(
         next_comparisons = open_comparison_tokens
         next_selection = dict(selection_state or {})
         if isinstance(trigger, str) and trigger in {
-            *PL_EXPLORER_FILTER_IDS.values(),
-            PL_EXPLORER_EXCLUDE_ID,
+            *PL_FILTER_IDS.values(),
+            PL_FILTER_EXCLUDE_ID,
         }:
             next_open = []
             next_comparisons = []
@@ -1171,7 +1163,7 @@ def register_pl_send_callbacks(
         if history.empty:
             return (
                 table,
-                "No Colossus/Predict P&L history matches the Explorer filters.",
+                "No Colossus/Predict P&L history matches the page filters.",
                 None,
                 None,
                 effective_open,
@@ -1210,11 +1202,8 @@ def register_pl_send_callbacks(
         Output("pl-history-date-range", "end_date"),
         Input("pl-history-selection-store", "data"),
         Input("pl-history-series-selector", "value"),
-        *[
-            Input(PL_EXPLORER_FILTER_IDS[field.key], "value")
-            for field in PL_FILTER_FIELDS
-        ],
-        Input(PL_EXPLORER_EXCLUDE_ID, "value"),
+        *[Input(PL_FILTER_IDS[field.key], "value") for field in PL_FILTER_FIELDS],
+        Input(PL_FILTER_EXCLUDE_ID, "value"),
         Input("pl-history-range-wtd", "n_clicks"),
         Input("pl-history-range-mtd", "n_clicks"),
         Input("pl-history-range-ytd", "n_clicks"),
@@ -1270,9 +1259,9 @@ def register_pl_send_callbacks(
                 explicit_start,
                 explicit_end,
             )
-        history = apply_pl_explorer_filters(
+        history = apply_pl_filters(
             history,
-            pl_explorer_filter_map(
+            pl_external_filter_map(
                 [
                     activity_filter,
                     signoff_filter,
@@ -1289,7 +1278,7 @@ def register_pl_send_callbacks(
             return (
                 empty_figure,
                 {"preset": "all"},
-                "No Colossus/Predict P&L history matches the Explorer filters.",
+                "No Colossus/Predict P&L history matches the page filters.",
                 *classes,
                 None,
                 None,
@@ -1438,7 +1427,10 @@ def register_pl_send_callbacks(
             try:
                 snapshot = refresh_manager.pl_snapshot
                 mapping = load_plsend_mapping(config.mapping_source)
-                governance = _governance(snapshot)
+                governance = _filtered_store_governance(
+                    _governance(snapshot),
+                    store,
+                )
                 allowed = _allowed_portfolios(
                     governance,
                     scope_column=scope_column,
@@ -1661,6 +1653,8 @@ def register_pl_send_callbacks(
         State("pl-portfolio-adjustment-revision-store", "data"),
         State("pl-send-sog-filter", "value"),
         State("pl-send-portfolio-filter", "value"),
+        *[State(PL_FILTER_IDS[field.key], "value") for field in PL_FILTER_FIELDS],
+        State(PL_FILTER_EXCLUDE_ID, "value"),
         prevent_initial_call=True,
     )
     def save_adjustments(
@@ -1675,6 +1669,7 @@ def register_pl_send_callbacks(
         portfolio_adjustment_revision,
         selected_sog,
         selected_portfolio,
+        *filter_values_mode,
     ):
         trigger = ctx.triggered_id
         is_sog = trigger == "save-sog-adjustments-button"
@@ -1685,13 +1680,19 @@ def register_pl_send_callbacks(
             snapshot = refresh_manager.pl_snapshot
             if not store:
                 raise ValueError("the PL editor has not loaded")
+            filter_values = filter_values_mode[: len(PL_FILTER_FIELDS)]
+            exclude_value = filter_values_mode[len(PL_FILTER_FIELDS)]
+            _require_current_filter_scope(store, filter_values, exclude_value)
             expected_date = pd.Timestamp(snapshot.market_date).date().isoformat()
             if int(store.get("revision", -1)) != int(snapshot.revision):
                 raise ValueError("the risk snapshot changed; reload the PL editor")
             if str(store.get("market_date", "")) != expected_date:
                 raise ValueError("the market date changed; reload the PL editor")
             mapping = load_plsend_mapping(config.mapping_source)
-            governance = _governance(snapshot)
+            governance = _filtered_store_governance(
+                _governance(snapshot),
+                store,
+            )
             scope_column = SIGNOFF_GROUP if is_sog else PORTFOLIO
             selected_scope = selected_sog if is_sog else selected_portfolio
             if not selected_scope:
@@ -1791,6 +1792,8 @@ def register_pl_send_callbacks(
         *,
         scope_column: str,
         selected_scope: object,
+        filter_values: Sequence[Sequence[object] | None],
+        exclude_value: Sequence[object] | None,
     ) -> str:
         snapshot = refresh_manager.pl_snapshot
         if not store or not selected_scope:
@@ -1800,8 +1803,9 @@ def register_pl_send_callbacks(
             raise ValueError("the risk snapshot changed; reload the PL editor")
         if str(store.get("market_date", "")) != expected_date:
             raise ValueError("the market date changed; reload the PL editor")
+        _require_current_filter_scope(store, filter_values, exclude_value)
         mapping = load_plsend_mapping(config.mapping_source)
-        governance = _governance(snapshot)
+        governance = _filtered_store_governance(_governance(snapshot), store)
         raw_rows = _domain_frame(records)
         outside_scope = raw_rows[scope_column].astype(str).ne(str(selected_scope))
         if outside_scope.any():
@@ -1826,10 +1830,12 @@ def register_pl_send_callbacks(
     @app.callback(
         Output("pl-send-all-status", "children"),
         Input("send-all-pl-button", "n_clicks"),
+        *[State(PL_FILTER_IDS[field.key], "value") for field in PL_FILTER_FIELDS],
+        State(PL_FILTER_EXCLUDE_ID, "value"),
         prevent_initial_call=True,
         running=[(Output("send-all-pl-button", "disabled"), True, False)],
     )
-    def send_all(n_clicks):
+    def send_all(n_clicks, *filter_values_mode):
         if not n_clicks:
             raise PreventUpdate
 
@@ -1837,10 +1843,14 @@ def register_pl_send_callbacks(
             snapshot = current_pl_snapshot()
             if snapshot is None:
                 return "Not sent: P&L data is still loading."
+            filter_values = filter_values_mode[: len(PL_FILTER_FIELDS)]
+            exclude_value = filter_values_mode[len(PL_FILTER_FIELDS)]
             effective, mapping, governance = _effective_rows(
                 snapshot,
                 config,
                 include_adjustments=True,
+                filter_values=filter_values,
+                exclude_value=exclude_value,
             )
             rows = collapse_pl_send_rows(effective, mapping, governance)
             if rows.empty:
@@ -1877,9 +1887,11 @@ def register_pl_send_callbacks(
         State("pl-send-sog-grid", "data"),
         State("pl-send-sog-effective-store", "data"),
         State("pl-send-sog-filter", "value"),
+        *[State(PL_FILTER_IDS[field.key], "value") for field in PL_FILTER_FIELDS],
+        State(PL_FILTER_EXCLUDE_ID, "value"),
         prevent_initial_call=True,
     )
-    def send_sog(n_clicks, records, store, selected_scope):
+    def send_sog(n_clicks, records, store, selected_scope, *filter_values_mode):
         if not n_clicks:
             raise PreventUpdate
 
@@ -1890,6 +1902,8 @@ def register_pl_send_callbacks(
                 store,
                 scope_column=SIGNOFF_GROUP,
                 selected_scope=selected_scope,
+                filter_values=filter_values_mode[: len(PL_FILTER_FIELDS)],
+                exclude_value=filter_values_mode[len(PL_FILTER_FIELDS)],
             )
         except Exception as exc:
             return f"Not sent: {exc}"
@@ -1900,9 +1914,17 @@ def register_pl_send_callbacks(
         State("pl-send-portfolio-grid", "data"),
         State("pl-send-portfolio-effective-store", "data"),
         State("pl-send-portfolio-filter", "value"),
+        *[State(PL_FILTER_IDS[field.key], "value") for field in PL_FILTER_FIELDS],
+        State(PL_FILTER_EXCLUDE_ID, "value"),
         prevent_initial_call=True,
     )
-    def send_portfolio(n_clicks, records, store, selected_scope):
+    def send_portfolio(
+        n_clicks,
+        records,
+        store,
+        selected_scope,
+        *filter_values_mode,
+    ):
         if not n_clicks:
             raise PreventUpdate
 
@@ -1913,60 +1935,15 @@ def register_pl_send_callbacks(
                 store,
                 scope_column=PORTFOLIO,
                 selected_scope=selected_scope,
+                filter_values=filter_values_mode[: len(PL_FILTER_FIELDS)],
+                exclude_value=filter_values_mode[len(PL_FILTER_FIELDS)],
             )
         except Exception as exc:
             return f"Not sent: {exc}"
 
-    @app.callback(
-        Output("save-pl-status", "children"),
-        Output("save-pl-download", "data"),
-        Input("save-pl-button", "n_clicks"),
-        prevent_initial_call=True,
-    )
-    def save_pl(n_clicks):
-        if not n_clicks:
-            raise PreventUpdate
-        try:
-            snapshot = refresh_manager.pl_snapshot
-            mapping = load_plsend_mapping(config.mapping_source)
-            governance = _governance(snapshot)
-            adjustments = config.adjustment_repository.load(snapshot.market_date)
-            saved = build_saved_pl_frame(
-                snapshot.combined_pl,
-                mapping,
-                governance,
-                adjustments.reindex(columns=list(PL_SEND_COLUMNS)),
-                include_adjustments=True,
-            )
-            filename = (
-                f"pl_{pd.Timestamp(snapshot.market_date).date().isoformat()}_"
-                f"revision_{snapshot.revision}.csv"
-            )
-            destination_status = _write_pl_result(
-                config,
-                saved,
-                filename=filename,
-                market_date=pd.Timestamp(snapshot.market_date).date().isoformat(),
-                revision=int(snapshot.revision),
-            )
-            adjustment_count = int(saved[ADJUSTMENT].fillna(False).astype(bool).sum())
-            status = (
-                f"{destination_status}; {len(saved):,} rows"
-                f" ({adjustment_count:,} adjustments) and downloaded the CSV."
-            )
-            return status, dcc.send_data_frame(
-                saved.to_csv,
-                filename,
-                index=False,
-                lineterminator="\n",
-            )
-        except Exception as exc:
-            return f"Not saved: {exc}", no_update
-
 
 __all__ = [
     "PLSendConfig",
-    "WritePLFunction",
     "register_pl_aggregate_callbacks",
     "register_pl_send_callbacks",
 ]

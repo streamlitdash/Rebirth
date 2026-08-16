@@ -884,6 +884,7 @@ def test_stock_filter_ids_and_store_are_independent_from_risk() -> None:
     ]
     assert len(saved_view_notes) == 1
     assert "Stock selections remain independent" in saved_view_notes[0].children
+    assert filter_row in list(_walk(saved_view_bar))
     assert "dimension-filter-store" not in ids
     assert not (set(DIMENSION_FILTER_IDS.values()) & ids)
 

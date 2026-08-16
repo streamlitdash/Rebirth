@@ -14,6 +14,7 @@ from dash import Dash, dcc, html, no_update
 from core.s04_pl import (
     COLOSSUS_TYPE,
     HISTORY_FILE_COLUMNS,
+    PL_SEND_COLUMNS,
     PREDICT_TYPE,
     load_pl_history,
 )
@@ -24,13 +25,13 @@ from ui.s03_aggregate import format_number, prepare_risk_data
 from ui.s06_plview import (
     DISPLAY_COLUMNS,
     PL_AGGREGATE_TOGGLE_TYPE,
-    PL_EXPLORER_EXCLUDE_ID,
-    PL_EXPLORER_FILTER_IDS,
+    PL_FILTER_EXCLUDE_ID,
     PL_FILTER_FIELDS,
     PL_FILTER_IDS,
     PL_FILTER_NOTE,
     PL_SAVED_VIEW_CONTROLS,
     build_pl_aggregate_table,
+    build_pl_filter_bar,
     build_pl_page,
     build_pl_send_sections,
 )
@@ -48,6 +49,7 @@ from ui.s12_plhistory import (
     PL_HISTORY_ROW_TOGGLE_TYPE,
     pl_history_path_token,
 )
+from ui.s13_validate_pl import register_validate_pl_callbacks
 
 
 def _walk(component: object) -> Iterable[object]:
@@ -98,7 +100,6 @@ def _config(tmp_path: Path) -> PLSendConfig:
     return PLSendConfig(
         mapping_source=tmp_path / "mapping.csv",
         adjustment_repository=LocalCsvAdjustmentRepository(tmp_path / "adjustments"),
-        saved_directory=tmp_path / "saved",
         send_sog_pl=lambda _frame: None,
         send_portfolio_pl=lambda _frame: None,
         history_source=history_source,
@@ -117,6 +118,7 @@ def _registered_pl_app(
         [
             dcc.Store(id="data-revision-store", data=7),
             dcc.Store(id="pl-adjustment-revision-store", data=0),
+            build_pl_filter_bar(),
             *build_pl_send_sections(),
         ]
     )
@@ -127,6 +129,11 @@ def _registered_pl_app(
 def _callback(app: Dash, output_fragment: str):
     key = next(key for key in app.callback_map if output_fragment in key)
     return app.callback_map[key]["callback"].__wrapped__
+
+
+def _callback_metadata(app: Dash, output_fragment: str) -> dict[str, object]:
+    key = next(key for key in app.callback_map if output_fragment in key)
+    return app.callback_map[key]
 
 
 def _native_page(app: Dash, pathname: str = "/"):
@@ -194,11 +201,15 @@ def test_closed_pl_sections_never_build_or_serialize_effective_rows(
     portfolio = _callback(app, "pl-send-portfolio-effective-store.data")
 
     for callback in (sog, portfolio):
-        store, options, selected = callback(0, 7, [], 0, None)
+        store, options, selected = callback(
+            0, 7, [], 0, *([[]] * len(PL_FILTER_FIELDS)), [], None
+        )
         assert store == {}
         assert options is no_update
         assert selected is no_update
-        store, options, selected = callback(2, 8, ["include"], 1, "stale")
+        store, options, selected = callback(
+            2, 8, ["include"], 1, *([[]] * len(PL_FILTER_FIELDS)), [], "stale"
+        )
         assert store == {}
         assert options is no_update
         assert selected is no_update
@@ -212,15 +223,27 @@ def test_open_pl_sections_load_on_odd_parity_and_initialize_filters(
     effective = _effective_frame()
     calls: list[bool] = []
 
-    def effective_rows(_snapshot, _config, *, include_adjustments: bool):
+    def effective_rows(
+        _snapshot,
+        _config,
+        *,
+        include_adjustments: bool,
+        filter_values,
+        exclude_value,
+    ):
         calls.append(include_adjustments)
-        return effective.copy(deep=True), pd.DataFrame(), pd.DataFrame()
+        assert filter_values == tuple([[]] * len(PL_FILTER_FIELDS))
+        assert exclude_value == []
+        governance = effective[["Portfolio"]].drop_duplicates()
+        return effective.copy(deep=True), pd.DataFrame(), governance
 
     monkeypatch.setattr(pl_events, "_effective_rows", effective_rows)
     sog = _callback(app, "pl-send-sog-effective-store.data")
     portfolio = _callback(app, "pl-send-portfolio-effective-store.data")
 
-    sog_store, sog_options, selected_sog = sog(1, 7, [], 4, None)
+    sog_store, sog_options, selected_sog = sog(
+        1, 7, [], 4, *([[]] * len(PL_FILTER_FIELDS)), [], None
+    )
     assert [option["value"] for option in sog_options] == ["SOG-A", "SOG-B"]
     assert selected_sog == "SOG-A"
     assert len(sog_store["rows"]) == 2
@@ -232,6 +255,8 @@ def test_open_pl_sections_load_on_odd_parity_and_initialize_filters(
         7,
         ["include"],
         5,
+        *([[]] * len(PL_FILTER_FIELDS)),
+        [],
         "BOOK-B",
     )
     assert [option["value"] for option in portfolio_options] == [
@@ -272,7 +297,6 @@ def test_pl_sections_are_independent_top_level_disclosures() -> None:
     ] == [
         "SOG P&L",
         "Portfolio P&L",
-        "Write PL to S3",
     ]
     assert all(
         [item for item in _walk(detail) if isinstance(item, html.Details)] == [detail]
@@ -288,8 +312,8 @@ def test_pl_sections_are_independent_top_level_disclosures() -> None:
         item.children for item in _walk(explorer) if isinstance(item, html.Summary)
     ] == ["Validate P&L", "Histo P&L"]
     explorer_ids = _string_ids(explorer)
-    assert set(PL_EXPLORER_FILTER_IDS.values()) <= explorer_ids
-    assert PL_EXPLORER_EXCLUDE_ID in explorer_ids
+    assert set(PL_FILTER_IDS.values()).isdisjoint(explorer_ids)
+    assert PL_FILTER_EXCLUDE_ID not in explorer_ids
     assert not any("preview" in component_id for component_id in explorer_ids)
 
 
@@ -298,6 +322,7 @@ def test_native_pl_page_owns_workflow_and_adjustment_state() -> None:
         saved_view_bar=build_saved_filter_view_bar(
             PL_SAVED_VIEW_CONTROLS,
             filter_note=PL_FILTER_NOTE,
+            filter_bar=build_pl_filter_bar(),
         )
     )
     ids = _string_ids(page)
@@ -316,14 +341,23 @@ def test_native_pl_page_owns_workflow_and_adjustment_state() -> None:
         "send-all-pl-button",
         "pl-send-all-status",
         "pnl-explorer",
-        "pnl-explorer-filter-bar",
         "pl-sog-summary",
         "pl-portfolio-summary",
         "pl-validate-summary",
         "pl-history-summary",
     } <= ids
-    assert set(PL_EXPLORER_FILTER_IDS.values()) <= ids
-    assert PL_EXPLORER_EXCLUDE_ID in ids
+    mounted_filter_ids = [
+        getattr(item, "id", None)
+        for item in _walk(page)
+        if getattr(item, "id", None) in set(PL_FILTER_IDS.values())
+    ]
+    assert mounted_filter_ids == [
+        PL_FILTER_IDS[field.key] for field in PL_FILTER_FIELDS
+    ]
+    assert PL_FILTER_EXCLUDE_ID in ids
+    assert "save-pl-button" not in ids
+    assert "save-pl-download" not in ids
+    assert "save-pl-status" not in ids
     assert "pl-preview-summary" not in ids
 
     filters = [
@@ -354,6 +388,8 @@ def test_native_pl_page_owns_workflow_and_adjustment_state() -> None:
     ]
     assert len(saved_view_notes) == 1
     assert "P&L selections remain independent" in saved_view_notes[0].children
+    assert set(PL_FILTER_IDS.values()) <= _string_ids(saved_view_bar)
+    assert PL_FILTER_EXCLUDE_ID in _string_ids(saved_view_bar)
     assert PL_SAVED_VIEW_CONTROLS.scope == "pnl"
     assert PL_SAVED_VIEW_CONTROLS.apply_request_id == "pnl-saved-view-apply-request"
     aggregate_heading = next(
@@ -399,37 +435,35 @@ def test_native_pl_page_owns_workflow_and_adjustment_state() -> None:
     assert "pnl-initial-load-trigger" in _string_ids(cold_page)
 
 
-def test_explorer_filter_reducer_is_the_sole_owner_and_retains_canonical_values(
-    tmp_path: Path,
-) -> None:
-    app, _manager = _registered_pl_app(tmp_path)
-    owner = _callback(
-        app,
-        f"{PL_EXPLORER_FILTER_IDS['activity']}.options",
-    )
-
-    loaded = owner(7, 1, 0, [], [], [], [], [], [])
-    assert loaded[0] == [{"label": "Unmapped", "value": "Unmapped"}]
-    assert {option["value"] for option in loaded[4]} == {"BOOK-A", "BOOK-B"}
-
-    retained = owner(8, 0, 0, [], [], ["book-a"], [], [], ["exclude"])
-    assert retained[5] == ["BOOK-A"]
-    assert retained[-1] == ["exclude"]
-
-    output_owners = {
-        (component_id, prop): 0
-        for component_id in PL_EXPLORER_FILTER_IDS.values()
-        for prop in ("options", "value")
+def test_one_filter_dependency_set_governs_every_pl_consumer(tmp_path: Path) -> None:
+    app, manager = _registered_pl_app(tmp_path)
+    register_pl_aggregate_callbacks(app, manager)
+    register_validate_pl_callbacks(app, tmp_path / "histo")
+    expected = {(PL_FILTER_IDS[field.key], "value") for field in PL_FILTER_FIELDS} | {
+        (PL_FILTER_EXCLUDE_ID, "value")
     }
-    output_owners[(PL_EXPLORER_EXCLUDE_ID, "value")] = 0
-    for metadata in app.callback_map.values():
-        outputs = metadata["output"]
-        outputs = outputs if isinstance(outputs, list) else [outputs]
-        for output in outputs:
-            component_id, prop = str(output).split(".", 1)
-            if (component_id, prop) in output_owners:
-                output_owners[(component_id, prop)] += 1
-    assert set(output_owners.values()) == {1}
+
+    for output_fragment in (
+        "pnl-aggregate-pl-grid.children",
+        "pl-send-sog-effective-store.data",
+        "pl-send-portfolio-effective-store.data",
+        "pl-validate-table.children",
+        "pl-history-grid.children",
+        "pl-history-chart.figure",
+    ):
+        metadata = _callback_metadata(app, output_fragment)
+        dependencies = {(item["id"], item["property"]) for item in metadata["inputs"]}
+        assert expected <= dependencies, output_fragment
+
+    for output_fragment in (
+        "pl-send-all-status.children",
+        "pl-send-sog-status.children",
+        "pl-send-portfolio-status.children",
+        "pl-save-sog-adjustments-status.children",
+    ):
+        metadata = _callback_metadata(app, output_fragment)
+        dependencies = {(item["id"], item["property"]) for item in metadata["state"]}
+        assert expected <= dependencies, output_fragment
 
 
 def test_send_all_builds_once_and_sends_independent_defensive_copies(
@@ -455,8 +489,17 @@ def test_send_all_builds_once_and_sends_independent_defensive_copies(
     build_calls: list[bool] = []
     collapse_calls: list[int] = []
 
-    def effective_rows(_snapshot, _config, *, include_adjustments: bool):
+    def effective_rows(
+        _snapshot,
+        _config,
+        *,
+        include_adjustments: bool,
+        filter_values,
+        exclude_value,
+    ):
         build_calls.append(include_adjustments)
+        assert filter_values[2] == ["BOOK-A"]
+        assert exclude_value == []
         return effective.copy(deep=True), pd.DataFrame(), pd.DataFrame()
 
     def collapse(rows, _mapping, _governance):
@@ -467,7 +510,7 @@ def test_send_all_builds_once_and_sends_independent_defensive_copies(
     monkeypatch.setattr(pl_events, "collapse_pl_send_rows", collapse)
 
     send_all = _callback(app, "pl-send-all-status.children")
-    status = send_all(1)
+    status = send_all(1, [], [], ["BOOK-A"], [], [], [])
 
     assert status == "success · sent 2 governed rows to SOG and Portfolio"
     assert build_calls == [True]
@@ -487,6 +530,62 @@ def test_send_all_builds_once_and_sends_independent_defensive_copies(
         "running": {"send-all-pl-button.disabled": True},
         "runningOff": {"send-all-pl-button.disabled": False},
     }
+
+
+def test_effective_rows_filters_base_and_adjustments_by_governed_portfolio(
+    tmp_path: Path,
+) -> None:
+    manager = build_production_refresh_manager()
+    manager.refresh(force_risk=True, force_pl=True)
+    snapshot = manager.pl_snapshot
+    empty_adjustments = pd.DataFrame(columns=list(PL_SEND_COLUMNS))
+    empty_repository = SimpleNamespace(
+        load=lambda _market_date: empty_adjustments.copy(deep=True)
+    )
+    config = PLSendConfig(
+        mapping_source=Path("data/s08_concerto.csv"),
+        adjustment_repository=empty_repository,
+        send_sog_pl=lambda _frame: None,
+        send_portfolio_pl=lambda _frame: None,
+    )
+    base, _mapping, governance = pl_events._effective_rows(
+        snapshot,
+        config,
+        include_adjustments=False,
+    )
+    portfolios = sorted(base["Portfolio"].astype(str).unique())
+    assert len(portfolios) > 1
+    selected_portfolio = portfolios[0]
+    selected_base = base.loc[base["Portfolio"].eq(selected_portfolio)]
+    adjustment = selected_base.iloc[[0]].copy(deep=True)
+    adjustment["PL"] = 123456.0
+    adjustment["Adjustment"] = True
+    repository = SimpleNamespace(load=lambda _market_date: adjustment.copy(deep=True))
+    config = replace(config, adjustment_repository=repository)
+    selected_filters = [[], [], [selected_portfolio], [], []]
+
+    included, _mapping, included_governance = pl_events._effective_rows(
+        snapshot,
+        config,
+        include_adjustments=True,
+        filter_values=selected_filters,
+        exclude_value=[],
+    )
+    assert set(included["Portfolio"]) == {selected_portfolio}
+    assert set(included_governance["Portfolio"]) == {selected_portfolio}
+    assert included.loc[included["Adjustment"].eq(True), "PL"].tolist() == [123456.0]
+
+    excluded, _mapping, excluded_governance = pl_events._effective_rows(
+        snapshot,
+        config,
+        include_adjustments=True,
+        filter_values=selected_filters,
+        exclude_value=["exclude"],
+    )
+    assert selected_portfolio not in set(excluded["Portfolio"])
+    assert selected_portfolio not in set(excluded_governance["Portfolio"])
+    assert 123456.0 not in excluded["PL"].tolist()
+    assert set(governance["Portfolio"]) >= set(included_governance["Portfolio"])
 
 
 def test_send_all_reports_partial_failure_and_attempts_both_boundaries(
@@ -511,7 +610,7 @@ def test_send_all_reports_partial_failure_and_attempts_both_boundaries(
     monkeypatch.setattr(
         pl_events,
         "_effective_rows",
-        lambda _snapshot, _config, *, include_adjustments: (
+        lambda _snapshot, _config, *, include_adjustments, filter_values, exclude_value: (
             _effective_frame(),
             pd.DataFrame(),
             pd.DataFrame(),
@@ -524,7 +623,7 @@ def test_send_all_reports_partial_failure_and_attempts_both_boundaries(
     )
 
     send_all = _callback(app, "pl-send-all-status.children")
-    status = send_all(1)
+    status = send_all(1, [], [], [], [], [], [])
 
     assert calls == ["SOG", "Portfolio"]
     assert (
@@ -535,7 +634,7 @@ def test_send_all_reports_partial_failure_and_attempts_both_boundaries(
         raise RuntimeError("mapping unavailable")
 
     monkeypatch.setattr(pl_events, "_effective_rows", fail_build)
-    assert send_all(2) == (
+    assert send_all(2, [], [], [], [], [], []) == (
         "Not sent: could not build governed P&L: mapping unavailable"
     )
     assert calls == ["SOG", "Portfolio"]
@@ -637,7 +736,7 @@ def test_pl_aggregate_callback_renders_all_mapped_rows_independently() -> None:
     activity = sorted(prepared["activity"].astype(str).unique())[0]
     selected = [[] for _field in PL_FILTER_FIELDS]
     activity_index = [field.key for field in PL_FILTER_FIELDS].index("activity")
-    selected[activity_index] = [activity]
+    selected[activity_index] = [activity.swapcase()]
     _included_open, included = aggregate(
         "activity",
         manager.health.revision,
@@ -694,7 +793,10 @@ def test_pl_filter_owner_applies_pending_saved_view_after_coalesced_revision(
             dcc.Store(id="data-revision-store", data=manager.health.revision),
             build_pl_page(
                 initial_aggregate_frame=prepared,
-                saved_view_bar=build_saved_filter_view_bar(PL_SAVED_VIEW_CONTROLS),
+                saved_view_bar=build_saved_filter_view_bar(
+                    PL_SAVED_VIEW_CONTROLS,
+                    filter_bar=build_pl_filter_bar(prepared),
+                ),
             ),
         ]
     )
@@ -1105,7 +1207,7 @@ def test_histo_chart_supports_wtd_type_selection_and_observed_rows_only(
     assert [trace.name for trace in predict[0].data] == [PREDICT_TYPE]
 
 
-def test_explorer_portfolio_filter_governs_histo_table_chart_and_open_state(
+def test_page_portfolio_filter_governs_histo_table_chart_and_open_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1147,7 +1249,7 @@ def test_explorer_portfolio_filter_governs_histo_table_chart_and_open_state(
     monkeypatch.setattr(
         pl_events,
         "ctx",
-        SimpleNamespace(triggered_id=PL_EXPLORER_FILTER_IDS["portfolio"]),
+        SimpleNamespace(triggered_id=PL_FILTER_IDS["portfolio"]),
     )
     reset = hierarchy(
         1,
@@ -1224,9 +1326,9 @@ def test_histo_callback_metadata_owns_tree_range_and_series_state(
     assert PL_HISTORY_METRIC_CELL_TYPE in hierarchy["inputs"][3]["id"]
     hierarchy_inputs = {(item["id"], item["property"]) for item in hierarchy["inputs"]}
     assert {
-        (component_id, "value") for component_id in PL_EXPLORER_FILTER_IDS.values()
+        (component_id, "value") for component_id in PL_FILTER_IDS.values()
     } <= hierarchy_inputs
-    assert (PL_EXPLORER_EXCLUDE_ID, "value") in hierarchy_inputs
+    assert (PL_FILTER_EXCLUDE_ID, "value") in hierarchy_inputs
 
     chart = next(
         metadata
@@ -1237,8 +1339,8 @@ def test_histo_callback_metadata_owns_tree_range_and_series_state(
     assert {
         ("pl-history-selection-store", "data"),
         ("pl-history-series-selector", "value"),
-        *{(component_id, "value") for component_id in PL_EXPLORER_FILTER_IDS.values()},
-        (PL_EXPLORER_EXCLUDE_ID, "value"),
+        *{(component_id, "value") for component_id in PL_FILTER_IDS.values()},
+        (PL_FILTER_EXCLUDE_ID, "value"),
         ("pl-history-range-wtd", "n_clicks"),
         ("pl-history-range-mtd", "n_clicks"),
         ("pl-history-range-ytd", "n_clicks"),
@@ -1287,7 +1389,6 @@ def test_manager_app_without_pl_config_omits_inert_workflow(tmp_path: Path) -> N
     config = PLSendConfig(
         mapping_source=Path("data/s08_concerto.csv"),
         adjustment_repository=LocalCsvAdjustmentRepository(tmp_path / "adjustments"),
-        saved_directory=tmp_path / "saved",
         send_sog_pl=lambda _frame: None,
         send_portfolio_pl=lambda _frame: None,
     )
@@ -1319,7 +1420,6 @@ def test_cold_native_pnl_is_safe_before_commit_and_recovers_at_revision_one(
     config = PLSendConfig(
         mapping_source=Path("data/s08_concerto.csv"),
         adjustment_repository=LocalCsvAdjustmentRepository(tmp_path / "adjustments"),
-        saved_directory=tmp_path / "saved",
         send_sog_pl=lambda _frame: None,
         send_portfolio_pl=lambda _frame: None,
     )
@@ -1339,7 +1439,9 @@ def test_cold_native_pnl_is_safe_before_commit_and_recovers_at_revision_one(
     )
     assert "still loading" in str(aggregate_view.children)
     sog = _callback(app, "pl-send-sog-effective-store.data")
-    store, options, selected = sog(1, 0, [], 0, None)
+    store, options, selected = sog(
+        1, 0, [], 0, *([[]] * len(PL_FILTER_FIELDS)), [], None
+    )
     assert (store, options, selected) == ({}, [], None)
 
     manager.refresh(force_risk=True, force_pl=True)

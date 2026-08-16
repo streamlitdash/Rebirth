@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import tomllib
 from pathlib import Path
@@ -52,7 +53,6 @@ def test_stage_bundle_uses_conventional_runtime_names(tmp_path: Path) -> None:
         Path("ui/s11_saved_views.py"),
         Path("ui/s12_plhistory.py"),
         Path("ui/s13_validate_pl.py"),
-        Path("data/saved_views/README.md"),
     ):
         assert (staged / relative_path).read_bytes() == (
             publishing.PROJECT / relative_path
@@ -88,6 +88,27 @@ def test_stage_bundle_uses_conventional_runtime_names(tmp_path: Path) -> None:
     assert not (staged / "s03_publish.py").exists()
     assert not (staged / "tests").exists()
     assert not (staged / "README.md").exists()
+
+
+def test_root_readme_is_the_only_markdown_document() -> None:
+    ignored_directories = {
+        ".git",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".venv",
+        "__pycache__",
+    }
+    markdown_files: list[Path] = []
+    for directory, names, files in os.walk(publishing.PROJECT):
+        names[:] = sorted(name for name in names if name not in ignored_directories)
+        markdown_files.extend(
+            (Path(directory) / name).relative_to(publishing.PROJECT)
+            for name in files
+            if Path(name).suffix.casefold() == ".md"
+        )
+
+    assert sorted(markdown_files) == [Path("README.md")]
 
 
 def test_stage_bundle_excludes_runtime_official_history_leaves(

@@ -859,6 +859,19 @@ details > summary::-webkit-details-marker { display: none; }
 .quick-search-dimension-control label,
 .pl-editor-filter > label { color: var(--text); font-size: 12px; font-weight: 800; }
 
+.controls input:not([type="checkbox"]):not([type="radio"]):not(.DateInput_input),
+.saved-view-name-field input {
+  min-height: 39px;
+  padding: 7px 10px;
+  border: 1px solid var(--outline-strong);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  color: var(--text);
+}
+
+.controls input:not([type="checkbox"]):not([type="radio"]):not(.DateInput_input)::placeholder,
+.saved-view-name-field input::placeholder { color: var(--text-muted); opacity: 1; }
+
 .credit-view-controls { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 18px; margin: 0 0 16px; }
 .credit-measure-control { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-width: min(100%, 260px); color: var(--text); font-size: 12px; font-weight: 750; }
 .credit-measure-control .dash-dropdown { flex: 1 1 180px; min-width: 180px; }
@@ -907,6 +920,128 @@ details > summary::-webkit-details-marker { display: none; }
 .pill-label:has(input:checked) { border-color: var(--text); background: var(--surface-muted); color: var(--text); }
 .view-switch-input,
 .pill-input { margin-right: 6px; accent-color: #111111; }
+
+/* Dash date controls and the react-dates calendar inherit the active theme. */
+.SingleDatePicker,
+.DateRangePicker,
+.SingleDatePickerInput,
+.DateRangePickerInput,
+.DateInput {
+  background: transparent !important;
+  color: var(--text) !important;
+}
+
+.SingleDatePickerInput,
+.DateRangePickerInput {
+  min-height: 39px;
+  overflow: hidden;
+  border: 1px solid var(--outline-strong) !important;
+  border-radius: 8px;
+  background: var(--surface-raised) !important;
+}
+
+.DateInput {
+  min-width: 116px;
+  background: var(--surface-raised) !important;
+}
+
+.DateInput_input {
+  min-height: 37px;
+  padding: 8px 10px !important;
+  border-bottom: 2px solid transparent !important;
+  background: var(--surface-raised) !important;
+  color: var(--text) !important;
+  font-family: var(--font) !important;
+  font-size: 13px !important;
+  font-weight: 700 !important;
+  line-height: 20px !important;
+}
+
+.DateInput_input::placeholder { color: var(--text-muted) !important; opacity: 1; }
+.DateInput_input__focused { border-bottom-color: var(--focus) !important; }
+.DateInput_input__disabled {
+  background: var(--surface-muted) !important;
+  color: var(--text-muted) !important;
+  font-style: normal !important;
+}
+
+.SingleDatePickerInput__disabled,
+.DateRangePickerInput__disabled { background: var(--surface-muted) !important; }
+.DateRangePickerInput_arrow { color: var(--text-muted) !important; }
+.DateRangePickerInput_arrow_svg,
+.DateRangePickerInput_clearDates_svg,
+.DateRangePickerInput_calendarIcon_svg,
+.SingleDatePickerInput_calendarIcon_svg { fill: var(--text-muted) !important; }
+.DateRangePickerInput_clearDates:hover { background: var(--surface-muted) !important; }
+
+.SingleDatePicker_picker,
+.DateRangePicker_picker {
+  z-index: 1100 !important;
+  color: var(--text) !important;
+}
+
+.DayPicker,
+.DayPicker__withBorder,
+.DayPicker_transitionContainer,
+.CalendarMonthGrid,
+.CalendarMonth,
+.CalendarMonth_caption,
+.DayPicker_weekHeader {
+  background: var(--surface-raised) !important;
+  color: var(--text) !important;
+}
+
+.DayPicker__withBorder {
+  border: 1px solid var(--outline-strong) !important;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28) !important;
+}
+
+.CalendarMonth_caption,
+.DayPicker_weekHeader,
+.DayPicker_weekHeader small { color: var(--text) !important; }
+.DayPickerNavigation_button__default {
+  border-color: var(--outline-strong) !important;
+  background: var(--surface) !important;
+  color: var(--text) !important;
+}
+.DayPickerNavigation_button__default:hover { background: var(--surface-muted) !important; }
+.DayPickerNavigation_svg__horizontal { fill: var(--text) !important; }
+
+.CalendarDay__default {
+  border-color: var(--outline) !important;
+  background: var(--surface) !important;
+  color: var(--text) !important;
+}
+.CalendarDay__default:hover {
+  border-color: var(--outline-strong) !important;
+  background: var(--surface-muted) !important;
+  color: var(--text) !important;
+}
+.CalendarDay__outside {
+  background: var(--surface-soft) !important;
+  color: var(--text-soft) !important;
+}
+.CalendarDay__blocked_calendar,
+.CalendarDay__blocked_out_of_range {
+  background: var(--surface-muted) !important;
+  color: var(--text-soft) !important;
+}
+.CalendarDay__selected,
+.CalendarDay__selected:active,
+.CalendarDay__selected:hover {
+  border-color: #111111 !important;
+  background: var(--index) !important;
+  color: #111111 !important;
+}
+.CalendarDay__selected_span,
+.CalendarDay__hovered_span,
+.CalendarDay__hovered_span:hover {
+  border-color: var(--outline-strong) !important;
+  background: var(--selection) !important;
+  color: var(--text) !important;
+}
+.DateInput_fangStroke { stroke: var(--outline-strong) !important; }
+.DateInput_fangShape { fill: var(--surface-raised) !important; }
 
 /* 08. Core tables and semantic rules ------------------------------------ */
 .risk-panel { width: 100%; max-height: min(74vh, 760px); overflow: hidden; border-radius: var(--radius); }
@@ -973,8 +1108,8 @@ details > summary::-webkit-details-marker { display: none; }
   .quick-search-pivot-index,
   .quick-search-pivot-index-header
 ) {
-  border-left: 2px dotted #111111 !important;
-  border-right: 2px dotted #111111 !important;
+  border-left: 2px solid #111111 !important;
+  border-right: 2px solid #111111 !important;
   background: var(--index) !important;
   color: #111111 !important;
 }
@@ -991,8 +1126,8 @@ details > summary::-webkit-details-marker { display: none; }
 
 /* Only semantic Total columns and Cross-view PL columns are yellow. */
 :is(.risk-table, .aggregate-pl-table, .quick-search-pivot-table) :is(th, td).total-column {
-  border-left: 2px dotted #111111 !important;
-  border-right: 2px dotted #111111 !important;
+  border-left: 2px solid #111111 !important;
+  border-right: 2px solid #111111 !important;
   background: var(--total) !important;
   color: #111111 !important;
   font-weight: 900 !important;
@@ -1005,14 +1140,14 @@ details > summary::-webkit-details-marker { display: none; }
 }
 
 .risk-table:not(.alt-risk-table):not(.credit-multi-table) :is(.pl-header, .pl-cell) :is(.metric-header-button, .metric-cell-button, .copy-value) { color: #111111 !important; }
-.pl-block-left { border-left: 2px dotted #111111 !important; }
-.pl-block-right { border-right: 2px dotted #111111 !important; }
+.pl-block-left { border-left: 2px solid #111111 !important; }
+.pl-block-right { border-right: 2px solid #111111 !important; }
 
 /* Totals use 2px rules. Major risk/group rows use 1px rules above and below. */
 .total-row > *,
 .aggregate-total-row > * {
-  border-top: 2px dotted #111111 !important;
-  border-bottom: 2px dotted #111111 !important;
+  border-top: 2px solid #111111 !important;
+  border-bottom: 2px solid #111111 !important;
   font-weight: 900 !important;
   font-size: 16px !important;
 }
@@ -1020,15 +1155,15 @@ details > summary::-webkit-details-marker { display: none; }
 .hierarchy-total-row > *,
 .aggregate-risk-row > *,
 .aggregate-greek-row > * {
-  border-top: 1px dotted #111111 !important;
-  border-bottom: 1px dotted #111111 !important;
+  border-top: 1px solid #111111 !important;
+  border-bottom: 1px solid #111111 !important;
   font-weight: 850 !important;
   font-size: 16px !important;
 }
 
 .quick-search-hierarchy-row:not(.quick-search-hierarchy-leaf) > * {
-  border-top: 1px dotted #111111 !important;
-  border-bottom: 1px dotted #111111 !important;
+  border-top: 1px solid #111111 !important;
+  border-bottom: 1px solid #111111 !important;
 }
 
 .row-toggle,
@@ -1323,7 +1458,7 @@ body.is-pl-datatable-range-dragging,
 body.is-pl-datatable-range-dragging * { cursor: cell !important; user-select: none !important; }
 
 /* Risk Type is the editor's index-like key. PL is ordinary here, not cross/total. */
-.pl-send-table :is(.dash-header, .dash-cell)[data-dash-column="Risk Type"] { border-left: 2px dotted #111111 !important; border-right: 2px dotted #111111 !important; background: var(--index) !important; color: #111111 !important; font-weight: 850 !important; }
+.pl-send-table :is(.dash-header, .dash-cell)[data-dash-column="Risk Type"] { border-left: 2px solid #111111 !important; border-right: 2px solid #111111 !important; background: var(--index) !important; color: #111111 !important; font-weight: 850 !important; }
 .pl-send-table :is(.dash-header, .dash-cell)[data-dash-column="PL"] { background: var(--surface) !important; color: var(--text) !important; font-weight: 850 !important; font-variant-numeric: tabular-nums; text-align: right !important; }
 .pl-send-table .dash-cell[data-dash-column="PL"][style*="color: rgb(180, 35, 24)"],
 .pl-send-table .dash-cell[data-dash-column="PL"][style*="color: #B42318"] { color: var(--negative) !important; }
@@ -1333,11 +1468,9 @@ body.is-pl-datatable-range-dragging * { cursor: cell !important; user-select: no
 
 .pl-send-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .pl-send-actions button { min-height: 36px; padding: 8px 14px; border-radius: 7px; font-size: 12px; font-weight: 800; cursor: pointer; }
-#save-pl-button { min-height: 36px; padding: 8px 14px; border-radius: 7px; font-size: 12px; font-weight: 800; cursor: pointer; }
 .pl-action-secondary { border: 1px solid var(--outline-strong); background: var(--surface); color: var(--text); }
 .pl-action-primary { border: 1px solid #8FACFB; background: var(--index); color: #111111; }
-.pl-action-send,
-#save-pl-button { border: 1px solid #111111; background: #111111; color: #FFFFFF; }
+.pl-action-send { border: 1px solid #111111; background: #111111; color: #FFFFFF; }
 
 /* 13. Supporting panels ------------------------------------------------- */
 .unmapped-panel { margin-top: 14px; padding: 14px; border-radius: var(--radius); }
@@ -1353,14 +1486,13 @@ body.is-pl-datatable-range-dragging * { cursor: cell !important; user-select: no
 /* 14. Dark-mode component exceptions ----------------------------------- */
 :root[data-theme="dark"] .reload-risk-button,
 :root[data-theme="dark"] .force-risk-apply-button,
-:root[data-theme="dark"] .pl-action-send,
-:root[data-theme="dark"] #save-pl-button { border-color: #F5F7F9; background: #F5F7F9; color: #111111; }
+:root[data-theme="dark"] .pl-action-send { border-color: #F5F7F9; background: #F5F7F9; color: #111111; }
 :root[data-theme="dark"] .refresh-portfolios-button { background: var(--index); color: #111111; }
 :root[data-theme="dark"] .market-view-status.is-live { background: #BFE4C7; color: #174C27; }
 :root[data-theme="dark"] .data-source-toggle::before { background: #4B535D; }
 :root[data-theme="dark"] .data-source-toggle.is-on::before { background: var(--index); }
 
-/* Pastels are deliberately invariant, with black text and black dotted rules. */
+/* Pastels are deliberately invariant, with black text and solid rules. */
 :root[data-theme="dark"] :is(.risk-table, .aggregate-pl-table, .quick-search-pivot-table) :is(
   .index-header,
   .index-cell,
@@ -1610,6 +1742,27 @@ body.is-pl-datatable-range-dragging * { cursor: cell !important; user-select: no
   background-color: var(--surface-muted) !important;
 }
 
+[data-theme="dark"] .unmapped-table-wrap .dash-table-container :is(.dash-header, .dash-cell, .dash-row) {
+  border-color: var(--outline) !important;
+  background-color: var(--surface) !important;
+  color: var(--text) !important;
+}
+[data-theme="dark"] .unmapped-table-wrap .dash-table-container .dash-header,
+[data-theme="dark"] .unmapped-table-wrap .dash-table-container .dash-filter-row {
+  background-color: var(--surface-soft) !important;
+  color: var(--text) !important;
+}
+[data-theme="dark"] .unmapped-table-wrap .dash-table-container .dash-filter-row input,
+[data-theme="dark"] .unmapped-table-wrap .dash-table-container .dash-pagination {
+  border-color: var(--outline) !important;
+  background-color: var(--surface) !important;
+  color: var(--text) !important;
+}
+[data-theme="dark"] .unmapped-table-wrap .dash-table-container .dash-cell[style*="color: rgb(180, 35, 24)"],
+[data-theme="dark"] .unmapped-table-wrap .dash-table-container .dash-cell[style*="color: #B42318"] {
+  color: var(--negative) !important;
+}
+
 @media (forced-colors: active) {
   .pl-adjustment-toggle input[type="checkbox"] { appearance: auto; accent-color: Highlight; }
   .pl-adjustment-toggle input[type="checkbox"]::after { content: none; }
@@ -1625,7 +1778,7 @@ body.is-pl-datatable-range-dragging * { cursor: cell !important; user-select: no
 @keyframes refresh-spin { to { transform: rotate(360deg); } }
 
 /* -----------------------------------------------------------------------
-   Heatmap companion table styles (read.md strategy)
+   Heatmap companion table styles
    ----------------------------------------------------------------------- */
 
 .tenor-surface-pair {

@@ -995,30 +995,30 @@ def build_stock_page_shell(
             build_saved_filter_view_bar(
                 STOCK_SAVED_VIEW_CONTROLS,
                 filter_note=STOCK_FILTER_NOTE,
-            ),
-            html.Div(
-                [
-                    html.Div(
-                        [
-                            *filter_controls,
-                            dcc.Checklist(
-                                id="stock-filter-exclude-selected",
-                                options=[
-                                    {
-                                        "label": (
-                                            "Exclude rows matching any selected value"
-                                        ),
-                                        "value": "exclude",
-                                    }
-                                ],
-                                value=[],
-                                className="stock-filter-mode filter-mode-control",
-                            ),
-                        ],
-                        className="controls filter-controls",
-                    ),
-                ],
-                className="dimension-filter-bar top-controls",
+                filter_bar=html.Div(
+                    [
+                        html.Div(
+                            [
+                                *filter_controls,
+                                dcc.Checklist(
+                                    id="stock-filter-exclude-selected",
+                                    options=[
+                                        {
+                                            "label": (
+                                                "Exclude rows matching any selected value"
+                                            ),
+                                            "value": "exclude",
+                                        }
+                                    ],
+                                    value=[],
+                                    className=("stock-filter-mode filter-mode-control"),
+                                ),
+                            ],
+                            className="controls filter-controls",
+                        ),
+                    ],
+                    className="dimension-filter-bar top-controls",
+                ),
             ),
             dcc.Loading(
                 html.Div(

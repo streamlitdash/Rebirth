@@ -69,11 +69,6 @@ def create_app(settings: RuntimeSettings | None = None):
         Path("adjustments"),
         root=project_root,
     )
-    saved_pl_path = resolve_data_path(
-        os.getenv("PL_LOCAL_FALLBACK_PATH"),
-        Path("saved_pl"),
-        root=project_root,
-    )
     historical_pl_path = resolve_data_path(
         os.getenv("PL_HISTORICAL_PATH"),
         Path("data/histo"),
@@ -98,7 +93,6 @@ def create_app(settings: RuntimeSettings | None = None):
     pl_send_config = PLSendConfig(
         mapping_source=mapping_path,
         adjustment_repository=LocalCsvAdjustmentRepository(adjustment_path),
-        saved_directory=saved_pl_path,
         send_sog_pl=send_sog_pl,
         send_portfolio_pl=send_portfolio_pl,
         history_source=combined_pl_history,

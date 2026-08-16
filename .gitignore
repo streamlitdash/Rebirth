@@ -15,7 +15,6 @@ tmp/
 .env.*
 !*.example
 adjustments/
-saved_pl/
 # Official daily archives share the governed data/histo tree. Keep the checked-in
 # legacy demo partitions, but never commit runtime Risk/Colossus/Market snapshots.
 data/histo/*/risk.csv

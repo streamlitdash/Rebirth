@@ -16,7 +16,7 @@ from core.s11_risk_archive import archive_official_snapshot
 from core.s04_pl import HISTORY_MAPPING_STATUS
 from core.s01_schema import UNMAPPED_VALUE
 from ui import s13_validate_pl as validate_pl_module
-from ui.s06_plview import build_pl_send_sections
+from ui.s06_plview import build_pl_filter_bar, build_pl_send_sections
 from ui.s13_validate_pl import (
     build_validate_pl_comparison,
     build_validate_pl_table,
@@ -25,11 +25,10 @@ from ui.s13_validate_pl import (
     register_validate_pl_callbacks,
     toggle_validate_pl_open_paths,
 )
-from ui.s14_pl_explorer import (
-    PL_EXPLORER_FILTER_IDS,
-    apply_pl_explorer_filters,
-    pl_explorer_filter_map,
-    pl_explorer_filter_options,
+from ui.s14_pl_filters import (
+    PL_FILTER_IDS,
+    apply_pl_filters,
+    pl_external_filter_map,
 )
 
 
@@ -183,9 +182,7 @@ def test_comparison_never_copies_colossus_across_ambiguous_products() -> None:
     ]
 
 
-def test_shared_explorer_filters_are_case_insensitive_with_documented_boolean_logic() -> (
-    None
-):
+def test_shared_pl_filters_are_case_insensitive_with_documented_boolean_logic() -> None:
     frame = pd.DataFrame(
         [
             ["Credit", "SOG-A", "BOOK-A", "Core", "IG"],
@@ -201,17 +198,11 @@ def test_shared_explorer_filters_are_case_insensitive_with_documented_boolean_lo
         ],
     )
     original = frame.copy(deep=True)
-    options = pl_explorer_filter_options(
+    selections = pl_external_filter_map([["CREDIT", "rates"], ["sog-a"], [], [], []])
+    included = apply_pl_filters(frame, selections)
+    excluded = apply_pl_filters(
         frame,
-        frame.iloc[[0]].assign(Activity="CREDIT"),
-    )
-    assert [option["value"] for option in options["Activity"]] == ["Credit", "Rates"]
-
-    selections = pl_explorer_filter_map([["CREDIT", "rates"], ["sog-a"], [], [], []])
-    included = apply_pl_explorer_filters(frame, selections)
-    excluded = apply_pl_explorer_filters(
-        frame,
-        pl_explorer_filter_map([["credit"], ["sog-a"], [], [], []]),
+        pl_external_filter_map([["credit"], ["sog-a"], [], [], []]),
         exclude_selected=True,
     )
 
@@ -220,7 +211,7 @@ def test_shared_explorer_filters_are_case_insensitive_with_documented_boolean_lo
     # Exclude removes a row matching Activity OR Signoff Group.
     assert excluded["Portfolio"].tolist() == []
     pd.testing.assert_frame_equal(
-        apply_pl_explorer_filters(frame, pl_explorer_filter_map([[], [], [], [], []])),
+        apply_pl_filters(frame, pl_external_filter_map([[], [], [], [], []])),
         original,
     )
     pd.testing.assert_frame_equal(frame, original)
@@ -402,7 +393,7 @@ def test_validate_pl_discovers_and_renders_only_completed_dates_when_opened(
     incomplete.mkdir(parents=True)
 
     app = Dash(__name__)
-    app.layout = build_validate_pl_section()
+    app.layout = html.Div([build_pl_filter_bar(), build_validate_pl_section()])
     register_validate_pl_callbacks(app, tmp_path)
     key = next(key for key in app.callback_map if "pl-validate-date.options" in key)
     discover = app.callback_map[key]["callback"].__wrapped__
@@ -452,7 +443,7 @@ def test_checked_in_synthetic_archive_is_discoverable_and_renders_validate_pl(
     history_root = Path(__file__).resolve().parents[1] / "data" / "histo"
     demo_date = "2026-08-10"
     app = Dash(__name__)
-    app.layout = build_validate_pl_section()
+    app.layout = html.Div([build_pl_filter_bar(), build_validate_pl_section()])
     register_validate_pl_callbacks(app, history_root)
     catalog_key = next(
         key for key in app.callback_map if "pl-validate-date.options" in key
@@ -501,7 +492,7 @@ def test_checked_in_synthetic_archive_is_discoverable_and_renders_validate_pl(
     assert labels == ["TOTAL", "DEMO-SOG"]
 
 
-def test_validate_callback_uses_explorer_filter_and_resets_open_paths(
+def test_validate_callback_uses_page_filter_and_resets_open_paths(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -526,7 +517,7 @@ def test_validate_callback_uses_explorer_filter_and_resets_open_paths(
     )
     archive_official_snapshot(snapshot, lambda _date: colossus, tmp_path)
     app = Dash(__name__)
-    app.layout = build_validate_pl_section()
+    app.layout = html.Div([build_pl_filter_bar(), build_validate_pl_section()])
     register_validate_pl_callbacks(app, tmp_path)
     render = next(
         metadata["callback"].__wrapped__
@@ -536,7 +527,7 @@ def test_validate_callback_uses_explorer_filter_and_resets_open_paths(
     monkeypatch.setattr(
         validate_pl_module,
         "ctx",
-        SimpleNamespace(triggered_id=PL_EXPLORER_FILTER_IDS["portfolio"]),
+        SimpleNamespace(triggered_id=PL_FILTER_IDS["portfolio"]),
     )
 
     table, status, open_paths = render(

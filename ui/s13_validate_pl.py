@@ -44,11 +44,11 @@ from .s02_constants import (
     ROW_TOGGLE_OPEN_GLYPH,
 )
 from .s03_aggregate import format_number, number_sign_class
-from .s14_pl_explorer import (
-    PL_EXPLORER_EXCLUDE_ID,
-    PL_EXPLORER_FILTER_IDS,
-    apply_pl_explorer_filters,
-    pl_explorer_filter_map,
+from .s14_pl_filters import (
+    PL_FILTER_EXCLUDE_ID,
+    PL_FILTER_IDS,
+    apply_pl_filters,
+    pl_external_filter_map,
 )
 
 
@@ -633,7 +633,7 @@ def build_validate_pl_table(
     if mapped.empty:
         children.append(
             html.Div(
-                "No mapped comparison rows match the Explorer filters.",
+                "No mapped comparison rows match the page filters.",
                 className="empty-state",
                 role="status",
             )
@@ -783,11 +783,8 @@ def register_validate_pl_callbacks(app, root: str | Path) -> None:
         Output("pl-validate-status", "children"),
         Output("pl-validate-open-paths", "data"),
         Input("pl-validate-date", "value"),
-        *[
-            Input(component_id, "value")
-            for component_id in PL_EXPLORER_FILTER_IDS.values()
-        ],
-        Input(PL_EXPLORER_EXCLUDE_ID, "value"),
+        *[Input(component_id, "value") for component_id in PL_FILTER_IDS.values()],
+        Input(PL_FILTER_EXCLUDE_ID, "value"),
         Input({"type": VALIDATE_PL_ROW_TOGGLE_TYPE, "path": ALL}, "n_clicks"),
         State({"type": VALIDATE_PL_ROW_TOGGLE_TYPE, "path": ALL}, "id"),
         State("pl-validate-open-paths", "data"),
@@ -821,8 +818,8 @@ def register_validate_pl_callbacks(app, root: str | Path) -> None:
             and triggered_id
             in {
                 "pl-validate-date",
-                *PL_EXPLORER_FILTER_IDS.values(),
-                PL_EXPLORER_EXCLUDE_ID,
+                *PL_FILTER_IDS.values(),
+                PL_FILTER_EXCLUDE_ID,
             }
             else normalize_validate_pl_open_paths(open_paths)
         )
@@ -835,9 +832,9 @@ def register_validate_pl_callbacks(app, root: str | Path) -> None:
             message = f"Official Risk snapshot {market_date} could not be loaded: {exc}"
             return html.Div(message, className="empty-state"), message, []
 
-        comparison = apply_pl_explorer_filters(
+        comparison = apply_pl_filters(
             comparison,
-            pl_explorer_filter_map(
+            pl_external_filter_map(
                 [
                     activity_filter,
                     signoff_filter,

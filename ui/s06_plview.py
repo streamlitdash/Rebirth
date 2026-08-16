@@ -10,14 +10,13 @@ from dash import dash_table, dcc, html
 from .s02_constants import (
     DEFAULT_VIEW_DIMENSION,
     FILTER_DIMENSION_FIELDS,
-    FILTER_DIMENSION_ORDER,
     VIEW_DIMENSION_FIELDS,
 )
 from .s04_components import build_aggregate_pl_table, build_cube_loader
-from .s11_saved_views import SavedFilterViewControls
+from .s11_saved_views import SavedFilterViewControls, build_saved_filter_view_bar
 from .s12_plhistory import build_pl_history_series_selector
 from .s13_validate_pl import build_validate_pl_section
-from .s14_pl_explorer import PL_EXPLORER_EXCLUDE_ID, PL_EXPLORER_FILTER_IDS
+from .s14_pl_filters import PL_FILTER_EXCLUDE_ID, PL_FILTER_IDS
 
 
 DISPLAY_COLUMNS = (
@@ -32,15 +31,13 @@ DISPLAY_COLUMNS = (
 
 GRID_ROW_ID = "id"
 PL_AGGREGATE_TOGGLE_TYPE = "pnl-aggregate-row-toggle"
-PL_FILTER_ORDER = FILTER_DIMENSION_ORDER
 PL_FILTER_FIELDS = FILTER_DIMENSION_FIELDS
-PL_FILTER_IDS = {field.key: f"pnl-{field.key}-filter" for field in PL_FILTER_FIELDS}
 PL_SAVED_VIEW_CONTROLS = SavedFilterViewControls(
     scope="pnl",
     prefix="pnl",
     fields=PL_FILTER_FIELDS,
     filter_ids=PL_FILTER_IDS,
-    exclude_id="pnl-filter-exclude-selected",
+    exclude_id=PL_FILTER_EXCLUDE_ID,
 )
 PL_FILTER_NOTE = (
     "Include mode uses OR within one filter (for example B or D) and AND across "
@@ -66,13 +63,16 @@ def pl_filter_map(
 
 def pl_filter_options(frame: pd.DataFrame) -> dict[str, list[dict[str, str]]]:
     """Return stable options for each independent P&L reporting filter."""
-    return {
-        field.key: [
-            {"label": value, "value": value}
-            for value in sorted(frame[field.key].dropna().astype(str).unique())
-        ]
-        for field in PL_FILTER_FIELDS
-    }
+    result: dict[str, list[dict[str, str]]] = {}
+    for field in PL_FILTER_FIELDS:
+        canonical: dict[str, str] = {}
+        for raw in frame[field.key].dropna().tolist():
+            value = str(raw).strip()
+            if value:
+                canonical.setdefault(value.casefold(), value)
+        values = sorted(canonical.values(), key=str.casefold)
+        result[field.key] = [{"label": value, "value": value} for value in values]
+    return result
 
 
 def _walk_components(component: object) -> Iterable[object]:
@@ -165,8 +165,8 @@ def _pl_aggregate_section(
     )
 
 
-def _pl_filter_bar(initial_frame: pd.DataFrame | None = None) -> html.Div:
-    """Build the independent five-field P&L filter row in its requested order."""
+def build_pl_filter_bar(initial_frame: pd.DataFrame | None = None) -> html.Div:
+    """Build the single authoritative five-field P&L filter row."""
     options = (
         pl_filter_options(initial_frame)
         if initial_frame is not None and not initial_frame.empty
@@ -194,7 +194,7 @@ def _pl_filter_bar(initial_frame: pd.DataFrame | None = None) -> html.Div:
                 [
                     *controls,
                     dcc.Checklist(
-                        id="pnl-filter-exclude-selected",
+                        id=PL_FILTER_EXCLUDE_ID,
                         options=[
                             {
                                 "label": "Exclude rows matching any selected value",
@@ -209,48 +209,6 @@ def _pl_filter_bar(initial_frame: pd.DataFrame | None = None) -> html.Div:
             ),
         ],
         id="pnl-filter-bar",
-        className="dimension-filter-bar top-controls",
-    )
-
-
-def _pl_explorer_filter_bar() -> html.Div:
-    """Build the namespaced five-field filter authority for both explorers."""
-
-    controls = [
-        html.Div(
-            [
-                html.Label(field.label, htmlFor=PL_EXPLORER_FILTER_IDS[field.key]),
-                dcc.Dropdown(
-                    id=PL_EXPLORER_FILTER_IDS[field.key],
-                    options=[],
-                    value=[],
-                    multi=True,
-                    placeholder=f"All {field.label.casefold()} values",
-                ),
-            ],
-            className="control-field",
-        )
-        for field in PL_FILTER_FIELDS
-    ]
-    return html.Div(
-        html.Div(
-            [
-                *controls,
-                dcc.Checklist(
-                    id=PL_EXPLORER_EXCLUDE_ID,
-                    options=[
-                        {
-                            "label": "Exclude rows matching any selected value",
-                            "value": "exclude",
-                        }
-                    ],
-                    value=[],
-                    className="risk-filter-mode filter-mode-control",
-                ),
-            ],
-            className="controls pnl-filter-controls",
-        ),
-        id="pnl-explorer-filter-bar",
         className="dimension-filter-bar top-controls",
     )
 
@@ -340,8 +298,8 @@ def _editor_table(table_id: str, *, portfolio_editable: bool) -> dash_table.Data
                 "backgroundColor": "#C4DEF5",
                 "color": "#111111",
                 "fontWeight": "850",
-                "borderLeft": "2px dotted #111111",
-                "borderRight": "2px dotted #111111",
+                "borderLeft": "2px solid #111111",
+                "borderRight": "2px solid #111111",
             },
             {
                 "if": {"column_id": "Risk Greek"},
@@ -381,8 +339,8 @@ def _editor_table(table_id: str, *, portfolio_editable: bool) -> dash_table.Data
                 "fontWeight": "850",
                 "fontVariantNumeric": "tabular-nums",
                 "textAlign": "right",
-                "borderLeft": "2px dotted #111111",
-                "borderRight": "2px dotted #111111",
+                "borderLeft": "2px solid #111111",
+                "borderRight": "2px solid #111111",
             },
             {
                 "if": {"column_id": "Adjustment"},
@@ -397,15 +355,15 @@ def _editor_table(table_id: str, *, portfolio_editable: bool) -> dash_table.Data
                 "if": {"column_id": "Risk Type"},
                 "backgroundColor": "#C4DEF5",
                 "color": "#111111",
-                "borderLeft": "2px dotted #111111",
-                "borderRight": "2px dotted #111111",
+                "borderLeft": "2px solid #111111",
+                "borderRight": "2px solid #111111",
             },
             {
                 "if": {"column_id": "PL"},
                 "backgroundColor": "#FFFFE0",
                 "color": "#111111",
-                "borderLeft": "2px dotted #111111",
-                "borderRight": "2px dotted #111111",
+                "borderLeft": "2px solid #111111",
+                "borderRight": "2px solid #111111",
             },
         ],
         style_data_conditional=[
@@ -706,26 +664,6 @@ def build_pl_send_sections() -> list[html.Div | html.Details]:
         ],
         className="aux-details",
     )
-    save = html.Details(
-        [
-            html.Summary("Write PL to S3", className="aux-summary"),
-            html.Div(
-                [
-                    html.P(
-                        "Save Adjustments in the SOG or Portfolio section first. A configured write_pl connector receives every unadjusted raw row plus separately flagged saved adjustment rows. If no connector is configured, Cube writes a clearly identified local CSV fallback and downloads it.",
-                        className="unmapped-note",
-                    ),
-                    html.Button("Write PL to S3", id="save-pl-button", n_clicks=0),
-                    dcc.Download(id="save-pl-download"),
-                    html.Div(
-                        id="save-pl-status", className="pl-send-status", role="status"
-                    ),
-                ],
-                className="pl-send-panel",
-            ),
-        ],
-        className="aux-details",
-    )
     validate_pl = build_validate_pl_section()
     history = html.Details(
         [
@@ -849,13 +787,10 @@ def build_pl_send_sections() -> list[html.Div | html.Details]:
         [
             html.H2("P&L Explorer", className="static-data-page-title"),
             html.P(
-                "Use one filter set for both Validate P&L and Histo P&L. Include "
-                "mode uses OR within one selector and AND across selectors; "
-                "exclude mode removes a row matching any selected value. Missing "
+                "The page filter also governs Validate P&L and Histo P&L. Missing "
                 "Predict or Colossus values remain unavailable rather than zero.",
                 className="static-data-page-note",
             ),
-            _pl_explorer_filter_bar(),
             validate_pl,
             history,
         ],
@@ -881,7 +816,6 @@ def build_pl_send_sections() -> list[html.Div | html.Details]:
         send_all,
         by_sog,
         by_portfolio,
-        save,
         explorer,
     ]
 
@@ -893,7 +827,7 @@ def build_pl_page(
     initial_aggregate_frame: pd.DataFrame | None = None,
     saved_view_bar: object | None = None,
 ) -> html.Main:
-    """Build the native P&L page and its independent Aggregate P&L state."""
+    """Build the native P&L page around one authoritative filter set."""
     workflow_sections = (
         build_pl_send_sections()
         if send_workflow_available
@@ -928,16 +862,23 @@ def build_pl_page(
                 html.P(
                     (
                         "Review mapped Aggregate P&L, edit and send it by SOG or "
-                        "Portfolio, write the complete file, and explore official "
-                        "Predict versus Colossus P&L."
+                        "Portfolio, and explore official Predict versus Colossus "
+                        "P&L. The one saved-view filter governs every section."
                         if send_workflow_available
                         else "Review mapped Aggregate P&L from the latest committed "
                         "risk refresh."
                     ),
                     className="static-data-page-note",
                 ),
-                saved_view_bar,
-                _pl_filter_bar(initial_aggregate_frame),
+                (
+                    saved_view_bar
+                    if saved_view_bar is not None
+                    else build_saved_filter_view_bar(
+                        PL_SAVED_VIEW_CONTROLS,
+                        filter_note=PL_FILTER_NOTE,
+                        filter_bar=build_pl_filter_bar(initial_aggregate_frame),
+                    )
+                ),
                 _pl_aggregate_section(initial_aggregate_frame),
                 *workflow_sections,
             ],
@@ -952,14 +893,13 @@ __all__ = [
     "DISPLAY_COLUMNS",
     "GRID_ROW_ID",
     "PL_AGGREGATE_TOGGLE_TYPE",
-    "PL_EXPLORER_EXCLUDE_ID",
-    "PL_EXPLORER_FILTER_IDS",
     "PL_FILTER_FIELDS",
+    "PL_FILTER_EXCLUDE_ID",
     "PL_FILTER_IDS",
     "PL_FILTER_NOTE",
-    "PL_FILTER_ORDER",
     "PL_SAVED_VIEW_CONTROLS",
     "build_pl_aggregate_table",
+    "build_pl_filter_bar",
     "build_pl_page",
     "build_pl_send_sections",
     "pl_filter_map",

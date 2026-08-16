@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from ui.s02_constants import ROW_TOGGLE_CLOSED_GLYPH, ROW_TOGGLE_OPEN_GLYPH
@@ -56,6 +57,39 @@ def test_row_toggles_share_fixed_glyph_geometry() -> None:
     assert "height: 20px" in spacer
     assert "margin: 0 6px 0 0" in spacer
     assert ".stock-hierarchy-level-label" not in source
+
+
+def test_table_borders_are_solid_and_hierarchy_uses_width_for_emphasis() -> None:
+    stylesheet = (_ROOT / "assets" / "s01_style.css").read_text(encoding="utf-8")
+    ui_sources = "\n".join(
+        path.read_text(encoding="utf-8") for path in sorted((_ROOT / "ui").glob("*.py"))
+    )
+    border_pattern = re.compile(
+        r"border[^\n;,]*\b(?:dotted|dashed)\b",
+        re.IGNORECASE,
+    )
+
+    assert border_pattern.search(stylesheet) is None
+    assert border_pattern.search(ui_sources) is None
+    assert "border-top: 2px solid #111111" in stylesheet
+    assert "border-top: 1px solid #111111" in stylesheet
+    assert "border-left: 2px solid #111111" in stylesheet
+
+
+def test_dark_theme_styles_date_inputs_and_calendar_surface() -> None:
+    stylesheet = (_ROOT / "assets" / "s01_style.css").read_text(encoding="utf-8")
+
+    for selector in (
+        ".SingleDatePickerInput",
+        ".DateRangePickerInput",
+        ".DateInput_input",
+        ".DayPicker_transitionContainer",
+        ".CalendarDay__default",
+        ".CalendarDay__selected",
+    ):
+        assert selector in stylesheet
+    assert "background: var(--surface-raised) !important" in stylesheet
+    assert "color: var(--text) !important" in stylesheet
 
 
 def test_quick_risk_client_sync_preserves_canonical_disclosure_state() -> None:
