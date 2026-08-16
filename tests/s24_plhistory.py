@@ -129,17 +129,26 @@ def test_history_tree_is_lazy_and_uses_global_latest_date_for_stale_nodes() -> N
         for item in _walk(tree)
         if isinstance(item, html.Th) and "header" in str(item.className or "")
     ]
-    assert headers == ["Index", DAILY_P_PERIOD, "▾ MTD", "▾ YTD"]
-    row_toggle_paths = {
-        item.id["path"]
+    assert headers == ["Index", DAILY_P_PERIOD, "▸ MTD", "▸ YTD"]
+    row_toggles = [
+        item
         for item in _walk(tree)
         if isinstance(getattr(item, "id", None), dict)
         and item.id.get("type") == PL_HISTORY_ROW_TOGGLE_TYPE
-    }
-    assert row_toggle_paths == {
+    ]
+    assert {item.id["path"] for item in row_toggles} == {
         pl_history_path_token(("IR",)),
         pl_history_path_token(("FX",)),
     }
+    assert {item.children for item in row_toggles} == {"▸"}
+    assert all(
+        item.to_plotly_json()["props"]["aria-expanded"] == "false"
+        for item in row_toggles
+    )
+    assert all(
+        item.to_plotly_json()["props"]["aria-label"].startswith("Expand Risk Type: ")
+        for item in row_toggles
+    )
 
     # IR remains available even though only FX exists on the global latest day.
     assert _text(_metric_button(table, ("IR",), DAILY_P_PERIOD, PREDICT_TYPE)) == "—"
@@ -173,6 +182,17 @@ def test_history_tree_matches_risk_explorer_and_period_headers_toggle() -> None:
         ir_delta,
         pl_history_path_token(("FX",)),
     }
+    ir_toggle = next(
+        item
+        for item in _walk(table)
+        if isinstance(getattr(item, "id", None), dict)
+        and item.id.get("type") == PL_HISTORY_ROW_TOGGLE_TYPE
+        and item.id.get("path") == ir
+    )
+    assert ir_toggle.children == "−"
+    assert ir_toggle.to_plotly_json()["props"]["aria-label"] == (
+        "Collapse Risk Type: IR"
+    )
     assert "Risk Greek" not in _text(table)
     assert "Underlying" not in _text(table)
 
@@ -205,7 +225,7 @@ def test_history_tree_matches_risk_explorer_and_period_headers_toggle() -> None:
         for item in _walk(compared)
         if isinstance(item, html.Th) and "header" in str(item.className or "")
     ]
-    assert headers == ["Index", DAILY_P_PERIOD, "− MTD (C)", "MTD (P)", "▾ YTD"]
+    assert headers == ["Index", DAILY_P_PERIOD, "− MTD (C)", "MTD (P)", "▸ YTD"]
     period_headers = [
         item
         for item in _walk(compared)
@@ -238,6 +258,35 @@ def test_history_tree_matches_risk_explorer_and_period_headers_toggle() -> None:
         "− YTD (C)",
         "YTD (P)",
     ]
+
+    leaf_open: list[str] = []
+    for path in (
+        ("IR",),
+        ("IR", "Delta"),
+        ("IR", "Delta", "EUR"),
+        ("IR", "Delta", "EUR", "XVA"),
+    ):
+        leaf_open = toggle_pl_history_open_tokens(
+            leaf_open,
+            pl_history_path_token(path),
+        )
+    leaf_table, _open, _periods, _selection = build_pl_history_table_with_state(
+        history,
+        open_path_tokens=leaf_open,
+    )
+    leaf_spacers = [
+        item
+        for item in _walk(leaf_table)
+        if isinstance(item, html.Button)
+        and "pl-history-row-toggle" in str(item.className or "").split()
+        and bool(item.to_plotly_json()["props"].get("disabled"))
+    ]
+    assert len(leaf_spacers) == 1
+    leaf_props = leaf_spacers[0].to_plotly_json()["props"]
+    assert leaf_props["children"] == ""
+    assert leaf_props["tabIndex"] == -1
+    assert leaf_props["aria-hidden"] == "true"
+    assert "aria-expanded" not in leaf_props
 
     closed = toggle_pl_history_expanded_periods(comparison_state, MTD_PERIOD)
     assert closed == []

@@ -176,7 +176,7 @@ while tests and hosted workers can construct more than one app factory.
 - `tools/s01_fixtures.py` deterministically rebuilds and validates fake data.
 - `tools/s02_manual.py` creates the diagrams and this manual's PDF.
 - Tests are uniquely numbered from `s01_schema.py` through
-  `s26_new_trades.py`:
+  `s27_expandable_visuals.py`:
   schema, checker/dates, adapters, MarketBook, P&L/storage, UI, integration,
   feed cache, lazy P&L/factory behavior, targeted snapshot
   reads, deterministic fixture generation, cold-start ownership/watchdog, then
@@ -186,7 +186,8 @@ while tests and hosted workers can construct more than one app factory.
   inline recovered private connector blocks, the inline recovered pipeline
   contracts, refresh/date lifecycle contracts, shared saved views, and the
   expandable Colossus/Predict history explorer, portfolio-level XGAMMA
-  validation/development, and integrated New Trades reference/P&L publication.
+  validation/development, integrated New Trades reference/P&L publication, and
+  the shared expandable-table visual contract.
 
 | Test file | Main boundary proved |
 |---|---|
@@ -216,6 +217,7 @@ while tests and hosted workers can construct more than one app factory.
 | `tests/s24_plhistory.py` | Lazy Colossus/Predict hierarchy, period comparisons, WTD/date windows, type selection, and observed-only chart behavior. |
 | `tests/s25_cross_gamma.py` | Exact XGAMMA matrix schema, adapter-owned XGamma/XGamma Vega source classification, ProductSpec axes, MarketBook scope, stored-Move development, output summation, and fail-closed input/output-market behavior. |
 | `tests/s26_new_trades.py` | Integrated traded-level/Open-reference P&L, official-market preservation, Cash Flow identity calculation, execution metadata, and manager publication. |
+| `tests/s27_expandable_visuals.py` | Shared hierarchy-toggle glyphs, dimensions, spacing, browser synchronization, and removal of obsolete Stock level captions. |
 
 ## What happens on startup
 

@@ -648,6 +648,10 @@ def test_stock_hierarchy_uses_risk_explorer_semantic_table_contract() -> None:
     )
     assert all(isinstance(row.children[0], html.Th) for row in rows)
     assert all("index-cell" in str(row.children[0].className) for row in rows)
+    assert not any(
+        "stock-hierarchy-level-label" in str(getattr(item, "className", "")).split()
+        for item in _walk(tree)
+    )
 
     toggles = [
         item
@@ -659,6 +663,15 @@ def test_stock_hierarchy_uses_risk_explorer_semantic_table_contract() -> None:
     assert toggles
     assert all("row-toggle" in str(toggle.className).split() for toggle in toggles)
     assert {toggle.children for toggle in toggles} == {"▸"}
+    assert all(
+        toggle.to_plotly_json()["props"]["aria-label"].startswith("Expand ")
+        for toggle in toggles
+    )
+    assert all(
+        toggle.to_plotly_json()["props"]["title"]
+        == toggle.to_plotly_json()["props"]["aria-label"]
+        for toggle in toggles
+    )
 
     macro_path = stock_hierarchy_path_token(("Macro",))
     opened_tree, effective_open_tokens = build_stock_hierarchy_with_state(
@@ -676,6 +689,9 @@ def test_stock_hierarchy_uses_risk_explorer_semantic_table_contract() -> None:
     )
     assert macro_toggle.children == "−"
     assert macro_toggle.to_plotly_json()["props"]["aria-expanded"] == "true"
+    assert macro_toggle.to_plotly_json()["props"]["aria-label"].startswith(
+        "Collapse Activity: Macro"
+    )
 
     metric_cells = [item for item in _walk(tree) if isinstance(item, html.Td)]
     assert any(

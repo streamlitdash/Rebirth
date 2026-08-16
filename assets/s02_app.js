@@ -1927,7 +1927,8 @@
       const action = expanded ? "Collapse" : "Expand";
       const dimension = row.dataset.quickSearchDimension || "level";
       const label = row.dataset.quickSearchLabel || "group";
-      toggle.textContent = expanded ? "\u25be" : "\u203a";
+      toggle.textContent = expanded ? "\u2212" : "\u25b8";
+      row.setAttribute("aria-expanded", String(expanded));
       toggle.setAttribute("aria-expanded", String(expanded));
       toggle.setAttribute("aria-label", `${action} ${dimension}: ${label}`);
       toggle.title = `${action} ${dimension}: ${label}`;

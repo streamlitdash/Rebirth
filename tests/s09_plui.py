@@ -768,7 +768,7 @@ def test_histo_data_is_lazy_expandable_and_reuses_the_loaded_history(
         for item in _walk(table)
         if isinstance(item, html.Th) and "header" in str(item.className or "")
     ]
-    assert headers == ["Index", DAILY_P_PERIOD, "▾ MTD", "▾ YTD"]
+    assert headers == ["Index", DAILY_P_PERIOD, "▸ MTD", "▸ YTD"]
     assert "Risk Type" not in _text(table)
     assert "Risk Greek" not in _text(table)
     closed_toggle_ids = [
@@ -842,7 +842,7 @@ def test_histo_data_is_lazy_expandable_and_reuses_the_loaded_history(
         for item in _walk(compared[0])
         if isinstance(item, html.Th) and "header" in str(item.className or "")
     ]
-    assert headers == ["Index", DAILY_P_PERIOD, "− MTD (C)", "MTD (P)", "▾ YTD"]
+    assert headers == ["Index", DAILY_P_PERIOD, "− MTD (C)", "MTD (P)", "▸ YTD"]
     assert not any(isinstance(item, html.Small) for item in _walk(compared[0]))
     compared_buttons = [
         item

@@ -933,7 +933,6 @@ details > summary::-webkit-details-marker { display: none; }
 .stock-hierarchy-table { min-width: 1120px; }
 .stock-hierarchy-table .stock-hierarchy-position-count,
 .stock-hierarchy-table .stock-hierarchy-position-count-header { min-width: 78px; }
-.stock-hierarchy-table .stock-hierarchy-level-label { margin-left: 8px; color: var(--text-muted); font-size: 10px; font-weight: 750; text-transform: uppercase; }
 .stock-hierarchy-table .stock-hierarchy-metric { display: block; }
 .stock-hierarchy-table .stock-hierarchy-row:hover > :not(.index-cell) { background: var(--surface-soft); }
 
@@ -1045,7 +1044,10 @@ details > summary::-webkit-details-marker { display: none; }
   border-radius: 3px;
   background: transparent;
   color: inherit;
+  font-family: inherit;
+  font-size: 14px;
   font-weight: 900;
+  line-height: 1;
   cursor: pointer;
   vertical-align: middle;
 }
@@ -1158,7 +1160,7 @@ body.is-range-selecting :is(.risk-table, .cell-selection-table) * { cursor: cell
 .quick-search-pivot-table .quick-search-pivot-index-header { min-width: 250px; max-width: 420px; }
 .quick-search-pivot-table .quick-search-first-index { position: sticky; left: 0; z-index: 2; }
 .quick-search-pivot-table thead .quick-search-first-index { z-index: 5; }
-.quick-search-hierarchy-toggle-spacer { display: inline-block; width: 20px; height: 20px; margin-right: 4px; vertical-align: middle; }
+.quick-search-hierarchy-toggle-spacer { display: inline-block; width: 20px; height: 20px; margin: 0 6px 0 0; vertical-align: middle; }
 .quick-search-hierarchy-root > .quick-search-hierarchy-index { font-weight: 900; }
 .quick-search-pivot-metric-header { min-width: 126px; }
 .quick-search-number { text-align: right !important; font-variant-numeric: tabular-nums; }

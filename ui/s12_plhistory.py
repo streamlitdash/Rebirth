@@ -22,7 +22,11 @@ from core.s04_pl import (
     pl_history_period_values,
 )
 
-from .s02_constants import RISK_TYPE_ORDER
+from .s02_constants import (
+    RISK_TYPE_ORDER,
+    ROW_TOGGLE_CLOSED_GLYPH,
+    ROW_TOGGLE_OPEN_GLYPH,
+)
 from .s03_aggregate import format_number
 
 
@@ -299,11 +303,12 @@ def _period_header(
     if history_type == PREDICT_TYPE and period != DAILY_P_PERIOD:
         classes.append("metric-child")
     if history_type == COLOSSUS_TYPE and period in PL_HISTORY_EXPANDABLE_PERIODS:
-        action = "Hide" if expanded else "Show"
+        action = "Collapse" if expanded else "Expand"
         comparison = f"{period} Colossus and Predict columns"
         return html.Th(
             html.Button(
-                f"{'−' if expanded else '▾'} {label}",
+                f"{ROW_TOGGLE_OPEN_GLYPH if expanded else ROW_TOGGLE_CLOSED_GLYPH} "
+                f"{label}",
                 id={"type": PL_HISTORY_PERIOD_HEADER_TYPE, "period": period},
                 n_clicks=0,
                 type="button",
@@ -424,9 +429,10 @@ def build_pl_history_table_with_state(
         is_open = path in effective_open_paths
         index_children: list[object] = []
         if not is_leaf:
+            action = "Collapse" if is_open else "Expand"
             index_children.append(
                 html.Button(
-                    "−" if is_open else "▸",
+                    (ROW_TOGGLE_OPEN_GLYPH if is_open else ROW_TOGGLE_CLOSED_GLYPH),
                     id={
                         "type": PL_HISTORY_ROW_TOGGLE_TYPE,
                         "path": pl_history_path_token(path),
@@ -434,8 +440,11 @@ def build_pl_history_table_with_state(
                     n_clicks=0,
                     type="button",
                     className="row-toggle pl-history-row-toggle",
-                    title="Close branch" if is_open else "Open branch",
-                    **{"aria-expanded": str(is_open).lower()},
+                    title=f"{action} {row[_LEVEL]}: {row[_LABEL]}",
+                    **{
+                        "aria-label": f"{action} {row[_LEVEL]}: {row[_LABEL]}",
+                        "aria-expanded": str(is_open).lower(),
+                    },
                 )
             )
         else:

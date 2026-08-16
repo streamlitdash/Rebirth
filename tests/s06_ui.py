@@ -16,11 +16,14 @@ from ui.s04_components import (
     build_quick_market_result,
     build_quick_market_search,
     build_quick_search,
+    build_quick_search_pivot,
     build_small_table,
     build_tenor_heatmap,
+    build_top_book_exposures,
     build_tree_rows,
     build_unmapped_books_table,
     detail_tenor_view_state,
+    metric_header,
 )
 from ui.s03_aggregate import ordered_unique, row_key
 from ui.s07_events import _prune_quick_search_indexes, _render_quick_search_pivot
@@ -759,6 +762,22 @@ def test_semantic_total_rows_are_bold_divided_across_the_full_row() -> None:
     assert len(rows) == 4
     assert all("hierarchy-total-row" in str(row.className) for row in rows[:3])
     assert "hierarchy-total-row" not in str(rows[3].className)
+    assert [row.to_plotly_json()["props"]["aria-level"] for row in rows] == [
+        "1",
+        "2",
+        "3",
+        "4",
+    ]
+
+    toggles = [row.children[0].children[0] for row in rows]
+    assert [toggle.children for toggle in toggles] == ["−", "−", "−", ""]
+    assert all("row-toggle" in str(toggle.className).split() for toggle in toggles)
+    assert all(
+        row.to_plotly_json()["props"]["aria-expanded"] == "true" for row in rows[:3]
+    )
+    assert "aria-expanded" not in rows[3].to_plotly_json()["props"]
+    assert toggles[3].to_plotly_json()["props"]["aria-hidden"] == "true"
+    assert "aria-expanded" not in toggles[3].to_plotly_json()["props"]
 
     stylesheet = (
         Path(__file__).resolve().parents[1] / "assets" / "s01_style.css"
@@ -769,3 +788,126 @@ def test_semantic_total_rows_are_bold_divided_across_the_full_row() -> None:
     assert "border-top: 1px dotted #111111" in selector
     assert "border-bottom: 1px dotted #111111" in selector
     assert "font-weight: 850" in selector
+
+
+def test_quick_risk_uses_the_shared_row_disclosure_contract() -> None:
+    frame = pd.DataFrame(
+        [
+            {
+                QUICK_SEARCH_HIERARCHY_DEPTH: 1,
+                "Risk Type": "IR",
+                "Risk Greek": pd.NA,
+                "Risk": 10.0,
+                "dRisk": 2.0,
+                "PL": 1.0,
+                "Open": 3.0,
+                "Current": 4.0,
+                "Move": 1.0,
+            },
+            {
+                QUICK_SEARCH_HIERARCHY_DEPTH: 2,
+                "Risk Type": "IR",
+                "Risk Greek": "Delta",
+                "Risk": 10.0,
+                "dRisk": 2.0,
+                "PL": 1.0,
+                "Open": 3.0,
+                "Current": 4.0,
+                "Move": 1.0,
+            },
+        ]
+    )
+
+    component = build_quick_search_pivot(
+        frame,
+        combine_udl="IR | Delta | USD-SOFR",
+        index_columns=("Risk Type", "Risk Greek"),
+    )
+    table = next(item for item in _walk(component) if isinstance(item, html.Table))
+    rows = [
+        item
+        for item in _walk(table)
+        if isinstance(item, html.Tr)
+        and "quick-search-hierarchy-row" in str(getattr(item, "className", "")).split()
+    ]
+    root_toggle = rows[0].children[0].children[0]
+    leaf_spacer = rows[1].children[0].children[0]
+
+    assert table.role == "treegrid"
+    assert root_toggle.children == "−"
+    assert {"row-toggle", "quick-search-hierarchy-toggle"} <= set(
+        str(root_toggle.className).split()
+    )
+    assert rows[0].to_plotly_json()["props"]["aria-expanded"] == "true"
+    assert "aria-expanded" not in rows[1].to_plotly_json()["props"]
+    assert leaf_spacer.children == ""
+    assert "row-toggle" in str(leaf_spacer.className).split()
+    assert leaf_spacer.to_plotly_json()["props"]["aria-hidden"] == "true"
+
+    browser_source = (
+        Path(__file__).resolve().parents[1] / "assets" / "s02_app.js"
+    ).read_text(encoding="utf-8")
+    assert 'toggle.textContent = expanded ? "\\u2212" : "\\u25b8";' in browser_source
+
+
+def test_metric_header_uses_the_shared_disclosure_glyphs_and_language() -> None:
+    closed = metric_header("risk", []).children
+    opened = metric_header("risk", ["risk"]).children
+
+    assert closed.children == "▸ Risk"
+    assert closed.to_plotly_json()["props"]["aria-expanded"] == "false"
+    assert closed.to_plotly_json()["props"]["aria-label"].startswith("Expand ")
+    assert opened.children == "− Risk"
+    assert opened.to_plotly_json()["props"]["aria-expanded"] == "true"
+    assert opened.to_plotly_json()["props"]["aria-label"].startswith("Collapse ")
+
+
+def test_top_book_cells_use_real_metric_classes_and_shared_tree_semantics() -> None:
+    component = build_top_book_exposures(
+        pd.DataFrame(
+            [
+                {
+                    "risk type": "IR",
+                    "risk greek": "Delta",
+                    "reported underlying": "USD-SOFR",
+                    "promotion reason": "Big Risk",
+                    "promotion score": 2.0,
+                    "risk": 10.0,
+                    "drisk": 2.0,
+                    "pl": 1.0,
+                }
+            ]
+        )
+    )
+    table = next(item for item in _walk(component) if isinstance(item, html.Table))
+    rows = [
+        item
+        for item in _walk(table)
+        if isinstance(item, html.Tr)
+        and "group-row" in str(getattr(item, "className", "")).split()
+    ]
+    metric_cells = [
+        item
+        for item in _walk(table)
+        if isinstance(item, html.Td)
+        and "metric-cell" in str(getattr(item, "className", "")).split()
+    ]
+
+    assert table.role == "treegrid"
+    assert [row.to_plotly_json()["props"]["aria-level"] for row in rows] == [
+        "1",
+        "2",
+        "3",
+        "4",
+    ]
+    assert [row.children[0].children[0].children for row in rows] == [
+        "−",
+        "−",
+        "−",
+        "",
+    ]
+    assert metric_cells
+    assert all(
+        "metric-class(column, [])" not in str(cell.className) for cell in metric_cells
+    )
+    assert all("metric-cell" in str(cell.className).split() for cell in metric_cells)

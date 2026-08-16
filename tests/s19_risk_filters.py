@@ -516,16 +516,70 @@ def test_warm_risk_layout_pre_renders_default_tables_and_filter_state() -> None:
 def test_aggregate_toggle_ids_match_the_registered_pattern_callback() -> None:
     prepared = prepare_risk_data(_raw_risk_frame())
     table = build_aggregate_pl_table(prepared, "activity", [])
-    toggle_ids = [
-        item.id
+    toggles = [
+        item
         for item in _walk(table)
         if isinstance(getattr(item, "id", None), dict)
         and item.id.get("type") == "aggregate-row-toggle"
     ]
+    toggle_ids = [item.id for item in toggles]
 
     assert toggle_ids
     assert all(
         set(component_id) == {"type", "risk_type"} for component_id in toggle_ids
+    )
+    assert all(toggle.children == "▸" for toggle in toggles)
+    assert all(
+        {"row-toggle", "aggregate-row-toggle"} <= set(str(toggle.className).split())
+        for toggle in toggles
+    )
+    assert all(
+        toggle.to_plotly_json()["props"]["aria-expanded"] == "false"
+        for toggle in toggles
+    )
+    assert all(
+        toggle.title == toggle.to_plotly_json()["props"]["aria-label"]
+        and str(toggle.title).startswith("Expand ")
+        for toggle in toggles
+    )
+    aggregate_table = next(
+        item for item in _walk(table) if isinstance(item, html.Table)
+    )
+    risk_rows = [
+        item
+        for item in _walk(aggregate_table)
+        if isinstance(item, html.Tr)
+        and getattr(item, "className", None) == "aggregate-risk-row"
+    ]
+    assert aggregate_table.role == "treegrid"
+    assert all(
+        row.to_plotly_json()["props"]["aria-level"] == "1"
+        and row.to_plotly_json()["props"]["aria-expanded"] == "false"
+        for row in risk_rows
+    )
+
+    expanded_table = build_aggregate_pl_table(prepared, "activity", ["IR"])
+    ir_toggle = next(
+        item
+        for item in _walk(expanded_table)
+        if isinstance(getattr(item, "id", None), dict)
+        and item.id == {"type": "aggregate-row-toggle", "risk_type": "IR"}
+    )
+    assert ir_toggle.title == "Collapse IR greeks"
+    assert ir_toggle.to_plotly_json()["props"]["aria-label"] == ir_toggle.title
+    greek_rows = [
+        item
+        for item in _walk(expanded_table)
+        if isinstance(item, html.Tr)
+        and getattr(item, "className", None) == "aggregate-greek-row"
+    ]
+    assert ir_toggle.children == "−"
+    assert ir_toggle.to_plotly_json()["props"]["aria-expanded"] == "true"
+    assert greek_rows
+    assert all(
+        row.to_plotly_json()["props"]["aria-level"] == "2"
+        and "aria-expanded" not in row.to_plotly_json()["props"]
+        for row in greek_rows
     )
 
     app = build_app(refresh_manager=_warm_manager())

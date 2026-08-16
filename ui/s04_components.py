@@ -58,6 +58,8 @@ from .s02_constants import (
     METRIC_COLUMNS,
     PLOT_METRICS,
     RISK_TYPE_ORDER,
+    ROW_TOGGLE_CLOSED_GLYPH,
+    ROW_TOGGLE_OPEN_GLYPH,
     ROW_KEY_COLUMNS,
     TOP_EXPOSURE_GROUPS,
     TOP_EXPOSURE_LABELS,
@@ -422,7 +424,7 @@ def build_quick_search_pivot(
         if has_children:
             state = "Collapse" if is_open else "Expand"
             index_toggle: html.Button | html.Span = html.Button(
-                "\u25be" if is_open else "\u203a",
+                ROW_TOGGLE_OPEN_GLYPH if is_open else ROW_TOGGLE_CLOSED_GLYPH,
                 type="button",
                 className="row-toggle quick-search-hierarchy-toggle",
                 title=f"{state} {index_dimension}: {display_value}",
@@ -432,9 +434,12 @@ def build_quick_search_pivot(
                 },
             )
         else:
-            index_toggle = html.Span(
+            index_toggle = html.Button(
                 "",
-                className="quick-search-hierarchy-toggle-spacer",
+                type="button",
+                className="row-toggle quick-search-hierarchy-toggle-spacer",
+                disabled=True,
+                tabIndex=-1,
                 **{"aria-hidden": "true"},
             )
 
@@ -495,20 +500,23 @@ def build_quick_search_pivot(
             row_classes.append("quick-search-hierarchy-root")
         if not has_children:
             row_classes.append("quick-search-hierarchy-leaf")
+        row_props = {
+            "aria-level": str(depth),
+            "data-quick-search-depth": str(depth),
+            "data-quick-search-path": path,
+            "data-quick-search-parent-path": parent_path,
+            "data-quick-search-open": str(is_open).lower(),
+            "data-quick-search-label": display_value,
+            "data-quick-search-dimension": index_dimension,
+        }
+        if has_children:
+            row_props["aria-expanded"] = str(is_open).lower()
         rows.append(
             html.Tr(
                 cells,
                 className=" ".join(row_classes),
                 hidden=depth > 2,
-                **{
-                    "aria-level": str(depth),
-                    "data-quick-search-depth": str(depth),
-                    "data-quick-search-path": path,
-                    "data-quick-search-parent-path": parent_path,
-                    "data-quick-search-open": str(is_open).lower(),
-                    "data-quick-search-label": display_value,
-                    "data-quick-search-dimension": index_dimension,
-                },
+                **row_props,
             )
         )
 
@@ -1518,13 +1526,16 @@ def metric_header(column: str, expanded_metrics: list[str]) -> html.Th:
         )
         return html.Th(
             html.Button(
-                f"{'Hide' if expanded else '▾'} {metric_title(column)}",
+                f"{ROW_TOGGLE_OPEN_GLYPH if expanded else ROW_TOGGLE_CLOSED_GLYPH} "
+                f"{metric_title(column)}",
                 type="button",
                 className="metric-header-button",
-                title=f"{'Hide' if expanded else 'Show'} {breakdown_names}",
+                title=f"{'Collapse' if expanded else 'Expand'} {breakdown_names}",
                 **{
                     "data-risk-metric": column,
-                    "aria-label": f"{'Hide' if expanded else 'Show'} {breakdown_names}",
+                    "aria-label": (
+                        f"{'Collapse' if expanded else 'Expand'} {breakdown_names}"
+                    ),
                     "aria-expanded": str(expanded).lower(),
                 },
             ),
@@ -1606,15 +1617,27 @@ def build_tree_rows(
             else None
         )
         indent = 14 + depth * 18
-        toggle_props = {
+        toggle_props: dict[str, object] = {
             "type": "button",
             "className": "row-toggle",
-            "title": ("Expand" if not is_open else "Collapse") + f" {value}",
-            "disabled": not can_expand,
-            "aria-label": ("Expand" if not is_open else "Collapse") + f" {value}",
-            "aria-expanded": str(is_open).lower() if can_expand else "false",
         }
-        if not delegated_actions:
+        if can_expand:
+            toggle_props.update(
+                {
+                    "title": ("Collapse" if is_open else "Expand") + f" {value}",
+                    "aria-label": ("Collapse" if is_open else "Expand") + f" {value}",
+                    "aria-expanded": str(is_open).lower(),
+                }
+            )
+        else:
+            toggle_props.update(
+                {
+                    "disabled": True,
+                    "tabIndex": -1,
+                    "aria-hidden": "true",
+                }
+            )
+        if can_expand and not delegated_actions:
             toggle_props.update(
                 {
                     "id": {"type": toggle_type, "key": key},
@@ -1622,7 +1645,9 @@ def build_tree_rows(
                 }
             )
         label = html.Button(
-            ("−" if is_open else "▸") if can_expand else "",
+            (ROW_TOGGLE_OPEN_GLYPH if is_open else ROW_TOGGLE_CLOSED_GLYPH)
+            if can_expand
+            else "",
             **toggle_props,
         )
         index_children = [
@@ -1700,8 +1725,18 @@ def build_tree_rows(
             row_classes.append("hierarchy-total-row")
         if group_column == "display bucket" and value != "Other":
             row_classes.append("promoted-underlying-row")
-        row_props = {"data-risk-key": key} if delegated_actions else {}
-        rows.append(html.Tr(cells, className=" ".join(row_classes), **row_props))
+        row_props: dict[str, object] = {"aria-level": str(depth + 1)}
+        if delegated_actions:
+            row_props["data-risk-key"] = key
+        if can_expand:
+            row_props["aria-expanded"] = str(is_open).lower()
+        rows.append(
+            html.Tr(
+                cells,
+                className=" ".join(row_classes),
+                **row_props,
+            )
+        )
         if can_expand and is_open:
             rows.extend(
                 build_tree_rows(
@@ -1840,6 +1875,8 @@ def build_risk_table(
                     html.Tbody(body_rows),
                 ],
                 className="risk-table",
+                role="treegrid",
+                **{"aria-label": f"{index_label} risk hierarchy"},
             ),
         ],
         className="risk-table-wrap",
@@ -2005,6 +2042,8 @@ def build_alt_risk_table(
                     html.Tbody(body_rows),
                 ],
                 className="risk-table alt-risk-table",
+                role="treegrid",
+                **{"aria-label": f"{index_label} risk hierarchy"},
             ),
         ],
         className="risk-table-wrap",
@@ -2184,6 +2223,8 @@ def build_credit_multi_table(
                     html.Tbody(body_rows),
                 ],
                 className="risk-table credit-multi-table",
+                role="treegrid",
+                **{"aria-label": "Credit risk hierarchy"},
             ),
         ],
         className="risk-table-wrap credit-multi-wrap",
@@ -2240,23 +2281,28 @@ def build_aggregate_pl_table(
     for risk_type in ordered_unique(frame, "risk type"):
         scoped_type = frame.loc[frame["risk type"].eq(risk_type)]
         is_open = risk_type in open_set
+        toggle_action = "Collapse" if is_open else "Expand"
+        toggle_label = f"{toggle_action} {risk_type} greeks"
         rows.append(
             html.Tr(
                 [
                     html.Th(
                         [
                             html.Button(
-                                "⌄" if is_open else "›",
+                                (
+                                    ROW_TOGGLE_OPEN_GLYPH
+                                    if is_open
+                                    else ROW_TOGGLE_CLOSED_GLYPH
+                                ),
                                 id={
                                     "type": "aggregate-row-toggle",
                                     "risk_type": risk_type,
                                 },
                                 n_clicks=0,
-                                className="aggregate-row-toggle",
-                                title="Close greeks" if is_open else "Open greeks",
+                                className="row-toggle aggregate-row-toggle",
+                                title=toggle_label,
                                 **{
-                                    "aria-label": ("Collapse" if is_open else "Expand")
-                                    + f" {risk_type} greeks",
+                                    "aria-label": toggle_label,
                                     "aria-expanded": str(is_open).lower(),
                                 },
                             ),
@@ -2269,6 +2315,10 @@ def build_aggregate_pl_table(
                     *pl_cells(scoped_type),
                 ],
                 className="aggregate-risk-row",
+                **{
+                    "aria-level": "1",
+                    "aria-expanded": str(is_open).lower(),
+                },
             )
         )
         if is_open:
@@ -2278,7 +2328,7 @@ def build_aggregate_pl_table(
                     html.Tr(
                         [
                             html.Th(
-                                greek,
+                                html.Span(greek, className="row-label-text"),
                                 scope="row",
                                 className="aggregate-index aggregate-greek",
                                 **{
@@ -2289,6 +2339,7 @@ def build_aggregate_pl_table(
                             *pl_cells(scoped_greek),
                         ],
                         className="aggregate-greek-row",
+                        **{"aria-level": "2"},
                     )
                 )
 
@@ -2345,6 +2396,8 @@ def build_aggregate_pl_table(
                     html.Tbody(rows),
                 ],
                 className="cell-selection-table aggregate-pl-table",
+                role="treegrid",
+                **{"aria-label": "Aggregate P&L hierarchy"},
             ),
         ],
         className="risk-table-wrap aggregate-pl-table-wrap",
@@ -2529,7 +2582,7 @@ def build_top_book_exposures(
         cells: list[html.Td] = []
         for column in columns:
             value = scoped[column].sum(min_count=1)
-            cell_class = f"metric-class(column, []) {number_sign_class(value)}"
+            cell_class = f"{metric_class(column, [])} {number_sign_class(value)}"
             display_value = (
                 format_number(value, column=column)
                 if should_show_sum(column, context)
@@ -2620,6 +2673,8 @@ def build_top_book_exposures(
                     html.Tbody(rows),
                 ],
                 className="risk-table top-book-table top-book-cross-table",
+                role="treegrid",
+                **{"aria-label": "Top Book exposure hierarchy"},
             ),
         ],
         className="risk-table-wrap top-book-table-wrap top-book-cross-wrap",

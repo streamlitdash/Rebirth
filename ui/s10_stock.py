@@ -43,7 +43,11 @@ from core.s07_stock import (
     normalize_stock_promotion_threshold,
     summarize_visible_stock_hierarchy,
 )
-from .s02_constants import FILTER_DIMENSION_FIELDS
+from .s02_constants import (
+    FILTER_DIMENSION_FIELDS,
+    ROW_TOGGLE_CLOSED_GLYPH,
+    ROW_TOGGLE_OPEN_GLYPH,
+)
 from .s11_saved_views import (
     SavedFilterViewControls,
     build_saved_filter_view_bar,
@@ -260,9 +264,10 @@ def _stock_hierarchy_row_cells(
     if total:
         index_children.append(html.Span(label, className="row-label-text"))
     elif expandable:
+        action = "Collapse" if is_open else "Expand"
         index_children.append(
             html.Button(
-                "−" if is_open else "▸",
+                ROW_TOGGLE_OPEN_GLYPH if is_open else ROW_TOGGLE_CLOSED_GLYPH,
                 id={
                     "type": STOCK_HIERARCHY_TOGGLE_TYPE,
                     "path": stock_hierarchy_path_token(path),
@@ -270,10 +275,9 @@ def _stock_hierarchy_row_cells(
                 n_clicks=0,
                 className="row-toggle stock-hierarchy-toggle",
                 type="button",
-                title="Close branch" if is_open else "Open branch",
+                title=f"{action} {level}: {label}",
                 **{
-                    "aria-label": ("Collapse" if is_open else "Expand")
-                    + f" {level} {label}",
+                    "aria-label": f"{action} {level}: {label}",
                     "aria-expanded": str(is_open).lower(),
                 },
             )
@@ -290,12 +294,7 @@ def _stock_hierarchy_row_cells(
             )
         )
     if not total:
-        index_children.extend(
-            [
-                html.Span(label, className="row-label-text"),
-                html.Span(level, className="stock-hierarchy-level-label"),
-            ]
-        )
+        index_children.append(html.Span(label, className="row-label-text"))
 
     cells: list[object] = [
         html.Th(
