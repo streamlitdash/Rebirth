@@ -830,6 +830,12 @@ def test_stock_filter_ids_and_store_are_independent_from_risk() -> None:
         and {"controls", "filter-controls"}
         <= set(str(getattr(component, "className", "")).split())
     )
+    saved_view_bar = next(
+        component
+        for component in _walk(shell)
+        if isinstance(component, html.Details)
+        and getattr(component, "id", None) == "stock-saved-view-bar"
+    )
     compare_action = next(
         component
         for component in _walk(shell)
@@ -843,13 +849,25 @@ def test_stock_filter_ids_and_store_are_independent_from_risk() -> None:
     assert compare_action.children[0].children == "Compare"
     assert compare_action.children[1].id == "stock-compare-button"
     assert compare_action.children[1].type == "button"
-    assert [control.children[0].children for control in filter_row.children] == [
+    filter_fields = filter_row.children[: len(FILTER_DIMENSION_FIELDS)]
+    assert [control.children[0].children for control in filter_fields] == [
         "Activity",
         "Signoff Group",
         "Portfolio",
         "Category",
         "Sub Category",
     ]
+    assert filter_row.children[-1].id == "stock-filter-exclude-selected"
+    assert "filter-mode-control" in str(filter_row.children[-1].className).split()
+    saved_view_notes = [
+        component
+        for component in _walk(saved_view_bar)
+        if isinstance(component, html.Div)
+        and "saved-view-filter-note"
+        in set(str(getattr(component, "className", "")).split())
+    ]
+    assert len(saved_view_notes) == 1
+    assert "Stock selections remain independent" in saved_view_notes[0].children
     assert "dimension-filter-store" not in ids
     assert not (set(DIMENSION_FILTER_IDS.values()) & ids)
 

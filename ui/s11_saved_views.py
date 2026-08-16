@@ -85,8 +85,13 @@ def build_saved_filter_view_bar(
     controls: SavedFilterViewControls,
     *,
     initial_views: Sequence[SavedFilterView] = (),
+    filter_note: str | None = None,
 ) -> html.Details:
-    """Build a collapsed shared-view editor above a page's filter controls."""
+    """Build a collapsed shared-view editor above a page's filter controls.
+
+    ``filter_note`` keeps page-specific include/exclude guidance inside this
+    disclosure so the copy disappears whenever Saved views is closed.
+    """
 
     return html.Details(
         [
@@ -188,6 +193,16 @@ def build_saved_filter_view_bar(
                             ),
                         ],
                         className="saved-view-copy",
+                    ),
+                    *(
+                        [
+                            html.Div(
+                                filter_note,
+                                className="filter-note saved-view-filter-note",
+                            )
+                        ]
+                        if filter_note
+                        else []
                     ),
                 ],
                 className="saved-filter-view-panel",

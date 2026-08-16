@@ -59,11 +59,12 @@ from .s11_saved_views import (
 )
 from .s12_plhistory import (
     PL_HISTORY_METRIC_CELL_TYPE,
+    PL_HISTORY_PERIOD_HEADER_TYPE,
     PL_HISTORY_ROW_TOGGLE_TYPE,
     build_pl_history_figure,
     build_pl_history_table_with_state,
     pl_history_path_from_token,
-    toggle_pl_history_comparison_tokens,
+    toggle_pl_history_expanded_periods,
     toggle_pl_history_open_tokens,
 )
 
@@ -966,11 +967,15 @@ def register_pl_send_callbacks(
         Input("pl-history-summary", "n_clicks"),
         Input({"type": PL_HISTORY_ROW_TOGGLE_TYPE, "path": ALL}, "n_clicks"),
         Input(
+            {"type": PL_HISTORY_PERIOD_HEADER_TYPE, "period": ALL},
+            "n_clicks",
+        ),
+        Input(
             {
                 "type": PL_HISTORY_METRIC_CELL_TYPE,
                 "path": ALL,
                 "period": ALL,
-                "comparison": ALL,
+                "series": ALL,
             },
             "n_clicks",
         ),
@@ -982,6 +987,7 @@ def register_pl_send_callbacks(
     def render_historical_pl_hierarchy(
         summary_clicks,
         _row_clicks,
+        _period_header_clicks,
         _metric_clicks,
         open_path_tokens,
         open_comparison_tokens,
@@ -1041,6 +1047,15 @@ def register_pl_send_callbacks(
                 trigger.get("path"),
             )
         elif (
+            has_click(_period_header_clicks)
+            and isinstance(trigger, dict)
+            and trigger.get("type") == PL_HISTORY_PERIOD_HEADER_TYPE
+        ):
+            next_comparisons = toggle_pl_history_expanded_periods(
+                open_comparison_tokens,
+                trigger.get("period"),
+            )
+        elif (
             has_click(_metric_clicks)
             and isinstance(trigger, dict)
             and trigger.get("type") == PL_HISTORY_METRIC_CELL_TYPE
@@ -1051,12 +1066,6 @@ def register_pl_send_callbacks(
                     "path": list(path),
                     "period": str(trigger.get("period", "")),
                 }
-            comparison = trigger.get("comparison")
-            if comparison:
-                next_comparisons = toggle_pl_history_comparison_tokens(
-                    open_comparison_tokens,
-                    comparison,
-                )
         elif not next_selection:
             next_selection = {"path": []}
 

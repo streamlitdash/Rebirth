@@ -88,6 +88,12 @@ RISK_SAVED_VIEW_CONTROLS = SavedFilterViewControls(
     filter_ids=DIMENSION_FILTER_IDS,
     exclude_id="risk-filter-exclude-selected",
 )
+RISK_FILTER_NOTE = (
+    "Include mode uses OR within one filter (B or D) and AND across filters "
+    "(Credit and Portfolio B or D). Exclude mode removes a row if it matches "
+    "any selected value in any populated filter. Leave a filter blank for all "
+    "values; Risk selections remain independent from Stock and P&L."
+)
 
 NEW_TRADE_SPLIT = NEW_TRADES_SPLIT
 NEW_TRADE_DETAIL_COLUMNS = (
@@ -4903,33 +4909,32 @@ def build_layout(
             )
             if refresh_enabled
             else None,
-            build_saved_filter_view_bar(RISK_SAVED_VIEW_CONTROLS)
+            build_saved_filter_view_bar(
+                RISK_SAVED_VIEW_CONTROLS,
+                filter_note=RISK_FILTER_NOTE,
+            )
             if refresh_enabled
             else None,
             html.Div(
                 [
                     html.Div(
-                        "Include mode uses OR within one filter (B or D) and AND "
-                        "across filters (Credit and Portfolio B or D). Exclude mode "
-                        "removes a row if it matches any selected value in any "
-                        "populated filter. Leave a filter blank for all values; "
-                        "Risk selections remain independent from Stock and P&L.",
-                        className="filter-note",
-                    ),
-                    html.Div(
-                        dimension_filter_controls,
-                        className="controls filter-controls",
-                    ),
-                    dcc.Checklist(
-                        id="risk-filter-exclude-selected",
-                        options=[
-                            {
-                                "label": "Exclude rows matching any selected value",
-                                "value": "exclude",
-                            }
+                        [
+                            *dimension_filter_controls,
+                            dcc.Checklist(
+                                id="risk-filter-exclude-selected",
+                                options=[
+                                    {
+                                        "label": (
+                                            "Exclude rows matching any selected value"
+                                        ),
+                                        "value": "exclude",
+                                    }
+                                ],
+                                value=[],
+                                className="risk-filter-mode filter-mode-control",
+                            ),
                         ],
-                        value=[],
-                        className="risk-filter-mode",
+                        className="controls filter-controls",
                     ),
                 ],
                 className="dimension-filter-bar top-controls",

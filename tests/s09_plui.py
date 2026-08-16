@@ -25,6 +25,7 @@ from ui.s06_plview import (
     PL_AGGREGATE_TOGGLE_TYPE,
     PL_FILTER_FIELDS,
     PL_FILTER_IDS,
+    PL_FILTER_NOTE,
     PL_SAVED_VIEW_CONTROLS,
     build_pl_aggregate_table,
     build_pl_page,
@@ -40,9 +41,8 @@ from ui.s12_plhistory import (
     DAILY_P_PERIOD,
     MTD_PERIOD,
     PL_HISTORY_METRIC_CELL_TYPE,
+    PL_HISTORY_PERIOD_HEADER_TYPE,
     PL_HISTORY_ROW_TOGGLE_TYPE,
-    YTD_PERIOD,
-    pl_history_comparison_token,
     pl_history_path_token,
 )
 
@@ -57,6 +57,17 @@ def _walk(component: object) -> Iterable[object]:
             yield from _walk(child)
     else:
         yield from _walk(children)
+
+
+def _text(component: object) -> str:
+    if component is None:
+        return ""
+    if isinstance(component, (str, int, float)):
+        return str(component)
+    children = getattr(component, "children", None)
+    if isinstance(children, (list, tuple)):
+        return "".join(_text(child) for child in children)
+    return _text(children)
 
 
 def _history_frame() -> pd.DataFrame:
@@ -289,7 +300,12 @@ def test_pl_sections_are_independent_top_level_disclosures() -> None:
 
 
 def test_native_pl_page_owns_workflow_and_adjustment_state() -> None:
-    page = build_pl_page()
+    page = build_pl_page(
+        saved_view_bar=build_saved_filter_view_bar(
+            PL_SAVED_VIEW_CONTROLS,
+            filter_note=PL_FILTER_NOTE,
+        )
+    )
     ids = _string_ids(page)
 
     assert getattr(page, "id", None) == "pnl-page-container"
@@ -316,6 +332,28 @@ def test_native_pl_page_owns_workflow_and_adjustment_state() -> None:
         if isinstance(item, dcc.Dropdown) and item.id in set(PL_FILTER_IDS.values())
     ]
     assert filters == [PL_FILTER_IDS[field.key] for field in PL_FILTER_FIELDS]
+    filter_row = next(
+        item
+        for item in _walk(page)
+        if isinstance(item, html.Div)
+        and "pnl-filter-controls" in set(str(getattr(item, "className", "")).split())
+    )
+    assert filter_row.children[-1].id == "pnl-filter-exclude-selected"
+    assert "filter-mode-control" in str(filter_row.children[-1].className).split()
+    saved_view_bar = next(
+        item
+        for item in _walk(page)
+        if isinstance(item, html.Details)
+        and getattr(item, "id", None) == "pnl-saved-view-bar"
+    )
+    saved_view_notes = [
+        item
+        for item in _walk(saved_view_bar)
+        if isinstance(item, html.Div)
+        and "saved-view-filter-note" in set(str(getattr(item, "className", "")).split())
+    ]
+    assert len(saved_view_notes) == 1
+    assert "P&L selections remain independent" in saved_view_notes[0].children
     assert PL_SAVED_VIEW_CONTROLS.scope == "pnl"
     assert PL_SAVED_VIEW_CONTROLS.apply_request_id == "pnl-saved-view-apply-request"
     aggregate_heading = next(
@@ -709,12 +747,12 @@ def test_histo_data_is_lazy_expandable_and_reuses_the_loaded_history(
         "ctx",
         SimpleNamespace(triggered_id="pl-history-summary"),
     )
-    closed = history_callback(0, [], [], [], [], {})
+    closed = history_callback(0, [], [], [], [], [], {})
     assert all(value is no_update for value in closed)
 
     monkeypatch.setattr(pl_events, "load_pl_history", real_loader)
     table, status, minimum, maximum, open_paths, comparisons, selection = (
-        history_callback(1, [], [], [], [], {})
+        history_callback(1, [], [], [], [], [], {})
     )
     assert isinstance(table, html.Div)
     assert "Expand only the branches you need" in status
@@ -726,11 +764,13 @@ def test_histo_data_is_lazy_expandable_and_reuses_the_loaded_history(
     assert comparisons == []
     assert selection == {"path": []}
     headers = [
-        item.children
+        _text(item)
         for item in _walk(table)
         if isinstance(item, html.Th) and "header" in str(item.className or "")
     ]
-    assert headers == ["P&L hierarchy", DAILY_P_PERIOD, MTD_PERIOD, YTD_PERIOD]
+    assert headers == ["Index", DAILY_P_PERIOD, "▾ MTD", "▾ YTD"]
+    assert "Risk Type" not in _text(table)
+    assert "Risk Greek" not in _text(table)
     closed_toggle_ids = [
         item.id
         for item in _walk(table)
@@ -761,6 +801,7 @@ def test_histo_data_is_lazy_expandable_and_reuses_the_loaded_history(
         1,
         [1],
         [],
+        [],
         open_paths,
         comparisons,
         selection,
@@ -775,7 +816,47 @@ def test_histo_data_is_lazy_expandable_and_reuses_the_loaded_history(
     assert pl_history_path_token(("IR", "Delta")) in {
         item["path"] for item in expanded_toggle_ids
     }
-    comparison_token = pl_history_comparison_token(("IR",), MTD_PERIOD)
+    monkeypatch.setattr(
+        pl_events,
+        "ctx",
+        SimpleNamespace(
+            triggered_id={
+                "type": PL_HISTORY_PERIOD_HEADER_TYPE,
+                "period": MTD_PERIOD,
+            }
+        ),
+    )
+    compared = history_callback(
+        1,
+        [],
+        [1],
+        [],
+        expanded[4],
+        expanded[5],
+        expanded[6],
+    )
+    assert compared[5] == [MTD_PERIOD]
+    assert compared[6] == {"path": []}
+    headers = [
+        _text(item)
+        for item in _walk(compared[0])
+        if isinstance(item, html.Th) and "header" in str(item.className or "")
+    ]
+    assert headers == ["Index", DAILY_P_PERIOD, "− MTD (C)", "MTD (P)", "▾ YTD"]
+    assert not any(isinstance(item, html.Small) for item in _walk(compared[0]))
+    compared_buttons = [
+        item
+        for item in _walk(compared[0])
+        if isinstance(getattr(item, "id", None), dict)
+        and item.id.get("type") == PL_HISTORY_METRIC_CELL_TYPE
+        and item.id.get("path") == ir_token
+        and item.id.get("period") == MTD_PERIOD
+    ]
+    assert {item.id["series"] for item in compared_buttons} == {
+        COLOSSUS_TYPE,
+        PREDICT_TYPE,
+    }
+
     monkeypatch.setattr(
         pl_events,
         "ctx",
@@ -784,40 +865,39 @@ def test_histo_data_is_lazy_expandable_and_reuses_the_loaded_history(
                 "type": PL_HISTORY_METRIC_CELL_TYPE,
                 "path": ir_token,
                 "period": MTD_PERIOD,
-                "comparison": comparison_token,
+                "series": COLOSSUS_TYPE,
             }
         ),
     )
-    compared = history_callback(
+    selected = history_callback(
         1,
         [],
+        [],
         [1],
-        expanded[4],
-        expanded[5],
-        expanded[6],
+        compared[4],
+        compared[5],
+        compared[6],
     )
-    assert compared[5] == [comparison_token]
-    assert compared[6] == {"path": ["IR"], "period": MTD_PERIOD}
-    compared_button = next(
-        item
-        for item in _walk(compared[0])
-        if isinstance(getattr(item, "id", None), dict)
-        and item.id.get("type") == PL_HISTORY_METRIC_CELL_TYPE
-        and item.id.get("path") == ir_token
-        and item.id.get("period") == MTD_PERIOD
-    )
-    assert "is-expanded" in compared_button.className
-    assert {
-        item.children for item in _walk(compared_button) if isinstance(item, html.Small)
-    } == {"C", "P"}
+    assert selected[6] == {"path": ["IR"], "period": MTD_PERIOD}
 
+    monkeypatch.setattr(
+        pl_events,
+        "ctx",
+        SimpleNamespace(
+            triggered_id={
+                "type": PL_HISTORY_PERIOD_HEADER_TYPE,
+                "period": MTD_PERIOD,
+            }
+        ),
+    )
     collapsed_comparison = history_callback(
         1,
         [],
         [2],
-        compared[4],
-        compared[5],
-        compared[6],
+        [],
+        selected[4],
+        selected[5],
+        selected[6],
     )
     assert collapsed_comparison[5] == []
     assert collapsed_comparison[6] == {"path": ["IR"], "period": MTD_PERIOD}
@@ -834,7 +914,7 @@ def test_histo_chart_supports_wtd_type_selection_and_observed_rows_only(
         "ctx",
         SimpleNamespace(triggered_id="pl-history-summary"),
     )
-    hierarchy_callback(1, [], [], [], [], {})
+    hierarchy_callback(1, [], [], [], [], [], {})
 
     def forbidden(*_args, **_kwargs):
         raise AssertionError("chart interaction reloaded P&L history")
@@ -931,7 +1011,8 @@ def test_histo_callback_metadata_owns_tree_range_and_series_state(
     ]
     assert {item["property"] for item in hierarchy["inputs"]} == {"n_clicks"}
     assert PL_HISTORY_ROW_TOGGLE_TYPE in hierarchy["inputs"][1]["id"]
-    assert PL_HISTORY_METRIC_CELL_TYPE in hierarchy["inputs"][2]["id"]
+    assert PL_HISTORY_PERIOD_HEADER_TYPE in hierarchy["inputs"][2]["id"]
+    assert PL_HISTORY_METRIC_CELL_TYPE in hierarchy["inputs"][3]["id"]
 
     chart = next(
         metadata

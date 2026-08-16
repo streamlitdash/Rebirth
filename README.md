@@ -687,7 +687,10 @@ other page's live selection.
 The named-view catalogue is nevertheless shared by all three pages. A view
 created in Risk is offered in Stock and P&L, but it affects Stock or P&L only
 after the user explicitly selects it there. The collapsed **Saved views**
-disclosure above each filter row keeps this occasional control out of the way.
+disclosure above each filter row keeps this occasional control out of the way;
+the full include/exclude explanation is inside that disclosure and disappears
+when it is closed. The page-local **Exclude rows matching any selected value**
+checkbox sits inside the same grey panel as the five selectors.
 Its always-present **Base / No view** option clears that page's five filters and
 restores include mode. With Base active, **Save New** creates a named view; with
 a named view active, the same action becomes **Update View** and atomically
@@ -709,6 +712,12 @@ The main tables use one hierarchy engine and market-aware aggregation. Changing
 Risk Type, IR family, Cross/SplitVA, dimension, or credit measure rebuilds only
 the visible table. Rendered table trees and filtered frames use small bounded
 revision-local caches.
+
+IR keeps three family tabs. Delta orders `Delta`, `Inflation`, `Gamma`, `Bond`,
+then `XGamma`; Basis orders `XCCY`, then `Basis`; Vega orders `DeltaVega`,
+`InflationVega`, `XCCYVega`, then `XGamma Vega`. The XGamma source sensitivities
+therefore remain visible inside the corresponding ordinary Delta/Vega family
+rather than creating separate tabs.
 
 Top Book Exposures is also lazy: its disclosure starts with no table children.
 On first open, `default_top_book_open_rows` expands Label, Risk Type, and Risk
@@ -850,11 +859,14 @@ hierarchy identities; `load_historical_pl` remains available only to callers
 that explicitly retain that separate legacy contract.
 
 The Histo P&L table starts at Risk Type and creates lower hierarchy rows only as
-their chevrons are opened. It has three period columns:
+their chevrons are opened. Its index uses the same clean labels, indentation,
+and chevrons as Risk Explorer, without repeating hierarchy-level names beside
+each row. It has three period columns:
 
 - **Daily (P)** is Predict only for the latest Market Date.
-- **MTD** and **YTD** display Colossus by default. Clicking either cell reveals
-  its inline Colossus/Predict comparison for that exact hierarchy scope.
+- **MTD** and **YTD** display Colossus by default. Clicking either column header
+  expands that whole period into Colossus and Predict columns; values themselves
+  do not repeat `C`/`P` badges on every row.
 
 Selecting a period cell also selects its hierarchy scope for the plot. The plot
 type selector can show Colossus, Predict, or Both. Range presets are **WTD**

@@ -110,6 +110,8 @@ def test_filter_order_is_the_same_explicit_five_column_contract() -> None:
     assert "grid-template-columns: repeat(5, minmax(120px, 1fr));" in css
     assert ".saved-filter-view-disclosure[open]" in css
     assert ".saved-filter-view-panel" in css
+    assert ".saved-view-filter-note" in css
+    assert ".filter-mode-control" in css
 
 
 def test_repository_is_shared_deterministic_and_atomic(tmp_path: Path) -> None:
@@ -303,7 +305,11 @@ def test_repository_serializes_concurrent_writers(tmp_path: Path) -> None:
 
 
 def test_saved_view_editor_is_collapsed_with_an_always_present_base() -> None:
-    bar = build_saved_filter_view_bar(RISK_SAVED_VIEW_CONTROLS)
+    filter_note = "Include mode help stays inside this disclosure."
+    bar = build_saved_filter_view_bar(
+        RISK_SAVED_VIEW_CONTROLS,
+        filter_note=filter_note,
+    )
     components = list(_walk(bar))
     selector = next(
         item
@@ -336,6 +342,13 @@ def test_saved_view_editor_is_collapsed_with_an_always_present_base() -> None:
     }
     assert "shared across Risk, Stock, and P&L" in copy
     assert "restart or redeploy" in copy
+    notes = [
+        item
+        for item in components
+        if isinstance(item, html.Div)
+        and "saved-view-filter-note" in str(getattr(item, "className", "")).split()
+    ]
+    assert [note.children for note in notes] == [filter_note]
 
 
 def test_request_store_is_validated_and_detects_later_manual_edits(

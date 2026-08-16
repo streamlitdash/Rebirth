@@ -61,6 +61,12 @@ STOCK_SAVED_VIEW_CONTROLS = SavedFilterViewControls(
     filter_ids=STOCK_FILTER_IDS,
     exclude_id="stock-filter-exclude-selected",
 )
+STOCK_FILTER_NOTE = (
+    "Include mode uses OR within one filter (B or D) and AND across filters "
+    "(Credit and Portfolio B or D). Exclude mode removes a row if it matches any "
+    "selected value in any populated filter. Leave a filter blank for all values; "
+    "Stock selections remain independent from Risk and P&L."
+)
 STOCK_HIERARCHY_METRICS = (
     PRIOR_QUANTITY_COLUMN,
     CURRENT_QUANTITY_COLUMN,
@@ -987,31 +993,30 @@ def build_stock_page_shell(
                 ],
                 className="controls top-controls",
             ),
-            build_saved_filter_view_bar(STOCK_SAVED_VIEW_CONTROLS),
+            build_saved_filter_view_bar(
+                STOCK_SAVED_VIEW_CONTROLS,
+                filter_note=STOCK_FILTER_NOTE,
+            ),
             html.Div(
                 [
                     html.Div(
-                        "Include mode uses OR within one filter (B or D) and AND "
-                        "across filters (Credit and Portfolio B or D). Exclude mode "
-                        "removes a row if it matches any selected value in any "
-                        "populated filter. Leave a filter blank for all values; "
-                        "Stock selections remain independent from Risk and P&L.",
-                        className="filter-note",
-                    ),
-                    html.Div(
-                        filter_controls,
-                        className="controls filter-controls",
-                    ),
-                    dcc.Checklist(
-                        id="stock-filter-exclude-selected",
-                        options=[
-                            {
-                                "label": "Exclude rows matching any selected value",
-                                "value": "exclude",
-                            }
+                        [
+                            *filter_controls,
+                            dcc.Checklist(
+                                id="stock-filter-exclude-selected",
+                                options=[
+                                    {
+                                        "label": (
+                                            "Exclude rows matching any selected value"
+                                        ),
+                                        "value": "exclude",
+                                    }
+                                ],
+                                value=[],
+                                className="stock-filter-mode filter-mode-control",
+                            ),
                         ],
-                        value=[],
-                        className="stock-filter-mode",
+                        className="controls filter-controls",
                     ),
                 ],
                 className="dimension-filter-bar top-controls",

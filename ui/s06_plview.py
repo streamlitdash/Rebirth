@@ -40,6 +40,12 @@ PL_SAVED_VIEW_CONTROLS = SavedFilterViewControls(
     filter_ids=PL_FILTER_IDS,
     exclude_id="pnl-filter-exclude-selected",
 )
+PL_FILTER_NOTE = (
+    "Include mode uses OR within one filter (for example B or D) and AND across "
+    "filters. Exclude mode removes a row if it matches any selected value in any "
+    "populated filter. Leave blank for all values; live P&L selections remain "
+    "independent from Risk and Stock."
+)
 
 
 def pl_filter_map(
@@ -183,23 +189,21 @@ def _pl_filter_bar(initial_frame: pd.DataFrame | None = None) -> html.Div:
     return html.Div(
         [
             html.Div(
-                "Include mode uses OR within one filter (for example B or D) and "
-                "AND across filters. Exclude mode removes a row if it matches any "
-                "selected value in any populated filter. Leave blank for all values; "
-                "live P&L selections remain independent from Risk and Stock.",
-                className="filter-note",
-            ),
-            html.Div(controls, className="controls pnl-filter-controls"),
-            dcc.Checklist(
-                id="pnl-filter-exclude-selected",
-                options=[
-                    {
-                        "label": "Exclude rows matching any selected value",
-                        "value": "exclude",
-                    }
+                [
+                    *controls,
+                    dcc.Checklist(
+                        id="pnl-filter-exclude-selected",
+                        options=[
+                            {
+                                "label": "Exclude rows matching any selected value",
+                                "value": "exclude",
+                            }
+                        ],
+                        value=[],
+                        className="risk-filter-mode filter-mode-control",
+                    ),
                 ],
-                value=[],
-                className="risk-filter-mode",
+                className="controls pnl-filter-controls",
             ),
         ],
         id="pnl-filter-bar",
@@ -814,8 +818,9 @@ def build_pl_send_sections() -> list[html.Div | html.Details]:
                     html.P(
                         "Expand Risk Type → Risk Greek → Underlying → Product "
                         "→ Book. Daily (P) is today's Predict P&L. MTD and YTD "
-                        "show Colossus by default; click either cell to reveal its "
-                        "Colossus/Predict comparison and plot that exact scope.",
+                        "show Colossus by default; click either period header to reveal "
+                        "its Colossus/Predict columns, then click a cell to plot that "
+                        "exact scope.",
                         className="pl-editor-guide",
                     ),
                     html.Div(
@@ -1003,6 +1008,7 @@ __all__ = [
     "PL_AGGREGATE_TOGGLE_TYPE",
     "PL_FILTER_FIELDS",
     "PL_FILTER_IDS",
+    "PL_FILTER_NOTE",
     "PL_FILTER_ORDER",
     "PL_SAVED_VIEW_CONTROLS",
     "build_pl_aggregate_table",

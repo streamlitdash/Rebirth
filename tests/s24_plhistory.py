@@ -18,15 +18,15 @@ from ui.s12_plhistory import (
     DAILY_P_PERIOD,
     MTD_PERIOD,
     PL_HISTORY_METRIC_CELL_TYPE,
+    PL_HISTORY_PERIOD_HEADER_TYPE,
     PL_HISTORY_ROW_TOGGLE_TYPE,
     YTD_PERIOD,
     build_pl_history_figure,
     build_pl_history_series_selector,
     build_pl_history_table_with_state,
-    pl_history_comparison_token,
     pl_history_path_token,
     summarize_visible_pl_history,
-    toggle_pl_history_comparison_tokens,
+    toggle_pl_history_expanded_periods,
     toggle_pl_history_open_tokens,
 )
 
@@ -92,7 +92,12 @@ def _history() -> pd.DataFrame:
     )
 
 
-def _metric_button(component: object, path: tuple[str, ...], period: str) -> object:
+def _metric_button(
+    component: object,
+    path: tuple[str, ...],
+    period: str,
+    history_type: str,
+) -> object:
     token = pl_history_path_token(path)
     return next(
         item
@@ -101,6 +106,7 @@ def _metric_button(component: object, path: tuple[str, ...], period: str) -> obj
         and item.id.get("type") == PL_HISTORY_METRIC_CELL_TYPE
         and item.id.get("path") == token
         and item.id.get("period") == period
+        and item.id.get("series") == history_type
     )
 
 
@@ -119,11 +125,11 @@ def test_history_tree_is_lazy_and_uses_global_latest_date_for_stale_nodes() -> N
     tree = next(item for item in _walk(table) if isinstance(item, html.Table))
     assert tree.role == "treegrid"
     headers = [
-        item.children
+        _text(item)
         for item in _walk(tree)
         if isinstance(item, html.Th) and "header" in str(item.className or "")
     ]
-    assert headers == ["P&L hierarchy", DAILY_P_PERIOD, MTD_PERIOD, YTD_PERIOD]
+    assert headers == ["Index", DAILY_P_PERIOD, "▾ MTD", "▾ YTD"]
     row_toggle_paths = {
         item.id["path"]
         for item in _walk(tree)
@@ -136,13 +142,15 @@ def test_history_tree_is_lazy_and_uses_global_latest_date_for_stale_nodes() -> N
     }
 
     # IR remains available even though only FX exists on the global latest day.
-    assert _text(_metric_button(table, ("IR",), DAILY_P_PERIOD)) == "—P"
-    assert _text(_metric_button(table, ("IR",), MTD_PERIOD)) == "21C▸"
-    assert _text(_metric_button(table, ("IR",), YTD_PERIOD)) == "22C▸"
-    assert _text(_metric_button(table, (), DAILY_P_PERIOD)) == "8P"
+    assert _text(_metric_button(table, ("IR",), DAILY_P_PERIOD, PREDICT_TYPE)) == "—"
+    assert _text(_metric_button(table, ("IR",), MTD_PERIOD, COLOSSUS_TYPE)) == "21"
+    assert _text(_metric_button(table, ("IR",), YTD_PERIOD, COLOSSUS_TYPE)) == "22"
+    assert _text(_metric_button(table, (), DAILY_P_PERIOD, PREDICT_TYPE)) == "8"
+    assert not any(isinstance(item, html.Small) for item in _walk(table))
+    assert "Risk Type" not in _text(table)
 
 
-def test_history_tree_expands_one_level_at_a_time_and_comparison_cells_toggle() -> None:
+def test_history_tree_matches_risk_explorer_and_period_headers_toggle() -> None:
     history = _history()
     ir = pl_history_path_token(("IR",))
     ir_delta = pl_history_path_token(("IR", "Delta"))
@@ -165,7 +173,7 @@ def test_history_tree_expands_one_level_at_a_time_and_comparison_cells_toggle() 
         ir_delta,
         pl_history_path_token(("FX",)),
     }
-    assert "Risk Greek" in _text(table)
+    assert "Risk Greek" not in _text(table)
     assert "Underlying" not in _text(table)
 
     open_paths = toggle_pl_history_open_tokens(open_paths, ir_delta)
@@ -173,11 +181,15 @@ def test_history_tree_expands_one_level_at_a_time_and_comparison_cells_toggle() 
         build_pl_history_table_with_state(history, open_path_tokens=open_paths)
     )
     assert effective_open == [ir, ir_delta]
-    assert "Underlying" in _text(expanded)
-    assert "Product" not in _text(expanded)
+    expanded_toggle_paths = {
+        item.id["path"]
+        for item in _walk(expanded)
+        if isinstance(getattr(item, "id", None), dict)
+        and item.id.get("type") == PL_HISTORY_ROW_TOGGLE_TYPE
+    }
+    assert pl_history_path_token(("IR", "Delta", "EUR")) in expanded_toggle_paths
 
-    comparison = pl_history_comparison_token(("IR",), MTD_PERIOD)
-    comparison_state = toggle_pl_history_comparison_tokens([], comparison)
+    comparison_state = toggle_pl_history_expanded_periods([], MTD_PERIOD)
     compared, _open, effective_comparisons, effective_selection = (
         build_pl_history_table_with_state(
             history,
@@ -186,13 +198,48 @@ def test_history_tree_expands_one_level_at_a_time_and_comparison_cells_toggle() 
             selection={"path": ["IR"]},
         )
     )
-    assert effective_comparisons == [comparison]
+    assert effective_comparisons == [MTD_PERIOD]
     assert effective_selection == {"path": ["IR"]}
-    metric = _metric_button(compared, ("IR",), MTD_PERIOD)
-    assert "is-expanded" in metric.className
-    assert _text(metric) == "C21P20−"
+    headers = [
+        _text(item)
+        for item in _walk(compared)
+        if isinstance(item, html.Th) and "header" in str(item.className or "")
+    ]
+    assert headers == ["Index", DAILY_P_PERIOD, "− MTD (C)", "MTD (P)", "▾ YTD"]
+    period_headers = [
+        item
+        for item in _walk(compared)
+        if isinstance(getattr(item, "id", None), dict)
+        and item.id.get("type") == PL_HISTORY_PERIOD_HEADER_TYPE
+    ]
+    assert {item.id["period"] for item in period_headers} == {MTD_PERIOD, YTD_PERIOD}
+    assert _text(_metric_button(compared, ("IR",), MTD_PERIOD, COLOSSUS_TYPE)) == "21"
+    assert _text(_metric_button(compared, ("IR",), MTD_PERIOD, PREDICT_TYPE)) == "20"
+    assert not any(isinstance(item, html.Small) for item in _walk(compared))
 
-    closed = toggle_pl_history_comparison_tokens(comparison_state, comparison)
+    both_periods = toggle_pl_history_expanded_periods(comparison_state, YTD_PERIOD)
+    both_expanded, _open, effective_periods, _selection = (
+        build_pl_history_table_with_state(
+            history,
+            open_path_tokens=open_paths,
+            open_comparison_tokens=both_periods,
+        )
+    )
+    assert effective_periods == [MTD_PERIOD, YTD_PERIOD]
+    assert [
+        _text(item)
+        for item in _walk(both_expanded)
+        if isinstance(item, html.Th) and "header" in str(item.className or "")
+    ] == [
+        "Index",
+        DAILY_P_PERIOD,
+        "− MTD (C)",
+        "MTD (P)",
+        "− YTD (C)",
+        "YTD (P)",
+    ]
+
+    closed = toggle_pl_history_expanded_periods(comparison_state, MTD_PERIOD)
     assert closed == []
     assert toggle_pl_history_open_tokens(open_paths, ir) == []
 

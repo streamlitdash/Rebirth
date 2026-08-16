@@ -52,7 +52,7 @@ from .s08_plevents import (
     register_pl_aggregate_callbacks,
     register_pl_send_callbacks,
 )
-from .s06_plview import PL_SAVED_VIEW_CONTROLS, build_pl_page
+from .s06_plview import PL_FILTER_NOTE, PL_SAVED_VIEW_CONTROLS, build_pl_page
 from .s02_constants import FILTER_DIMENSION_FIELDS
 from .s01_contracts import RefreshManagerProtocol
 from .s10_stock import (
@@ -497,7 +497,10 @@ def build_app(
                 start_initial_load=start_initial_load,
                 send_workflow_available=pl_send_config is not None,
                 initial_aggregate_frame=initial_aggregate_frame,
-                saved_view_bar=build_saved_filter_view_bar(PL_SAVED_VIEW_CONTROLS),
+                saved_view_bar=build_saved_filter_view_bar(
+                    PL_SAVED_VIEW_CONTROLS,
+                    filter_note=PL_FILTER_NOTE,
+                ),
             )
         return html.Main(
             [

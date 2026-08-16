@@ -242,18 +242,19 @@ CREDIT_MEASURE_KEYS = {
 
 RISK_TYPE_ORDER = {"Credit": 0, "IR": 1, "FX": 2, "Commo": 3, "Cash Flow": 4}
 IR_GREEK_FAMILIES = {
-    "delta": ("Delta", "Inflation", "Gamma", "Bond"),
+    "delta": ("Delta", "Inflation", "Gamma", "Bond", XGAMMA_RISK_GREEK),
     "basis": ("XCCY", "Basis"),
-    "vega": ("DeltaVega", "InflationVega", "XCCYVega"),
-    "xgamma": (XGAMMA_RISK_GREEK,),
-    "xgamma_vega": (XGAMMA_VEGA_RISK_GREEK,),
+    "vega": (
+        "DeltaVega",
+        "InflationVega",
+        "XCCYVega",
+        XGAMMA_VEGA_RISK_GREEK,
+    ),
 }
 IR_GREEK_FAMILY_LABELS = {
     "delta": "Delta",
     "basis": "Basis",
     "vega": "Vega",
-    "xgamma": XGAMMA_RISK_GREEK,
-    "xgamma_vega": XGAMMA_VEGA_RISK_GREEK,
 }
 if tuple(IR_GREEK_FAMILIES) != tuple(IR_GREEK_FAMILY_LABELS):
     raise RuntimeError("Every IR Greek family must have one visible tab label")

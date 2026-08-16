@@ -247,7 +247,7 @@ def test_include_and_exclude_modes_have_explicit_boolean_semantics() -> None:
     assert excluded["row"].tolist() == ["Rates / C"]
 
 
-def test_ir_family_tabs_expose_xgamma_sources_as_dedicated_choices() -> None:
+def test_ir_family_tabs_keep_xgamma_sources_inside_delta_and_vega() -> None:
     prepared = prepare_risk_data(_raw_risk_frame())
     layout = build_layout(prepared, _snapshot(), refresh_enabled=True)
     tabs = next(
@@ -260,8 +260,6 @@ def test_ir_family_tabs_expose_xgamma_sources_as_dedicated_choices() -> None:
         ("Delta", "delta"),
         ("Basis", "basis"),
         ("Vega", "vega"),
-        ("XGamma", "xgamma"),
-        ("XGamma Vega", "xgamma_vega"),
     ]
 
 
@@ -442,6 +440,12 @@ def test_portfolio_is_rendered_as_a_filter_and_a_view_by_dimension() -> None:
         and {"controls", "filter-controls"}
         <= set(str(getattr(item, "className", "")).split())
     )
+    saved_view_bar = next(
+        item
+        for item in components
+        if isinstance(item, html.Details)
+        and getattr(item, "id", None) == "risk-saved-view-bar"
+    )
     aggregate_dimension = next(
         item
         for item in components
@@ -464,13 +468,24 @@ def test_portfolio_is_rendered_as_a_filter_and_a_view_by_dimension() -> None:
         }
     ]
     assert exclude_mode.value == []
-    assert [control.children[0].children for control in filter_row.children] == [
+    filter_fields = filter_row.children[: len(FILTER_DIMENSION_FIELDS)]
+    assert [control.children[0].children for control in filter_fields] == [
         "Activity",
         "Signoff Group",
         "Portfolio",
         "Category",
         "Sub Category",
     ]
+    assert filter_row.children[-1].id == "risk-filter-exclude-selected"
+    assert "filter-mode-control" in str(filter_row.children[-1].className).split()
+    saved_view_notes = [
+        item
+        for item in _walk(saved_view_bar)
+        if isinstance(item, html.Div)
+        and "saved-view-filter-note" in set(str(getattr(item, "className", "")).split())
+    ]
+    assert len(saved_view_notes) == 1
+    assert "Risk selections remain independent" in saved_view_notes[0].children
     for selector in (aggregate_dimension, table_dimension):
         assert {option["value"] for option in selector.options} >= {"portfolio"}
         assert selector.value == "activity"

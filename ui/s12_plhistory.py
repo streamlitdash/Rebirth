@@ -17,6 +17,7 @@ from core.s04_pl import (
     MARKET_DATE,
     PL,
     PREDICT_TYPE,
+    RISK_GREEK,
     RISK_TYPE,
     pl_history_period_values,
 )
@@ -27,10 +28,12 @@ from .s03_aggregate import format_number
 
 PL_HISTORY_ROW_TOGGLE_TYPE: Final = "pl-history-row-toggle"
 PL_HISTORY_METRIC_CELL_TYPE: Final = "pl-history-metric-cell"
+PL_HISTORY_PERIOD_HEADER_TYPE: Final = "pl-history-period-header"
 DAILY_P_PERIOD: Final = "Daily (P)"
 MTD_PERIOD: Final = "MTD"
 YTD_PERIOD: Final = "YTD"
 PL_HISTORY_TABLE_PERIODS: Final = (DAILY_P_PERIOD, MTD_PERIOD, YTD_PERIOD)
+PL_HISTORY_EXPANDABLE_PERIODS: Final = (MTD_PERIOD, YTD_PERIOD)
 
 _DEPTH = "Hierarchy Depth"
 _LEVEL = "Hierarchy Level"
@@ -118,85 +121,35 @@ def toggle_pl_history_open_tokens(current: object, requested: object) -> list[st
     )
 
 
-def pl_history_comparison_token(path: Sequence[str], period: str) -> str:
-    """Encode one expandable MTD/YTD comparison cell."""
-
-    if period not in {MTD_PERIOD, YTD_PERIOD}:
-        raise ValueError("Only MTD and YTD cells have comparison detail")
-    return json.dumps(
-        {"path": [str(value) for value in path], "period": period},
-        separators=(",", ":"),
-        sort_keys=True,
-    )
-
-
-def pl_history_comparison_from_token(
-    value: object,
-) -> tuple[tuple[str, ...], str] | None:
-    """Decode one comparison token without trusting browser JSON."""
-
-    if not isinstance(value, str) or len(value) > 5_100:
-        return None
-    try:
-        decoded = json.loads(value)
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return None
-    if not isinstance(decoded, dict) or set(decoded) != {"path", "period"}:
-        return None
-    period = decoded["period"]
-    path = pl_history_path_from_token(
-        json.dumps(decoded["path"], separators=(",", ":"))
-    )
-    if path is None or period not in {MTD_PERIOD, YTD_PERIOD}:
-        return None
-    return path, str(period)
-
-
-def normalize_pl_history_comparison_tokens(value: object) -> list[str]:
-    """Return unique, valid comparison tokens."""
+def normalize_pl_history_expanded_periods(value: object) -> list[str]:
+    """Return the valid MTD/YTD header disclosures in table order."""
 
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
         return []
-    decoded = {
-        item
-        for raw in value
-        if (item := pl_history_comparison_from_token(raw)) is not None
-    }
-    return [
-        pl_history_comparison_token(path, period)
-        for path, period in sorted(
-            decoded,
-            key=lambda item: (
-                len(item[0]),
-                tuple(value.casefold() for value in item[0]),
-                item[1],
-            ),
-        )
-    ]
+    requested = {str(period) for period in value}
+    return [period for period in PL_HISTORY_EXPANDABLE_PERIODS if period in requested]
 
 
-def toggle_pl_history_comparison_tokens(
+def toggle_pl_history_expanded_periods(
     current: object,
     requested: object,
 ) -> list[str]:
-    """Toggle one inline Colossus/Predict period comparison."""
+    """Toggle one table-wide Colossus/Predict period disclosure."""
 
-    decoded = pl_history_comparison_from_token(requested)
-    normalized = normalize_pl_history_comparison_tokens(current)
-    if decoded is None:
+    normalized = normalize_pl_history_expanded_periods(current)
+    period = str(requested)
+    if period not in PL_HISTORY_EXPANDABLE_PERIODS:
         return normalized
-    items = {
-        item
-        for token in normalized
-        if (item := pl_history_comparison_from_token(token)) is not None
-    }
-    if decoded in items:
-        items.remove(decoded)
+    expanded = set(normalized)
+    if period in expanded:
+        expanded.remove(period)
     else:
-        items.add(decoded)
-    return normalize_pl_history_comparison_tokens(
-        [pl_history_comparison_token(path, period) for path, period in items]
-    )
+        expanded.add(period)
+    return [
+        candidate
+        for candidate in PL_HISTORY_EXPANDABLE_PERIODS
+        if candidate in expanded
+    ]
 
 
 def _period_value(
@@ -309,79 +262,105 @@ def _number(value: object) -> str:
     return "—" if value is None or pd.isna(value) else format_number(float(value))
 
 
+def _display_period_columns(
+    expanded_periods: object,
+) -> list[tuple[str, str, str, str]]:
+    """Return period, source, summary column, and header for visible metrics."""
+
+    expanded = set(normalize_pl_history_expanded_periods(expanded_periods))
+    columns = [(DAILY_P_PERIOD, PREDICT_TYPE, _DAILY_P, DAILY_P_PERIOD)]
+    for period, colossus_column, predict_column in (
+        (MTD_PERIOD, _MTD_C, _MTD_P),
+        (YTD_PERIOD, _YTD_C, _YTD_P),
+    ):
+        if period in expanded:
+            columns.extend(
+                [
+                    (period, COLOSSUS_TYPE, colossus_column, f"{period} (C)"),
+                    (period, PREDICT_TYPE, predict_column, f"{period} (P)"),
+                ]
+            )
+        else:
+            columns.append((period, COLOSSUS_TYPE, colossus_column, period))
+    return columns
+
+
+def _period_header(
+    *,
+    period: str,
+    history_type: str,
+    label: str,
+    expanded_periods: object,
+) -> html.Th:
+    """Build a Risk-Explorer-style MTD/YTD column disclosure header."""
+
+    expanded = period in set(normalize_pl_history_expanded_periods(expanded_periods))
+    classes = ["metric-header", "pl-history-metric-header"]
+    if history_type == PREDICT_TYPE and period != DAILY_P_PERIOD:
+        classes.append("metric-child")
+    if history_type == COLOSSUS_TYPE and period in PL_HISTORY_EXPANDABLE_PERIODS:
+        action = "Hide" if expanded else "Show"
+        comparison = f"{period} Colossus and Predict columns"
+        return html.Th(
+            html.Button(
+                f"{'−' if expanded else '▾'} {label}",
+                id={"type": PL_HISTORY_PERIOD_HEADER_TYPE, "period": period},
+                n_clicks=0,
+                type="button",
+                className="metric-header-button pl-history-period-header-button",
+                title=f"{action} {comparison}",
+                **{
+                    "aria-label": f"{action} {comparison}",
+                    "aria-expanded": str(expanded).lower(),
+                },
+            ),
+            className=" ".join(classes),
+            scope="col",
+            **{"data-metric": f"{period} {history_type}"},
+        )
+    return html.Th(
+        label,
+        className=" ".join(classes),
+        scope="col",
+        **{"data-metric": f"{period} {history_type}"},
+    )
+
+
 def _metric_cell(
     row: pd.Series,
     *,
     period: str,
-    comparison_open: bool,
+    history_type: str,
+    summary_column: str,
     selected: bool,
 ) -> html.Td:
     path = tuple(row[_PATH])
-    if period == DAILY_P_PERIOD:
-        primary = row[_DAILY_P]
-        children: object = [
-            html.Span(_number(primary), className="copy-value"),
-            html.Small("P", className="pl-history-series-tag predict"),
-        ]
-        title = "Latest daily Predict P&L"
-    else:
-        colossus_column, predict_column = (
-            (_MTD_C, _MTD_P) if period == MTD_PERIOD else (_YTD_C, _YTD_P)
-        )
-        primary = row[colossus_column]
-        if comparison_open:
-            children = [
-                html.Span(
-                    [
-                        html.Small("C", className="pl-history-series-tag colossus"),
-                        html.Span(
-                            _number(row[colossus_column]), className="copy-value"
-                        ),
-                    ],
-                    className="pl-history-comparison-line",
-                ),
-                html.Span(
-                    [
-                        html.Small("P", className="pl-history-series-tag predict"),
-                        html.Span(_number(row[predict_column]), className="copy-value"),
-                    ],
-                    className="pl-history-comparison-line",
-                ),
-                html.Span("−", className="pl-history-cell-chevron"),
-            ]
-        else:
-            children = [
-                html.Span(_number(primary), className="copy-value"),
-                html.Small("C", className="pl-history-series-tag colossus"),
-                html.Span("▸", className="pl-history-cell-chevron"),
-            ]
-        title = f"{period} Colossus; click to compare Predict"
-    comparison_token = (
-        pl_history_comparison_token(path, period)
-        if period in {MTD_PERIOD, YTD_PERIOD}
-        else ""
-    )
+    primary = row[summary_column]
+    title = f"Plot {period} {history_type} P&L for {row[_LABEL]}"
+    classes = ["metric-cell", "pl-history-metric-cell", _number_class(primary)]
+    if history_type == PREDICT_TYPE and period != DAILY_P_PERIOD:
+        classes.append("metric-child")
     return html.Td(
         html.Button(
-            children,
+            html.Span(_number(primary), className="copy-value"),
             id={
                 "type": PL_HISTORY_METRIC_CELL_TYPE,
                 "path": pl_history_path_token(path),
                 "period": period,
-                "comparison": comparison_token,
+                "series": history_type,
             },
             n_clicks=0,
             type="button",
-            className=(
-                "pl-history-metric-button"
-                + (" is-selected" if selected else "")
-                + (" is-expanded" if comparison_open else "")
-            ),
+            className="metric-cell-button pl-history-metric-button"
+            + (" is-selected" if selected else ""),
             title=title,
             **{"aria-pressed": str(selected).lower()},
         ),
-        className=f"metric-cell pl-history-metric-cell {_number_class(primary)}",
-        **{"data-metric": period, "data-copy-value": _number(primary)},
+        className=" ".join(classes),
+        **{
+            "data-metric": f"{period} {history_type}",
+            "data-copy-value": _number(primary),
+        },
     )
 
 
@@ -420,22 +399,10 @@ def build_pl_history_table_with_state(
     effective_open = normalize_pl_history_open_tokens(
         [pl_history_path_token(path) for path in effective_open_paths]
     )
-    requested_comparisons = {
-        decoded
-        for token in normalize_pl_history_comparison_tokens(open_comparison_tokens)
-        if (decoded := pl_history_comparison_from_token(token)) is not None
-    }
-    effective_comparisons = {
-        (path, period)
-        for path, period in requested_comparisons
-        if path in visible_paths
-    }
-    effective_comparison_tokens = normalize_pl_history_comparison_tokens(
-        [
-            pl_history_comparison_token(path, period)
-            for path, period in effective_comparisons
-        ]
+    effective_comparison_tokens = normalize_pl_history_expanded_periods(
+        open_comparison_tokens
     )
+    display_columns = _display_period_columns(effective_comparison_tokens)
     raw_selection_path = (selection or {}).get("path", [])
     selected_path = (
         tuple(str(value) for value in raw_selection_path)
@@ -482,12 +449,7 @@ def build_pl_history_table_with_state(
                     **{"aria-hidden": "true"},
                 )
             )
-        index_children.extend(
-            [
-                html.Span(str(row[_LABEL]), className="row-label-text"),
-                html.Span(str(row[_LEVEL]), className="pl-history-level-label"),
-            ]
-        )
+        index_children.append(html.Span(str(row[_LABEL]), className="row-label-text"))
         selected = path == selected_path
         cells = [
             html.Th(
@@ -495,25 +457,32 @@ def build_pl_history_table_with_state(
                 className=f"index-cell level-{max(depth - 1, 0)}",
                 scope="row",
                 style={"paddingLeft": f"{14 + max(depth - 1, 0) * 18}px"},
-                title=f"{row[_LEVEL]}: {row[_LABEL]}",
+                title=str(row[_LABEL]),
                 **{"data-metric": "index", "data-copy-value": str(row[_LABEL])},
             ),
             *[
                 _metric_cell(
                     row,
                     period=period,
-                    comparison_open=(path, period) in effective_comparisons,
+                    history_type=history_type,
+                    summary_column=summary_column,
                     selected=selected,
                 )
-                for period in PL_HISTORY_TABLE_PERIODS
+                for period, history_type, summary_column, _label in display_columns
             ],
         ]
+        row_classes = [
+            "group-row",
+            f"group-level-{max(depth - 1, 0)}",
+            "pl-history-row",
+        ]
+        if row[_LEVEL] in {RISK_TYPE, RISK_GREEK}:
+            row_classes.append("hierarchy-total-row")
+        if selected:
+            row_classes.append("is-selected")
         return html.Tr(
             cells,
-            className=(
-                f"group-row group-level-{max(depth - 1, 0)} pl-history-row"
-                + (" is-selected" if selected else "")
-            ),
+            className=" ".join(row_classes),
             **{
                 "aria-level": str(depth),
                 **({"aria-expanded": str(is_open).lower()} if not is_leaf else {}),
@@ -525,7 +494,7 @@ def build_pl_history_table_with_state(
     root_selected = selected_path == root_path and bool(selection)
     total_cells = [
         html.Th(
-            "TOTAL",
+            html.Span("TOTAL", className="row-label-text"),
             className="index-cell total-index",
             scope="row",
             **{"data-metric": "index", "data-copy-value": "TOTAL"},
@@ -534,10 +503,11 @@ def build_pl_history_table_with_state(
             _metric_cell(
                 root,
                 period=period,
-                comparison_open=(root_path, period) in effective_comparisons,
+                history_type=history_type,
+                summary_column=summary_column,
                 selected=root_selected,
             )
-            for period in PL_HISTORY_TABLE_PERIODS
+            for period, history_type, summary_column, _label in display_columns
         ],
     ]
     table = html.Table(
@@ -549,10 +519,15 @@ def build_pl_history_table_with_state(
             html.Thead(
                 html.Tr(
                     [
-                        html.Th("P&L hierarchy", className="index-header"),
+                        html.Th("Index", className="index-header"),
                         *[
-                            html.Th(period, className="metric-header")
-                            for period in PL_HISTORY_TABLE_PERIODS
+                            _period_header(
+                                period=period,
+                                history_type=history_type,
+                                label=label,
+                                expanded_periods=effective_comparison_tokens,
+                            )
+                            for period, history_type, _column, label in display_columns
                         ],
                     ]
                 )
@@ -675,20 +650,20 @@ def build_pl_history_series_selector() -> dcc.RadioItems:
 __all__ = [
     "DAILY_P_PERIOD",
     "MTD_PERIOD",
+    "PL_HISTORY_EXPANDABLE_PERIODS",
     "PL_HISTORY_METRIC_CELL_TYPE",
+    "PL_HISTORY_PERIOD_HEADER_TYPE",
     "PL_HISTORY_ROW_TOGGLE_TYPE",
     "PL_HISTORY_TABLE_PERIODS",
     "YTD_PERIOD",
     "build_pl_history_figure",
     "build_pl_history_series_selector",
     "build_pl_history_table_with_state",
-    "normalize_pl_history_comparison_tokens",
+    "normalize_pl_history_expanded_periods",
     "normalize_pl_history_open_tokens",
-    "pl_history_comparison_from_token",
-    "pl_history_comparison_token",
     "pl_history_path_from_token",
     "pl_history_path_token",
     "summarize_visible_pl_history",
-    "toggle_pl_history_comparison_tokens",
+    "toggle_pl_history_expanded_periods",
     "toggle_pl_history_open_tokens",
 ]

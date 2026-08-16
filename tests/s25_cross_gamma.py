@@ -66,6 +66,7 @@ from ui.s03_aggregate import (
     apply_credit_measure,
     credit_measure_available,
     filter_ir_family,
+    ordered_unique,
     prepare_risk_data,
 )
 
@@ -634,26 +635,42 @@ def test_manager_loads_raw_matrix_before_market_and_publishes_summed_xgamma() ->
     assert pd.isna(row[DRISK])
 
 
-def test_ir_xgamma_source_has_a_dedicated_visible_family() -> None:
+def test_ir_xgamma_sources_are_last_in_delta_and_vega_families() -> None:
     frame = pd.DataFrame(
         {
-            "risk type": ["IR", "IR", "IR", "IR"],
+            "risk type": ["IR"] * 9,
             "risk greek": [
                 "Delta",
+                "Inflation",
+                "Gamma",
+                "Bond",
                 XGAMMA_RISK_GREEK,
+                "DeltaVega",
+                "InflationVega",
+                "XCCYVega",
                 XGAMMA_VEGA_RISK_GREEK,
-                "XCCY",
             ],
         }
     )
 
-    selected = filter_ir_family(frame, "IR", "xgamma")
+    selected_delta = filter_ir_family(frame, "IR", "delta")
+    selected_vega = filter_ir_family(frame, "IR", "vega")
 
-    assert selected["risk greek"].tolist() == [XGAMMA_RISK_GREEK]
-    assert filter_ir_family(frame, "IR", "xgamma_vega")["risk greek"].tolist() == [
-        XGAMMA_VEGA_RISK_GREEK
+    assert ordered_unique(selected_delta, "risk greek") == [
+        "Delta",
+        "Inflation",
+        "Gamma",
+        "Bond",
+        XGAMMA_RISK_GREEK,
     ]
-    assert filter_ir_family(frame, "IR", "delta")["risk greek"].tolist() == ["Delta"]
+    assert ordered_unique(selected_vega, "risk greek") == [
+        "DeltaVega",
+        "InflationVega",
+        "XCCYVega",
+        XGAMMA_VEGA_RISK_GREEK,
+    ]
+    assert XGAMMA_VEGA_RISK_GREEK not in set(selected_delta["risk greek"])
+    assert XGAMMA_RISK_GREEK not in set(selected_vega["risk greek"])
 
 
 @pytest.mark.parametrize("measure", ["SP01", "PSP01"])
