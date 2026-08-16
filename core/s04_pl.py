@@ -109,6 +109,7 @@ _HISTORY_FILES = {
     "histo.csv": HISTO_TYPE,
     "predicted.csv": PREDICTED_TYPE,
 }
+_OPTIONAL_HISTORY_FILES = frozenset(("market.csv",))
 _HISTORY_TYPE_ALIASES = {
     "actual": COLOSSUS_TYPE,
     "colossus": COLOSSUS_TYPE,
@@ -373,7 +374,9 @@ def load_legacy_pl_history_leaf(source: str | Path) -> pd.DataFrame:
     )
     names = {entry.name for entry in file_entries if entry.is_file()}
     unexpected = [entry.name for entry in file_entries if not entry.is_file()]
-    unexpected.extend(sorted(names - set(_HISTORY_FILES)))
+    unexpected.extend(
+        sorted(names - set(_HISTORY_FILES) - set(_OPTIONAL_HISTORY_FILES))
+    )
     missing = sorted(set(_HISTORY_FILES) - names)
     if missing or unexpected:
         details: list[str] = []
@@ -383,7 +386,8 @@ def load_legacy_pl_history_leaf(source: str | Path) -> pd.DataFrame:
             details.append(f"unexpected {sorted(unexpected)}")
         raise PLSendValidationError(
             f"P&L history date {leaf.name} must contain "
-            "exactly histo.csv and predicted.csv; " + "; ".join(details)
+            "histo.csv and predicted.csv, with optional market.csv; "
+            + "; ".join(details)
         )
     partitions = [
         _load_history_leaf_file(
@@ -400,9 +404,11 @@ def _load_pl_history_uncached(source: FrameSource) -> pd.DataFrame:
     """Load paired actual/predicted P&L from ``YYYY-MM-DD`` partitions.
 
     A directory source must contain only ``YYYY-MM-DD`` leaf directories. Every
-    leaf must contain exactly ``histo.csv`` and ``predicted.csv``. Their exact
-    leaf grain is Risk Type + Risk Greek + Underlying + Product + Book; Market
-    Date and P&L Type are authoritative in the partition path and file name.
+    leaf must contain ``histo.csv`` and ``predicted.csv`` and may also contain
+    the independently validated historical Quick Market ``market.csv``. Their
+    exact P&L leaf grain is Risk Type + Risk Greek + Underlying + Product +
+    Book; Market Date and P&L Type are authoritative in the partition path and
+    file name.
 
     The former Portfolio + ConcertoField shape cannot be promoted safely: it
     does not contain the requested hierarchy identities. ``load_historical_pl``

@@ -504,6 +504,37 @@ def test_composed_app_defaults_to_one_second_risk_product_hold(monkeypatch) -> N
     assert coordinator._manager.stage_delays == {"risk_product": 1.0}
 
 
+def test_composed_app_binds_quick_market_history_to_shared_pl_root(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import s01_app as app_module
+
+    captured: dict[str, object] = {}
+    expected_loader = object()
+
+    def bind_history(root):
+        captured["history_root"] = root
+        return expected_loader
+
+    def capture_app(**kwargs):
+        captured["app_kwargs"] = kwargs
+        return SimpleNamespace()
+
+    monkeypatch.setenv("PL_HISTORICAL_PATH", str(tmp_path))
+    monkeypatch.setattr(app_module, "build_market_history_loader", bind_history)
+    monkeypatch.setattr(app_module, "build_app", capture_app)
+
+    result = app_module.create_app()
+
+    assert isinstance(result, SimpleNamespace)
+    assert captured["history_root"] == tmp_path.resolve()
+    app_kwargs = captured["app_kwargs"]
+    assert isinstance(app_kwargs, dict)
+    assert app_kwargs["pl_history_root"] == tmp_path.resolve()
+    assert app_kwargs["market_history_loader"] is expected_loader
+
+
 def test_every_callback_output_has_one_nonduplicate_owner() -> None:
     app = build_app(refresh_manager=build_production_refresh_manager())
     _native_page(app)

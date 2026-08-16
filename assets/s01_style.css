@@ -1149,6 +1149,9 @@ body.is-range-selecting :is(.risk-table, .cell-selection-table) * { cursor: cell
 .quick-search-result-count { color: var(--text-muted); font-size: 11px; line-height: 1.45; }
 .quick-search-error { color: var(--negative); }
 .quick-search-result-count { margin-bottom: 6px; font-weight: 750; }
+.quick-market-history-card { margin-top: 14px; }
+.quick-market-history-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 14px; margin: 0 4px 4px; }
+.quick-market-history-heading .quick-search-dimension-help { margin-top: 0; }
 
 .quick-search-pivot-table-wrap { width: 100%; max-width: 100%; max-height: min(54vh, 540px); overflow: auto; border: 1px solid var(--outline); border-radius: 8px; background: var(--surface); overscroll-behavior: contain; scrollbar-gutter: stable; }
 .quick-search-pivot-table { min-width: max-content; font-size: 11px; }

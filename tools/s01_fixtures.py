@@ -1,10 +1,10 @@
-"""Generate the canonical deterministic connector fixtures for Cube.
+"""Generate the canonical deterministic connector and market-history fixtures.
 
-The seven generated CSVs are deliberately visible fake data, never fallback
-production data.  Every reporting key carries ``FAKE_REPLACE_ME`` so an
-unfinished integration is obvious.  Product axes come from the live
-``ProductSpec`` registry: one-dimensional products use ``Tenor Swap`` and only
-true surfaces add ``Tenor Option``.
+The seven connector CSVs and four historical ``market.csv`` files are
+deliberately visible fake data, never fallback production data. Every reporting
+key carries ``FAKE_REPLACE_ME`` so an unfinished integration is obvious.
+Product axes come from the live ``ProductSpec`` registry: one-dimensional
+products use ``Tenor Swap`` and only true surfaces add ``Tenor Option``.
 
 Run from any directory::
 
@@ -24,6 +24,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+import pandas as pd
+
 
 FAKE_NOTICE = "FAKE_REPLACE_ME"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -36,8 +38,10 @@ from core.s01_schema import (  # noqa: E402 - support execution from any directo
     PORTFOLIO_FIELD_BY_KEY,
     TENOR_COLUMNS,
     TENOR_OPTION,
+    TENOR_OPTION_ORDER,
     TENOR_ORDER_COLUMNS,
     TENOR_SWAP,
+    TENOR_SWAP_ORDER,
 )
 from core.s02_pipeline import (  # noqa: E402 - support execution from any directory
     CREDIT_MEASURE_COLUMNS,
@@ -45,6 +49,19 @@ from core.s02_pipeline import (  # noqa: E402 - support execution from any direc
     CURRENT,
     DIRECT_PL_CLASSIFICATIONS,
     PRODUCT_SPECS_BY_SOURCE_TYPE,
+)
+from core.s11_risk_archive import (  # noqa: E402 - support execution from any directory
+    MARKET_ARCHIVE_COLUMNS,
+    MARKET_FILE_NAME,
+    validate_market_archive_frame,
+)
+
+
+HISTORICAL_MARKET_DATES = (
+    "2026-08-11",
+    "2026-08-12",
+    "2026-08-13",
+    "2026-08-14",
 )
 
 
@@ -773,6 +790,111 @@ def validate_datasets(datasets: Mapping[str, Sequence[Mapping[str, str]]]) -> No
             )
 
 
+def build_historical_market_datasets(
+    datasets: Mapping[str, Sequence[Mapping[str, str]]],
+) -> dict[str, list[dict[str, str]]]:
+    """Project the full fake MarketBook into four deterministic daily leaves."""
+
+    key_columns = ("Source Type", "Underlying", *TENOR_COLUMNS)
+    current_by_key = {
+        tuple(row[column] for column in key_columns): row
+        for row in datasets["s05_current.csv"]
+    }
+    markets: dict[str, list[dict[str, str]]] = {}
+    final_index = len(HISTORICAL_MARKET_DATES) - 1
+    for date_index, market_date in enumerate(HISTORICAL_MARKET_DATES):
+        rows: list[dict[str, str]] = []
+        day_offset = date_index - final_index
+        for open_row in datasets["s04_open.csv"]:
+            quote_key = tuple(open_row[column] for column in key_columns)
+            current_row = current_by_key[quote_key]
+            source_type = open_row["Source Type"]
+            spec = PRODUCT_SPECS_BY_SOURCE_TYPE[source_type]
+            step = ((_stable_int(*quote_key, "historical-market") % 17) + 1) * 0.00001
+            open_value = float(open_row["Open"])
+            current_value = round(
+                float(current_row[CURRENT]) + (day_offset * step),
+                6,
+            )
+            tenor_swap = open_row[TENOR_SWAP]
+            if not tenor_swap:
+                tenor_swap = "Spot" if spec.key == "fxdelta" else "N/A"
+            tenor_option = open_row[TENOR_OPTION] or "N/A"
+            rows.append(
+                {
+                    "Source Type": source_type,
+                    "Risk Type": spec.risk_type,
+                    "Risk Greek": spec.risk_greek,
+                    "Underlying": open_row["Underlying"],
+                    TENOR_SWAP: tenor_swap,
+                    TENOR_OPTION: tenor_option,
+                    TENOR_SWAP_ORDER: open_row[TENOR_SWAP_ORDER],
+                    TENOR_OPTION_ORDER: open_row[TENOR_OPTION_ORDER],
+                    "Market Date": market_date,
+                    "Open": _number(open_value),
+                    CURRENT: _number(current_value),
+                    "Move": _number(current_value - open_value),
+                    "Market Status": "OFFICIAL",
+                    "Market Data Status": "Available",
+                }
+            )
+        validate_market_archive_frame(
+            pd.DataFrame(rows, columns=list(MARKET_ARCHIVE_COLUMNS)),
+            market_date=market_date,
+        )
+        markets[market_date] = rows
+    return markets
+
+
+def _write_historical_market_files(
+    markets: Mapping[str, Sequence[Mapping[str, str]]],
+) -> None:
+    temporary_paths: list[tuple[Path, Path]] = []
+    try:
+        for market_date, rows in markets.items():
+            leaf = DATA_DIRECTORY / "histo" / market_date
+            leaf.mkdir(parents=True, exist_ok=True)
+            destination = leaf / MARKET_FILE_NAME
+            temporary = destination.with_suffix(destination.suffix + ".tmp")
+            with temporary.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=MARKET_ARCHIVE_COLUMNS,
+                    lineterminator="\n",
+                )
+                writer.writeheader()
+                writer.writerows(rows)
+            temporary_paths.append((temporary, destination))
+        for temporary, destination in temporary_paths:
+            temporary.replace(destination)
+    finally:
+        for temporary, _destination in temporary_paths:
+            if temporary.exists():
+                temporary.unlink()
+
+
+def _read_historical_market_files() -> dict[str, list[dict[str, str]]]:
+    markets: dict[str, list[dict[str, str]]] = {}
+    for market_date in HISTORICAL_MARKET_DATES:
+        path = DATA_DIRECTORY / "histo" / market_date / MARKET_FILE_NAME
+        if not path.is_file():
+            raise FixtureValidationError(f"Missing generated fixture {path}")
+        with path.open("r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle)
+            if tuple(reader.fieldnames or ()) != MARKET_ARCHIVE_COLUMNS:
+                raise FixtureValidationError(
+                    f"{path} has columns {reader.fieldnames}; expected "
+                    f"{list(MARKET_ARCHIVE_COLUMNS)}"
+                )
+            rows = [dict(row) for row in reader]
+        validate_market_archive_frame(
+            pd.DataFrame(rows, columns=list(MARKET_ARCHIVE_COLUMNS)),
+            market_date=market_date,
+        )
+        markets[market_date] = rows
+    return markets
+
+
 def _write_files(datasets: Mapping[str, Sequence[Mapping[str, str]]]) -> None:
     DATA_DIRECTORY.mkdir(parents=True, exist_ok=True)
     temporary_paths: list[tuple[Path, Path]] = []
@@ -810,7 +932,10 @@ def _read_files() -> dict[str, list[dict[str, str]]]:
 
 
 def _print_report(
-    datasets: Mapping[str, Sequence[Mapping[str, str]]], *, checked_only: bool
+    datasets: Mapping[str, Sequence[Mapping[str, str]]],
+    historical_markets: Mapping[str, Sequence[Mapping[str, str]]],
+    *,
+    checked_only: bool,
 ) -> None:
     action = "Checked" if checked_only else "Generated and checked"
     print(f"{action} {len(datasets)} deterministic FAKE_ONLY connector CSVs.")
@@ -818,6 +943,13 @@ def _print_report(
         path = DATA_DIRECTORY / filename
         digest = hashlib.sha256(path.read_bytes()).hexdigest()[:12]
         print(f"  {filename}: {len(datasets[filename])} rows, sha256={digest}")
+    for market_date in HISTORICAL_MARKET_DATES:
+        path = DATA_DIRECTORY / "histo" / market_date / MARKET_FILE_NAME
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+        print(
+            f"  histo/{market_date}/{MARKET_FILE_NAME}: "
+            f"{len(historical_markets[market_date])} rows, sha256={digest}"
+        )
     risk_rows = datasets["s03_risk.csv"]
     market_rows = datasets["s04_open.csv"]
     credit_rows = [row for row in risk_rows if row["Source Type"].startswith("credit/")]
@@ -841,15 +973,27 @@ def main() -> int:
 
     expected = build_datasets()
     validate_datasets(expected)
+    expected_historical_markets = build_historical_market_datasets(expected)
     if not args.check:
         _write_files(expected)
+        _write_historical_market_files(expected_historical_markets)
     actual = _read_files()
+    actual_historical_markets = _read_historical_market_files()
     validate_datasets(actual)
     if actual != expected:
         raise FixtureValidationError(
             "Checked-in fixtures differ from deterministic output; rerun the generator."
         )
-    _print_report(actual, checked_only=args.check)
+    if actual_historical_markets != expected_historical_markets:
+        raise FixtureValidationError(
+            "Checked-in historical market fixtures differ from deterministic "
+            "output; rerun the generator."
+        )
+    _print_report(
+        actual,
+        actual_historical_markets,
+        checked_only=args.check,
+    )
     return 0
 
 

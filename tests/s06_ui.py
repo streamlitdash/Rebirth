@@ -7,12 +7,14 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 from dash import dash_table, dcc, html
 
 from ui.s04_components import (
     QUICK_SEARCH_HIERARCHY_DEPTH,
     build_detail_panel_with_state,
     build_new_trade_detail_table,
+    build_quick_market_history_result,
     build_quick_market_result,
     build_quick_market_search,
     build_quick_search,
@@ -24,6 +26,8 @@ from ui.s04_components import (
     build_unmapped_books_table,
     detail_tenor_view_state,
     metric_header,
+    quick_market_history_cell_state,
+    quick_market_history_identity,
 )
 from ui.s03_aggregate import ordered_unique, row_key
 from ui.s07_events import _prune_quick_search_indexes, _render_quick_search_pivot
@@ -188,6 +192,153 @@ def test_one_axis_market_chart_uses_equal_category_spacing_and_dynamic_label() -
     assert figure.layout.yaxis2.title.text == "Market Move"
     assert figure.layout.yaxis2.overlaying == "y"
     assert figure.layout.yaxis2.side == "right"
+
+
+def test_market_history_selects_one_connector_ranked_cell_without_averaging() -> None:
+    current = pd.DataFrame(
+        [
+            ["IR", "Delta", "EUR", "5Y", 1, "1M", 0, 5.1],
+            ["IR", "Delta", "EUR", "1Y", 0, "1M", 0, 1.3],
+        ],
+        columns=[
+            "Risk Type",
+            "Risk Greek",
+            "Underlying",
+            "Tenor Swap",
+            "Tenor Swap Order",
+            "Tenor Option",
+            "Tenor Option Order",
+            "Current",
+        ],
+    )
+    options, selected, disabled = quick_market_history_cell_state(current, None)
+
+    assert [option["label"] for option in options] == [
+        "Swap 1Y · Option 1M",
+        "Swap 5Y · Option 1M",
+    ]
+    assert selected == options[0]["value"]
+    assert disabled is False
+    assert quick_market_history_identity(current) == ("IR", "Delta", "EUR")
+
+    history = pd.DataFrame(
+        [
+            ["2026-08-12", "1Y", "1M", 1.0],
+            ["2026-08-13", "1Y", "1M", 1.1],
+            ["2026-08-13", "5Y", "1M", 99.0],
+            # The current snapshot owns its date and replaces this archived value.
+            ["2026-08-14", "1Y", "1M", 1.2],
+        ],
+        columns=["Market Date", "Tenor Swap", "Tenor Option", "Current"],
+    )
+    graph, status = build_quick_market_history_result(
+        history,
+        current,
+        selected_cell=selected,
+        market_date="2026-08-14",
+        market_status="OFFICIAL",
+    )
+
+    assert isinstance(graph, dcc.Graph)
+    assert list(graph.figure.data[0].y) == [1.0, 1.1, 1.3]
+    assert [
+        pd.Timestamp(value).date().isoformat() for value in graph.figure.data[0].x
+    ] == [
+        "2026-08-12",
+        "2026-08-13",
+        "2026-08-14",
+    ]
+    assert list(graph.figure.data[1].y) == [1.3]
+    assert "2 archived daily observations" in status
+    assert "today's OFFICIAL point included" in status
+
+
+def test_market_history_rejects_duplicate_daily_values_for_one_exact_cell() -> None:
+    current = pd.DataFrame(
+        {
+            "Risk Type": ["IR"],
+            "Risk Greek": ["Delta"],
+            "Underlying": ["EUR"],
+            "Tenor Swap": ["1Y"],
+            "Tenor Option": ["N/A"],
+            "Current": [1.3],
+        }
+    )
+    _options, selected, _disabled = quick_market_history_cell_state(current, None)
+    history = pd.DataFrame(
+        {
+            "Market Date": ["2026-08-13", "2026-08-13"],
+            "Tenor Swap": ["1Y", "1Y"],
+            "Tenor Option": ["N/A", "N/A"],
+            "Current": [1.0, 1.1],
+        }
+    )
+
+    with pytest.raises(ValueError, match="duplicate quote cells"):
+        build_quick_market_history_result(
+            history,
+            current,
+            selected_cell=str(selected),
+            market_date="2026-08-14",
+            market_status="LIVE",
+        )
+
+
+def test_market_history_keeps_archived_points_when_current_is_unavailable() -> None:
+    current = pd.DataFrame(
+        {
+            "Risk Type": ["IR"],
+            "Risk Greek": ["Delta"],
+            "Underlying": ["EUR"],
+            "Tenor Swap": ["1Y"],
+            "Tenor Option": ["N/A"],
+            "Current": [pd.NA],
+        }
+    )
+    _options, selected, _disabled = quick_market_history_cell_state(current, None)
+    history = pd.DataFrame(
+        {
+            # A stale archived value for the current snapshot date must not be
+            # displayed when the in-memory quote is unavailable.
+            "Market Date": ["2026-08-12", "2026-08-13", "2026-08-14"],
+            "Tenor Swap": ["1Y", "1Y", "1Y"],
+            "Tenor Option": ["N/A", "N/A", "N/A"],
+            "Current": [1.0, 1.1, 99.0],
+        }
+    )
+
+    graph, status = build_quick_market_history_result(
+        history,
+        current,
+        selected_cell=str(selected),
+        market_date="2026-08-14",
+        market_status="LIVE",
+    )
+
+    assert isinstance(graph, dcc.Graph)
+    assert len(graph.figure.data) == 1
+    assert list(graph.figure.data[0].y) == [1.0, 1.1]
+    assert "2 archived daily observations" in status
+    assert "today's LIVE quote is unavailable" in status
+
+
+def test_market_history_scalar_cell_is_automatic_and_never_portfolio_based() -> None:
+    scalar = pd.DataFrame(
+        {
+            "Risk Type": ["FX"],
+            "Risk Greek": ["Delta"],
+            "Underlying": ["EURUSD"],
+            "Tenor Swap": ["N/A"],
+            "Tenor Option": ["N/A"],
+            "Portfolio": ["BOOK-A"],
+            "Current": [1.12],
+        }
+    )
+    options, selected, disabled = quick_market_history_cell_state(scalar, None)
+
+    assert options == [{"label": "Spot / no tenor", "value": selected}]
+    assert disabled is True
+    assert "Portfolio" not in str(selected)
 
 
 def test_market_curve_and_table_follow_connector_tenor_rank() -> None:

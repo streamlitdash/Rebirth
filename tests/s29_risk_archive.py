@@ -20,16 +20,22 @@ from core.s04_pl import (
 )
 from core.s11_risk_archive import (
     ARCHIVE_FILE_NAMES,
+    ARCHIVE_SCHEMA_VERSION,
     COLOSSUS_COLUMNS,
+    MARKET_ARCHIVE_COLUMNS,
+    MARKET_FILE_NAME,
+    MARKET_HISTORY_COLUMNS,
     ArchiveResult,
     RiskArchive,
     RiskArchiveValidationError,
     archive_from_manager,
     archive_official_snapshot,
     list_completed_market_dates,
+    load_market_history_for_identity,
     load_risk_archive,
     load_shared_pl_history,
     project_archive_to_pl_history,
+    validate_market_archive_frame,
 )
 from tools.s03_archive_official_risk import (
     DEFAULT_ARCHIVE_ROOT,
@@ -88,6 +94,62 @@ def _colossus() -> pd.DataFrame:
     )
 
 
+def _market(market_date: str = "2026-08-14", *, shift: float = 0.0) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            [
+                "ir/delta",
+                "IR",
+                "Delta",
+                "EUR",
+                "1Y",
+                "N/A",
+                0,
+                pd.NA,
+                market_date,
+                4.0,
+                4.1 + shift,
+                0.1 + shift,
+                "OFFICIAL",
+                "Available",
+            ],
+            [
+                "ir/delta",
+                "IR",
+                "Delta",
+                "EUR",
+                "5Y",
+                "N/A",
+                1,
+                pd.NA,
+                market_date,
+                4.2,
+                4.3 + shift,
+                0.1 + shift,
+                "OFFICIAL",
+                "Available",
+            ],
+            [
+                "fx/delta",
+                "FX",
+                "Delta",
+                "EUR/USD",
+                "Spot",
+                "N/A",
+                pd.NA,
+                pd.NA,
+                market_date,
+                1.1,
+                1.11 + shift,
+                0.01 + shift,
+                "OFFICIAL",
+                "Available",
+            ],
+        ],
+        columns=list(MARKET_ARCHIVE_COLUMNS),
+    )
+
+
 def _snapshot(
     *,
     market_status: str = "OFFICIAL",
@@ -95,6 +157,7 @@ def _snapshot(
     system_date: str = "2026-08-14",
     errors: tuple[str, ...] = (),
     risk: pd.DataFrame | None = None,
+    market: pd.DataFrame | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         revision=7,
@@ -104,6 +167,7 @@ def _snapshot(
         market_status=market_status,
         errors=errors,
         dashboard_frame=_risk() if risk is None else risk,
+        market_frame=_market(market_date) if market is None else market,
     )
 
 
@@ -123,6 +187,7 @@ def test_official_archive_is_atomic_complete_and_idempotent(tmp_path: Path) -> N
         path=tmp_path.resolve() / "2026-08-14",
         risk_rows=3,
         colossus_rows=2,
+        market_rows=3,
     )
     assert calls == [pd.Timestamp("2026-08-14")]
     assert {path.name for path in first.path.iterdir()} == set(ARCHIVE_FILE_NAMES)
@@ -133,6 +198,9 @@ def test_official_archive_is_atomic_complete_and_idempotent(tmp_path: Path) -> N
     assert loaded.risk.columns.tolist() == _risk().columns.tolist()
     assert loaded.risk["Portfolio"].tolist() == _risk()["Portfolio"].tolist()
     pd.testing.assert_frame_equal(loaded.colossus, _colossus())
+    pd.testing.assert_frame_equal(
+        loaded.market, validate_market_archive_frame(_market())
+    )
 
     second = archive_official_snapshot(
         _snapshot(),
@@ -142,7 +210,175 @@ def test_official_archive_is_atomic_complete_and_idempotent(tmp_path: Path) -> N
     assert second.status == "already_archived"
     assert second.risk_rows == 3
     assert second.colossus_rows == 2
+    assert second.market_rows == 3
     assert calls == [pd.Timestamp("2026-08-14")]
+
+
+def test_new_official_archive_manifest_covers_market_csv(tmp_path: Path) -> None:
+    result = archive_official_snapshot(_snapshot(), lambda _date: _colossus(), tmp_path)
+    manifest = json.loads((result.path / "_SUCCESS").read_text(encoding="utf-8"))
+
+    assert manifest["schema_version"] == ARCHIVE_SCHEMA_VERSION
+    assert manifest["market_rows"] == 3
+    assert manifest["market_columns"] == list(MARKET_ARCHIVE_COLUMNS)
+    assert MARKET_FILE_NAME in manifest["sha256"]
+    assert result.market_rows == 3
+
+
+def test_schema_one_official_archive_without_optional_market_remains_readable(
+    tmp_path: Path,
+) -> None:
+    result = archive_official_snapshot(_snapshot(), lambda _date: _colossus(), tmp_path)
+    marker = result.path / "_SUCCESS"
+    manifest = json.loads(marker.read_text(encoding="utf-8"))
+    manifest["schema_version"] = 1
+    manifest.pop("market_rows")
+    manifest.pop("market_columns")
+    manifest["sha256"].pop(MARKET_FILE_NAME)
+    (result.path / MARKET_FILE_NAME).unlink()
+    marker.write_text(json.dumps(manifest), encoding="utf-8")
+
+    archive = load_risk_archive(tmp_path, result.market_date)
+    market_history = load_market_history_for_identity(tmp_path, "IR", "Delta", "EUR")
+
+    assert archive.market is None
+    assert market_history.empty
+    assert list(market_history.columns) == list(MARKET_HISTORY_COLUMNS)
+    assert list_completed_market_dates(tmp_path) == ("2026-08-14",)
+
+
+def test_schema_one_cannot_be_mislabeled_with_market_metadata(tmp_path: Path) -> None:
+    result = archive_official_snapshot(_snapshot(), lambda _date: _colossus(), tmp_path)
+    marker = result.path / "_SUCCESS"
+    manifest = json.loads(marker.read_text(encoding="utf-8"))
+    manifest["schema_version"] = 1
+    marker.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(RiskArchiveValidationError, match="must not declare market"):
+        load_risk_archive(tmp_path, result.market_date)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (
+            lambda frame: frame.assign(**{"Risk Greek": "Vega"}),
+            "must use Risk Type",
+        ),
+        (
+            lambda frame: frame.assign(**{"Source Type": "unknown/source"}),
+            "unknown Source Type",
+        ),
+        (
+            lambda frame: frame.assign(**{"Market Date": "2026-08-13"}),
+            "does not match",
+        ),
+        (
+            lambda frame: pd.concat([frame, frame.iloc[[0]]], ignore_index=True),
+            "duplicate quote identities",
+        ),
+        (
+            lambda frame: frame.assign(**{"Tenor Swap Order": 1.5}),
+            "non-negative integer market orders",
+        ),
+    ],
+)
+def test_market_archive_rejects_corrupt_or_mixed_quote_identities(
+    mutate,
+    message: str,
+) -> None:
+    with pytest.raises(RiskArchiveValidationError, match=message):
+        validate_market_archive_frame(
+            mutate(_market()),
+            market_date="2026-08-14",
+        )
+
+
+def test_market_archive_retains_unavailable_quote_as_missing_not_zero() -> None:
+    market = _market().iloc[[0]].copy()
+    market.loc[:, ["Open", "Current", "Move"]] = float("nan")
+    market["Market Data Status"] = "Missing Open and Current (OFFICIAL)"
+
+    validated = validate_market_archive_frame(market, market_date="2026-08-14")
+
+    assert validated[["Open", "Current", "Move"]].isna().all().all()
+
+
+def test_legacy_market_csv_is_optional_and_query_keeps_daily_quote_order(
+    tmp_path: Path,
+) -> None:
+    legacy_pl = pd.DataFrame(
+        [["IR", "Delta", "EUR", "XVA", "BOOK-A", 7.0]],
+        columns=list(HISTORY_FILE_COLUMNS),
+    )
+    for market_date, shift in (
+        ("2026-08-12", -0.02),
+        ("2026-08-13", -0.01),
+        ("2026-08-14", 0.0),
+    ):
+        leaf = tmp_path / market_date
+        leaf.mkdir(parents=True)
+        legacy_pl.to_csv(leaf / "histo.csv", index=False)
+        legacy_pl.to_csv(leaf / "predicted.csv", index=False)
+        if market_date != "2026-08-13":
+            _market(market_date, shift=shift).to_csv(
+                leaf / MARKET_FILE_NAME,
+                index=False,
+            )
+
+    pl_history = load_shared_pl_history(tmp_path)
+    market_history = load_market_history_for_identity(
+        tmp_path,
+        "IR",
+        "Delta",
+        "EUR",
+    )
+
+    assert pl_history["Market Date"].drop_duplicates().tolist() == [
+        "2026-08-12",
+        "2026-08-13",
+        "2026-08-14",
+    ]
+    assert market_history[["Market Date", "Tenor Swap"]].values.tolist() == [
+        ["2026-08-12", "1Y"],
+        ["2026-08-12", "5Y"],
+        ["2026-08-14", "1Y"],
+        ["2026-08-14", "5Y"],
+    ]
+    assert market_history["Current"].tolist() == pytest.approx([4.08, 4.28, 4.1, 4.3])
+    assert "Portfolio" not in market_history
+
+
+def test_market_identity_query_avoids_pnl_files_and_caches_only_selected_leaf(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    archive_official_snapshot(_snapshot(), lambda _date: _colossus(), tmp_path)
+    archive_module._load_market_identity_leaf_cached.cache_clear()
+    original_read_csv = archive_module.pd.read_csv
+    market_reads = 0
+
+    def counted_read_csv(source, *args, **kwargs):
+        nonlocal market_reads
+        if Path(source).name == MARKET_FILE_NAME:
+            market_reads += 1
+        return original_read_csv(source, *args, **kwargs)
+
+    monkeypatch.setattr(archive_module.pd, "read_csv", counted_read_csv)
+    monkeypatch.setattr(
+        archive_module,
+        "_load_completed_leaf",
+        lambda _path: (_ for _ in ()).throw(
+            AssertionError("market query must not load risk.csv or colossus.csv")
+        ),
+    )
+
+    first = load_market_history_for_identity(tmp_path, "IR", "Delta", "EUR")
+    second = load_market_history_for_identity(tmp_path, "IR", "Delta", "EUR")
+
+    pd.testing.assert_frame_equal(first, second)
+    assert market_reads == 1
+    assert len(first) == 2
 
 
 @pytest.mark.parametrize(

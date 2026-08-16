@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import tomllib
 from pathlib import Path
 
@@ -63,10 +64,23 @@ def test_stage_bundle_uses_conventional_runtime_names(tmp_path: Path) -> None:
     )
     history_files = sorted((publishing.PROJECT / "data" / "histo").rglob("*.csv"))
     assert history_files
-    assert {path.name for path in history_files} == {"histo.csv", "predicted.csv"}
+    assert {path.name for path in history_files} == {
+        "histo.csv",
+        "predicted.csv",
+        "risk.csv",
+        "colossus.csv",
+        "market.csv",
+    }
     for source in history_files:
         relative_path = source.relative_to(publishing.PROJECT)
         assert (staged / relative_path).read_bytes() == source.read_bytes()
+    demo_leaf = staged / "data" / "histo" / publishing.DEMO_OFFICIAL_HISTORY_DATE
+    assert {path.name for path in demo_leaf.iterdir()} == {
+        "risk.csv",
+        "colossus.csv",
+        "market.csv",
+        "_SUCCESS",
+    }
     assert not any(path.name == "_disabled" for path in staged.rglob("_disabled"))
     assert not any(staged.rglob("*.disabled"))
     assert not any((staged / "pages").rglob("__pycache__"))
@@ -91,19 +105,36 @@ def test_stage_bundle_excludes_runtime_official_history_leaves(
     legacy.mkdir(parents=True)
     (legacy / "histo.csv").write_text("legacy-c\n", encoding="utf-8")
     (legacy / "predicted.csv").write_text("legacy-p\n", encoding="utf-8")
+    (legacy / "market.csv").write_text("legacy-market\n", encoding="utf-8")
     official = project / "data" / "histo" / "2026-08-14"
     official.mkdir()
-    for name in ("risk.csv", "colossus.csv", "_SUCCESS"):
+    for name in ("risk.csv", "colossus.csv", "market.csv", "_SUCCESS"):
         (official / name).write_text("runtime\n", encoding="utf-8")
+    demo_source = (
+        publishing.PROJECT / "data" / "histo" / publishing.DEMO_OFFICIAL_HISTORY_DATE
+    )
+    demo = project / "data" / "histo" / publishing.DEMO_OFFICIAL_HISTORY_DATE
+    shutil.copytree(demo_source, demo)
     pending = project / "data" / "histo" / ".2026-08-15.pending-test"
     pending.mkdir()
     (pending / "risk.csv").write_text("runtime\n", encoding="utf-8")
+    market_only = project / "data" / "histo" / "2026-08-12"
+    market_only.mkdir()
+    (market_only / "market.csv").write_text("runtime\n", encoding="utf-8")
 
     monkeypatch.setattr(publishing, "PROJECT", project)
     staged = publishing.stage_bundle(tmp_path / "runtime")
 
     assert (staged / "data" / "histo" / "2026-08-13").is_dir()
+    staged_demo = staged / "data" / "histo" / publishing.DEMO_OFFICIAL_HISTORY_DATE
+    assert {path.name for path in staged_demo.iterdir()} == {
+        "risk.csv",
+        "colossus.csv",
+        "market.csv",
+        "_SUCCESS",
+    }
     assert not (staged / "data" / "histo" / "2026-08-14").exists()
+    assert not (staged / "data" / "histo" / "2026-08-12").exists()
     assert not (staged / "data" / "histo" / ".2026-08-15.pending-test").exists()
 
 

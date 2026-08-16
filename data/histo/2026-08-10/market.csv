@@ -1,0 +1,7 @@
+Source Type,Risk Type,Risk Greek,Underlying,Tenor Swap,Tenor Option,Tenor Swap Order,Tenor Option Order,Market Date,Open,Current,Move,Market Status,Market Data Status
+credit/delta,Credit,Delta,DEMO-CORP,5Y,N/A,0,,2026-08-10,82.5,84.0,1.5,OFFICIAL,Available
+credit/delta,Credit,Delta,DEMO-CORP,10Y,N/A,1,,2026-08-10,105.0,103.5,-1.5,OFFICIAL,Available
+fx/delta,FX,Delta,EUR/USD-DEMO,Spot,N/A,,,2026-08-10,1.108,1.1125,0.0045,OFFICIAL,Available
+ir/basis,IR,Basis,EUR-BASIS-DEMO,5Y,N/A,0,,2026-08-10,18.2,18.6,0.4,OFFICIAL,Available
+ir/delta,IR,Delta,EUR-DEMO,1Y,N/A,0,,2026-08-10,2.51,2.57,0.06,OFFICIAL,Available
+ir/delta,IR,Delta,EUR-DEMO,5Y,N/A,1,,2026-08-10,2.68,2.64,-0.04,OFFICIAL,Available

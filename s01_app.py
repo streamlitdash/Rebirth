@@ -11,6 +11,7 @@ from core.s04_pl import PLSendValidationError
 from core.s05_storage import LocalCsvAdjustmentRepository
 from core.s11_risk_archive import (
     RiskArchiveValidationError,
+    build_market_history_loader,
     load_shared_pl_history,
 )
 from feeds.s01_sources import (
@@ -109,6 +110,7 @@ def create_app(settings: RuntimeSettings | None = None):
         stock_portfolio_source=get_portfolio_config,
         saved_view_root=saved_view_path,
         pl_history_root=historical_pl_path,
+        market_history_loader=build_market_history_loader(historical_pl_path),
         dash_kwargs=settings.dash_kwargs,
     )
 

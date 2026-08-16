@@ -141,6 +141,18 @@ class SearchResultProtocol(Protocol):
 
 
 @runtime_checkable
+class MarketHistoryLoaderProtocol(Protocol):
+    """Load quote-grain history for one exact raw MarketBook identity."""
+
+    def __call__(
+        self,
+        risk_type: str,
+        risk_greek: str,
+        underlying: str,
+    ) -> pd.DataFrame: ...
+
+
+@runtime_checkable
 class RefreshSnapshotProtocol(Protocol):
     """Read-only snapshot shape consumed by the dashboard."""
 
@@ -410,6 +422,7 @@ __all__ = [
     "DateLike",
     "FrameName",
     "FrameReadProtocol",
+    "MarketHistoryLoaderProtocol",
     "PLSnapshotProtocol",
     "RefreshHealthProtocol",
     "RefreshManagerProtocol",

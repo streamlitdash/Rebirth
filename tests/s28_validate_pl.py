@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
@@ -255,3 +256,47 @@ def test_validate_pl_discovers_and_renders_only_completed_dates_when_opened(
         and getattr(component, "className", None) == "risk-table validate-pl-table"
         for component in _walk(table)
     )
+
+
+def test_checked_in_synthetic_archive_is_discoverable_and_renders_validate_pl(
+    monkeypatch,
+) -> None:
+    history_root = Path(__file__).resolve().parents[1] / "data" / "histo"
+    demo_date = "2026-08-10"
+    app = Dash(__name__)
+    app.layout = build_validate_pl_section()
+    register_validate_pl_callbacks(app, history_root)
+    catalog_key = next(
+        key for key in app.callback_map if "pl-validate-date.options" in key
+    )
+    discover = app.callback_map[catalog_key]["callback"].__wrapped__
+
+    options, selected, disabled, status = discover(1, None)
+
+    assert {option["value"] for option in options} == {demo_date}
+    assert selected == demo_date
+    assert disabled is False
+    assert status == ""
+
+    render_key = next(
+        key for key in app.callback_map if "pl-validate-table.children" in key
+    )
+    render = app.callback_map[render_key]["callback"].__wrapped__
+    monkeypatch.setattr(
+        validate_pl_module,
+        "ctx",
+        SimpleNamespace(triggered_id="pl-validate-date"),
+    )
+
+    table, render_status, open_paths = render(selected, [], [], [])
+
+    assert "Official 2026-08-10" in render_status
+    assert "matched" in render_status
+    assert open_paths == []
+    labels = [
+        component.children
+        for component in _walk(table)
+        if isinstance(component, html.Span)
+        and getattr(component, "className", None) == "row-label-text"
+    ]
+    assert labels == ["TOTAL", "Credit", "IR", "FX"]

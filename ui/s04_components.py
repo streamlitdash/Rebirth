@@ -157,10 +157,15 @@ QUICK_SEARCH_INDEX_OPTIONS = (
 )
 
 QUICK_MARKET_DEFAULT_INDEX = (
+    "Risk Type",
+    "Risk Greek",
     "Underlying",
     "Tenor Swap",
     "Tenor Option",
 )
+
+_QUICK_MARKET_IDENTITY_COLUMNS = ("Risk Type", "Risk Greek", "Underlying")
+_QUICK_MARKET_HISTORY_CELL_COLUMNS = ("Tenor Swap", "Tenor Option")
 
 
 def build_quick_search() -> html.Details:
@@ -972,6 +977,33 @@ def build_quick_market_search() -> html.Details:
                         className="quick-search-dimension-control",
                         hidden=True,
                     ),
+                    html.Div(
+                        [
+                            html.Label(
+                                "Historical quote",
+                                htmlFor="quick-market-history-cell",
+                            ),
+                            html.Div(
+                                [
+                                    dcc.Dropdown(
+                                        id="quick-market-history-cell",
+                                        options=[],
+                                        value=None,
+                                        clearable=False,
+                                        searchable=True,
+                                        disabled=True,
+                                        placeholder="Select one tenor cell",
+                                        className="quick-search-metric-dropdown",
+                                    ),
+                                    html.Small(
+                                        "One exact quote cell is plotted through time; curves and surfaces are never averaged across tenors.",
+                                        className="quick-search-dimension-help",
+                                    ),
+                                ]
+                            ),
+                        ],
+                        className="quick-search-dimension-control",
+                    ),
                     dcc.Loading(
                         html.Div(
                             "Open this section to read the current MarketBook.",
@@ -980,6 +1012,34 @@ def build_quick_market_search() -> html.Details:
                         ),
                         type="dot",
                         delay_show=160,
+                    ),
+                    html.Div(
+                        [
+                            html.Div(
+                                [
+                                    html.H3(
+                                        "Historical market",
+                                        className="detail-chart-title",
+                                    ),
+                                    html.Small(
+                                        "Select a market identity to compare one exact quote cell through time.",
+                                        id="quick-market-history-status",
+                                        className="quick-search-dimension-help",
+                                    ),
+                                ],
+                                className="quick-market-history-heading",
+                            ),
+                            dcc.Loading(
+                                html.Div(
+                                    "Historical market will appear here.",
+                                    id="quick-market-history-chart",
+                                    className="quick-search-hint",
+                                ),
+                                type="dot",
+                                delay_show=160,
+                            ),
+                        ],
+                        className="detail-chart-card quick-market-history-card",
                     ),
                 ],
                 className="quick-search-pivot-body",
@@ -1036,6 +1096,250 @@ def _sort_market_rows(frame: pd.DataFrame, axes: list[str]) -> pd.DataFrame:
         ordered[rank_column] = ordered[rank_column].fillna(len(ranks))
         rank_columns.append(rank_column)
     return ordered.sort_values(rank_columns, kind="stable").drop(columns=rank_columns)
+
+
+def _quick_market_history_cell_value(
+    tenor_swap: object,
+    tenor_option: object,
+) -> str:
+    """Serialize one exact tenor cell without relying on a display delimiter."""
+
+    def coordinate(value: object) -> str | None:
+        if pd.isna(value):
+            return None
+        label = str(value).strip()
+        return None if label.casefold() in _ABSENT_TENOR_LABELS else label
+
+    return json.dumps(
+        {
+            "tenor option": coordinate(tenor_option),
+            "tenor swap": coordinate(tenor_swap),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _quick_market_history_cell_label(value: str) -> str:
+    cell = json.loads(value)
+    swap = cell["tenor swap"]
+    option = cell["tenor option"]
+    if swap is not None and option is not None:
+        return f"Swap {swap} · Option {option}"
+    if swap is not None:
+        return f"Tenor Swap {swap}"
+    if option is not None:
+        return f"Tenor Option {option}"
+    return "Spot / no tenor"
+
+
+def quick_market_history_cell_state(
+    frame: pd.DataFrame,
+    requested_cell: str | None,
+) -> tuple[list[dict[str, str]], str | None, bool]:
+    """Return exact quote-cell options in connector-owned tenor order.
+
+    A curve or surface must resolve to one quote cell before it can be compared
+    through time. The first connector-ranked cell is the deterministic default;
+    no values from incompatible tenors are combined.
+    """
+
+    if frame.empty:
+        return [], None, True
+    axes = [
+        column
+        for column in _QUICK_MARKET_HISTORY_CELL_COLUMNS
+        if _market_axis(frame, column)
+    ]
+    ordered = _sort_market_rows(frame, axes)
+    values: list[str] = []
+    for record in ordered.to_dict("records"):
+        value = _quick_market_history_cell_value(
+            record.get("Tenor Swap"),
+            record.get("Tenor Option"),
+        )
+        if value not in values:
+            values.append(value)
+    options = [
+        {"label": _quick_market_history_cell_label(value), "value": value}
+        for value in values
+    ]
+    selected = str(requested_cell or "").strip()
+    resolved = selected if selected in values else (values[0] if values else None)
+    return options, resolved, len(options) <= 1
+
+
+def quick_market_history_identity(frame: pd.DataFrame) -> tuple[str, str, str]:
+    """Extract one unambiguous raw MarketBook identity from an exact pivot."""
+
+    missing = [
+        column for column in _QUICK_MARKET_IDENTITY_COLUMNS if column not in frame
+    ]
+    if missing:
+        raise ValueError(f"Quick Market result is missing identity columns: {missing}")
+    identities = frame.loc[:, list(_QUICK_MARKET_IDENTITY_COLUMNS)].drop_duplicates()
+    if len(identities) != 1:
+        raise ValueError("Quick Market result must contain one exact raw identity")
+    row = identities.iloc[0]
+    values = tuple(
+        str(row[column]).strip() for column in _QUICK_MARKET_IDENTITY_COLUMNS
+    )
+    if any(not value for value in values):
+        raise ValueError("Quick Market raw identity cannot contain blank values")
+    return values
+
+
+def _quick_market_history_cell(frame: pd.DataFrame, selected_cell: str) -> pd.DataFrame:
+    """Select one exact tenor cell while treating all absent labels alike."""
+
+    try:
+        cell = json.loads(selected_cell)
+        requested = {
+            "Tenor Swap": cell["tenor swap"],
+            "Tenor Option": cell["tenor option"],
+        }
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("Historical quote selection is invalid") from exc
+
+    keep = pd.Series(True, index=frame.index)
+    for column, value in requested.items():
+        values = frame.get(column, pd.Series(pd.NA, index=frame.index))
+        if value is None:
+            keep &= ~_meaningful_tenor_mask(values)
+        else:
+            keep &= values.astype("string").str.strip().eq(str(value)).fillna(False)
+    return frame.loc[keep].copy()
+
+
+def build_quick_market_history_result(
+    history_frame: pd.DataFrame,
+    current_frame: pd.DataFrame,
+    *,
+    selected_cell: str,
+    market_date: object,
+    market_status: str,
+) -> tuple[html.Div | dcc.Graph, str]:
+    """Plot daily Current values for one quote cell plus the live current point."""
+
+    required = {"Market Date", "Current"}
+    missing = sorted(required - set(history_frame.columns))
+    if missing and not history_frame.empty:
+        raise ValueError(f"Market history is missing required columns: {missing}")
+
+    if history_frame.empty:
+        historical = pd.DataFrame(columns=["Market Date", "Current"])
+    else:
+        historical = _quick_market_history_cell(history_frame, selected_cell)
+    current = _quick_market_history_cell(current_frame, selected_cell)
+    if len(current) != 1:
+        raise ValueError("Historical chart requires one current quote per tenor cell")
+
+    points = historical.loc[:, ["Market Date", "Current"]].copy()
+    points["Market Date"] = pd.to_datetime(points["Market Date"], errors="coerce")
+    points["Current"] = pd.to_numeric(points["Current"], errors="coerce")
+    points = points.dropna(subset=["Market Date", "Current"])
+
+    current_date = pd.Timestamp(market_date).normalize()
+    current_value = pd.to_numeric(
+        pd.Series([current.iloc[0]["Current"]]), errors="coerce"
+    ).iloc[0]
+    current_included = bool(pd.notna(current_value))
+    # The committed in-memory MarketBook owns its date even when that quote is
+    # unavailable. Never fall back to an archived value for the current date.
+    points = points.loc[points["Market Date"].dt.normalize().ne(current_date)]
+    if current_included:
+        points = pd.concat(
+            [
+                points,
+                pd.DataFrame(
+                    {"Market Date": [current_date], "Current": [current_value]}
+                ),
+            ],
+            ignore_index=True,
+        )
+
+    duplicate_dates = points["Market Date"].dt.normalize().duplicated(keep=False)
+    if duplicate_dates.any():
+        dates = sorted(
+            points.loc[duplicate_dates, "Market Date"]
+            .dt.date.astype(str)
+            .unique()
+            .tolist()
+        )
+        raise ValueError(
+            "Market history contains duplicate quote cells for dates "
+            + ", ".join(dates[:5])
+        )
+    points = points.sort_values("Market Date", kind="stable")
+    if points.empty:
+        return (
+            html.Div(
+                "No historical observations or current quote are available for this cell.",
+                className="quick-search-empty",
+            ),
+            "No daily observations are available for the selected quote cell.",
+        )
+
+    figure = go.Figure()
+    figure.add_trace(
+        go.Scatter(
+            name="Current market",
+            x=points["Market Date"],
+            y=points["Current"],
+            mode="lines+markers",
+            line={"color": "#79BE89", "width": 3},
+            marker={"size": 7},
+            hovertemplate=("<b>%{x|%Y-%m-%d}</b><br>Current: %{y:,.6g}<extra></extra>"),
+        )
+    )
+    if current_included:
+        figure.add_trace(
+            go.Scatter(
+                name=f"Today · {market_status}",
+                x=[current_date],
+                y=[current_value],
+                mode="markers",
+                marker={
+                    "color": "#111111",
+                    "size": 10,
+                    "line": {"color": "#79BE89", "width": 2},
+                },
+                hovertemplate=(
+                    f"<b>{current_date.date().isoformat()} · {market_status}</b>"
+                    "<br>Current: %{y:,.6g}<extra></extra>"
+                ),
+            )
+        )
+    figure.update_layout(
+        template="plotly_white",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        height=300,
+        margin={"l": 54, "r": 24, "t": 30, "b": 52},
+        legend={"orientation": "h", "y": 1.12},
+        xaxis={"title": "Market Date", "type": "date"},
+        yaxis={"title": "Current"},
+        hovermode="x unified",
+    )
+    observation_count = len(points) - int(current_included)
+    current_status = (
+        f" · today's {market_status} point included"
+        if current_included
+        else f" · today's {market_status} quote is unavailable"
+    )
+    status = (
+        f"{_quick_market_history_cell_label(selected_cell)} · "
+        f"{observation_count:,} archived daily observation"
+        f"{'s' if observation_count != 1 else ''}{current_status}"
+    )
+    return (
+        dcc.Graph(
+            figure=figure,
+            responsive=True,
+            config={"displayModeBar": False, "responsive": True},
+        ),
+        status,
+    )
 
 
 def _market_line_chart(
@@ -5361,6 +5665,7 @@ __all__ = [
     "build_detail_panel_with_state",
     "build_quick_search",
     "build_quick_search_pivot",
+    "build_quick_market_history_result",
     "build_quick_market_search",
     "build_quick_market_result",
     "build_tenor_heatmap",
@@ -5381,6 +5686,8 @@ __all__ = [
     "metric_header",
     "metric_title",
     "new_trade_detail_frame",
+    "quick_market_history_cell_state",
+    "quick_market_history_identity",
     "selected_context_title",
     "default_top_book_open_rows",
     "detail_tenor_partitions",

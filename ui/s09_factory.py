@@ -54,7 +54,7 @@ from .s08_plevents import (
 )
 from .s06_plview import PL_FILTER_NOTE, PL_SAVED_VIEW_CONTROLS, build_pl_page
 from .s02_constants import FILTER_DIMENSION_FIELDS
-from .s01_contracts import RefreshManagerProtocol
+from .s01_contracts import MarketHistoryLoaderProtocol, RefreshManagerProtocol
 from .s10_stock import (
     STOCK_FILTER_FIELDS,
     STOCK_FILTER_IDS,
@@ -203,6 +203,7 @@ def build_app(
     stock_portfolio_source: Any | None = None,
     saved_view_root: str | Path | None = None,
     pl_history_root: str | Path | None = None,
+    market_history_loader: MarketHistoryLoaderProtocol | None = None,
     dash_kwargs: Mapping[str, Any] | None = None,
 ) -> Dash:
     """Create the Dash app from static data or a server-side refresh manager."""
@@ -686,6 +687,7 @@ def build_app(
         risk_data,
         route_prefix=request_prefix,
         startup_coordinator=startup_coordinator,
+        market_history_loader=market_history_loader,
     )
     if refresh_manager is not None:
         register_pl_aggregate_callbacks(

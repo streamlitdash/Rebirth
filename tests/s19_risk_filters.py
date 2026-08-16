@@ -418,6 +418,53 @@ def test_risk_filter_values_and_mode_have_one_callback_owner() -> None:
     assert set(owners.values()) == {1}
 
 
+def test_quick_market_history_targets_are_mounted_and_have_single_owners() -> None:
+    app = build_app(
+        refresh_manager=_warm_manager(),
+        market_history_loader=lambda _risk_type, _risk_greek, _underlying: (
+            pd.DataFrame()
+        ),
+    )
+    governed = {
+        ("quick-market-history-cell", "options"),
+        ("quick-market-history-cell", "value"),
+        ("quick-market-history-cell", "disabled"),
+        ("quick-market-history-chart", "children"),
+        ("quick-market-history-status", "children"),
+    }
+    owners = {identity: 0 for identity in governed}
+    for metadata in app.callback_map.values():
+        for output in _callback_outputs(metadata):
+            identity = (str(output.component_id), output.component_property)
+            if identity in owners:
+                owners[identity] += 1
+
+    assert set(owners.values()) == {1}
+    layout_ids = {
+        str(getattr(component, "id", ""))
+        for component in _walk(
+            build_layout(
+                prepare_risk_data(_raw_risk_frame()),
+                _snapshot(),
+                refresh_enabled=True,
+            )
+        )
+    }
+    assert {component_id for component_id, _property in governed} <= layout_ids
+
+    history_inputs = _callback_inputs_for_output(
+        app,
+        "quick-market-history-chart",
+        "children",
+    )
+    assert history_inputs == {
+        ("quick-market-combine-udl", "value"),
+        ("quick-market-history-cell", "value"),
+        ("quick-market-summary", "n_clicks"),
+        ("data-revision-store", "data"),
+    }
+
+
 def test_portfolio_is_rendered_as_a_filter_and_a_view_by_dimension() -> None:
     prepared = prepare_risk_data(_raw_risk_frame())
     layout = build_layout(prepared, _snapshot(), refresh_enabled=True)

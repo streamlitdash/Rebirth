@@ -46,6 +46,7 @@ from .s04_components import (
     build_detail_panel_with_state,
     build_initial_load_layout,
     build_layout,
+    build_quick_market_history_result,
     build_quick_market_result,
     build_quick_search_pivot,
     build_operating_date_content,
@@ -61,6 +62,8 @@ from .s04_components import (
     QUICK_SEARCH_INDEX_OPTIONS,
     QUICK_RISK_PIVOT_LIMIT,
     QUICK_MARKET_DEFAULT_INDEX,
+    quick_market_history_cell_state,
+    quick_market_history_identity,
 )
 from .s11_saved_views import (
     saved_view_request_id,
@@ -82,6 +85,7 @@ from .s02_constants import (
 )
 from .s01_contracts import (
     ControlSnapshotProtocol,
+    MarketHistoryLoaderProtocol,
     RefreshManagerProtocol,
     RefreshSnapshotProtocol,
 )
@@ -1262,6 +1266,7 @@ def register_callbacks(
     *,
     route_prefix: str = "/",
     startup_coordinator: StartupCoordinator | None = None,
+    market_history_loader: MarketHistoryLoaderProtocol | None = None,
 ) -> None:
     """Register the complete interactive behavior for the risk dashboard."""
     cache = _RiskDataCache(
@@ -2576,11 +2581,15 @@ def register_callbacks(
             Output("quick-market-view", "value"),
             Output("quick-market-view", "options"),
             Output("quick-market-surface-metric", "options"),
+            Output("quick-market-history-cell", "options"),
+            Output("quick-market-history-cell", "value"),
+            Output("quick-market-history-cell", "disabled"),
             Input("quick-market-combine-udl", "value"),
             Input("quick-market-view", "value"),
             Input("quick-market-surface-metric", "value"),
             Input("quick-market-summary", "n_clicks"),
             Input("data-revision-store", "data"),
+            State("quick-market-history-cell", "value"),
             prevent_initial_call=True,
         )
         def render_market_search(
@@ -2589,9 +2598,18 @@ def register_callbacks(
             surface_metric,
             summary_clicks,
             _revision,
+            requested_history_cell,
         ):
             if not int(summary_clicks or 0) % 2:
-                return None, no_update, no_update, no_update
+                return (
+                    None,
+                    no_update,
+                    no_update,
+                    no_update,
+                    no_update,
+                    no_update,
+                    no_update,
+                )
             selected = str(combine_udl or "").strip()
             if not selected:
                 return (
@@ -2602,6 +2620,9 @@ def register_callbacks(
                     no_update,
                     no_update,
                     no_update,
+                    [],
+                    None,
+                    True,
                 )
             try:
                 result = refresh_manager.pivot_market_exact(
@@ -2627,7 +2648,21 @@ def register_callbacks(
                         revision=int(result.revision),
                     )
                 )
-                return rendered, resolved, options, surface_options
+                history_options, history_cell, history_disabled = (
+                    quick_market_history_cell_state(
+                        result.frame,
+                        str(requested_history_cell or "") or None,
+                    )
+                )
+                return (
+                    rendered,
+                    resolved,
+                    options,
+                    surface_options,
+                    history_options,
+                    history_cell,
+                    history_disabled,
+                )
             except (
                 AttributeError,
                 KeyError,
@@ -2649,6 +2684,127 @@ def register_callbacks(
                     no_update,
                     no_update,
                     no_update,
+                    no_update,
+                    no_update,
+                    no_update,
+                )
+
+        @app.callback(
+            Output("quick-market-history-chart", "children"),
+            Output("quick-market-history-status", "children"),
+            Input("quick-market-combine-udl", "value"),
+            Input("quick-market-history-cell", "value"),
+            Input("quick-market-summary", "n_clicks"),
+            Input("data-revision-store", "data"),
+            prevent_initial_call=True,
+        )
+        def render_market_history(
+            combine_udl,
+            requested_history_cell,
+            summary_clicks,
+            _revision,
+        ):
+            if not int(summary_clicks or 0) % 2:
+                return None, no_update
+            selected = str(combine_udl or "").strip()
+            if not selected:
+                return (
+                    html.Div(
+                        "Select a Market identity to show its daily history.",
+                        className="quick-search-hint",
+                    ),
+                    "Historical values use one exact raw MarketBook quote cell.",
+                )
+            try:
+                result = refresh_manager.pivot_market_exact(
+                    selected,
+                    index_columns=QUICK_MARKET_DEFAULT_INDEX,
+                )
+                if result.frame.empty:
+                    return (
+                        html.Div(
+                            f"No MarketBook rows match '{selected}'.",
+                            className="quick-search-empty",
+                        ),
+                        "No current quote is available to match against history.",
+                    )
+                statuses = result.frame["Market Status"].dropna().unique()
+                if len(statuses) != 1:
+                    raise ValueError(
+                        "exact MarketBook result has an ambiguous Market Status"
+                    )
+                history_options, history_cell, _disabled = (
+                    quick_market_history_cell_state(
+                        result.frame,
+                        str(requested_history_cell or "") or None,
+                    )
+                )
+                if not history_options or history_cell is None:
+                    raise ValueError("exact MarketBook result has no quote cell")
+                risk_type, risk_greek, underlying = quick_market_history_identity(
+                    result.frame
+                )
+                history_error = ""
+                if market_history_loader is None:
+                    history = pd.DataFrame()
+                    history_error = "Historical archive is not configured; showing today's point only."
+                else:
+                    try:
+                        history = market_history_loader(
+                            risk_type,
+                            risk_greek,
+                            underlying,
+                        )
+                        if not isinstance(history, pd.DataFrame):
+                            raise TypeError(
+                                "market history loader must return a pandas DataFrame"
+                            )
+                    except (
+                        KeyError,
+                        LookupError,
+                        OSError,
+                        TypeError,
+                        ValueError,
+                        RuntimeError,
+                    ) as error:
+                        app.logger.exception("Quick Market history load failed")
+                        history = pd.DataFrame()
+                        detail = (
+                            " ".join(str(error).splitlines()).strip()
+                            or type(error).__name__
+                        )
+                        history_error = (
+                            "Historical archive unavailable: "
+                            f"{type(error).__name__}: {detail[:280]}. "
+                            "Showing today's point only."
+                        )
+                chart, status = build_quick_market_history_result(
+                    history,
+                    result.frame,
+                    selected_cell=history_cell,
+                    market_date=result.market_date,
+                    market_status=str(statuses[0]),
+                )
+                return chart, (history_error or status)
+            except (
+                AttributeError,
+                KeyError,
+                LookupError,
+                TypeError,
+                ValueError,
+                RuntimeError,
+            ) as error:
+                app.logger.exception("Quick Market history render failed")
+                detail = (
+                    " ".join(str(error).splitlines()).strip() or type(error).__name__
+                )
+                return (
+                    html.Div(
+                        f"Historical market failed: {type(error).__name__}: {detail[:400]}",
+                        className="quick-search-error",
+                        role="alert",
+                    ),
+                    "Historical market could not be rendered.",
                 )
 
         @app.callback(

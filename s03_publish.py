@@ -8,6 +8,7 @@ deployment directory; no forwarding modules are checked in.
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import shutil
 import subprocess
@@ -43,10 +44,47 @@ IGNORED_NAMES = (
     ".write.lock",
     ".*.tmp",
 )
-_OFFICIAL_HISTORY_ARTIFACTS = {"risk.csv", "colossus.csv", "_SUCCESS"}
+_DEMO_OFFICIAL_HISTORY_ARTIFACTS = {
+    "risk.csv",
+    "colossus.csv",
+    "market.csv",
+    "_SUCCESS",
+}
+_LEGACY_HISTORY_ARTIFACTS = {"histo.csv", "predicted.csv"}
+_LEGACY_HISTORY_WITH_MARKET_ARTIFACTS = {
+    "histo.csv",
+    "predicted.csv",
+    "market.csv",
+}
+DEMO_OFFICIAL_HISTORY_DATE = "2026-08-10"
+DEMO_OFFICIAL_HISTORY_FIXTURE = "synthetic-validate-pl-and-market"
+_DATE_HISTORY_LEAF = re.compile(r"\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])")
 _PENDING_HISTORY_LEAF = re.compile(
     r"\.\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])\.pending-.+"
 )
+
+
+def _is_deployable_demo_history_leaf(
+    candidate: Path,
+    child_names: set[str],
+) -> bool:
+    """Allow only the one explicitly marked, checked-in synthetic archive."""
+
+    if (
+        candidate.name != DEMO_OFFICIAL_HISTORY_DATE
+        or child_names != _DEMO_OFFICIAL_HISTORY_ARTIFACTS
+    ):
+        return False
+    marker = candidate / "_SUCCESS"
+    try:
+        manifest = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    return (
+        isinstance(manifest, dict)
+        and manifest.get("market_date") == DEMO_OFFICIAL_HISTORY_DATE
+        and manifest.get("fixture") == DEMO_OFFICIAL_HISTORY_FIXTURE
+    )
 
 
 def _deployment_ignore(directory: str, names: list[str]) -> set[str]:
@@ -75,7 +113,14 @@ def _deployment_ignore(directory: str, names: list[str]) -> set[str]:
             # bundle is staged. Omitting that transient entry is always safe.
             ignored.add(name)
             continue
-        if child_names & _OFFICIAL_HISTORY_ARTIFACTS:
+        if not _DATE_HISTORY_LEAF.fullmatch(name):
+            continue
+        deployable_demo = _is_deployable_demo_history_leaf(candidate, child_names)
+        deployable_legacy = frozenset(child_names) in {
+            frozenset(_LEGACY_HISTORY_ARTIFACTS),
+            frozenset(_LEGACY_HISTORY_WITH_MARKET_ARTIFACTS),
+        }
+        if not deployable_demo and not deployable_legacy:
             ignored.add(name)
     return ignored
 
