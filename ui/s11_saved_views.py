@@ -1,16 +1,21 @@
-"""Reusable Dash controls and callbacks for page-local saved filter views."""
+"""Reusable Dash controls and callbacks for shared saved filter views."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import Final
 from uuid import uuid4
 
 from dash import Dash, Input, Output, State, ctx, dcc, html, no_update
 from dash.exceptions import MissingCallbackContextException, PreventUpdate
 
 from core.s01_schema import PortfolioField
-from core.s09_saved_views import SavedFilterView, SavedFilterViewRepository
+from core.s08_saved_views import SavedFilterView, SavedFilterViewRepository
+
+
+BASE_SAVED_VIEW_ID: Final = "__base__"
+BASE_SAVED_VIEW_LABEL: Final = "Base / No view"
 
 
 @dataclass(frozen=True)
@@ -68,19 +73,22 @@ class SavedFilterViewControls:
 
 
 def saved_view_options(views: Sequence[SavedFilterView]) -> list[dict[str, str]]:
-    """Return deterministic selector options from repository values."""
+    """Return Base plus deterministic named options from the shared catalogue."""
 
-    return [view.option() for view in views]
+    return [
+        {"label": BASE_SAVED_VIEW_LABEL, "value": BASE_SAVED_VIEW_ID},
+        *(view.option() for view in views),
+    ]
 
 
 def build_saved_filter_view_bar(
     controls: SavedFilterViewControls,
     *,
     initial_views: Sequence[SavedFilterView] = (),
-) -> html.Div:
-    """Build a compact bar immediately above a page's filter controls."""
+) -> html.Details:
+    """Build a collapsed shared-view editor above a page's filter controls."""
 
-    return html.Div(
+    return html.Details(
         [
             dcc.Store(id=controls.apply_request_id, data=None),
             dcc.Store(id=controls.applied_request_id, data=None),
@@ -90,82 +98,104 @@ def build_saved_filter_view_bar(
                 n_intervals=0,
                 max_intervals=1,
             ),
-            html.Div(
+            html.Summary(
                 [
-                    html.Label("Saved view", htmlFor=controls.selector_id),
-                    dcc.Dropdown(
-                        id=controls.selector_id,
-                        options=saved_view_options(initial_views),
-                        value=None,
-                        clearable=True,
-                        placeholder="Choose a saved view",
+                    html.Span("Saved views", className="saved-view-summary-title"),
+                    html.Span(
+                        "Shared catalogue · Base clears page filters",
+                        className="saved-view-summary-note",
                     ),
                 ],
-                className="control-field saved-view-selector-field",
+                className="saved-view-summary",
             ),
             html.Div(
                 [
-                    html.Label("New view name", htmlFor=controls.name_id),
-                    dcc.Input(
-                        id=controls.name_id,
-                        type="text",
-                        value="",
-                        maxLength=80,
-                        # Save samples this component as State, so every
-                        # keystroke must reach Dash before an immediate click.
-                        debounce=False,
-                        placeholder="Name these filters",
-                    ),
-                ],
-                className="control-field saved-view-name-field",
-            ),
-            html.Div(
-                [
-                    html.Label("Actions", className="saved-view-actions-label"),
                     html.Div(
                         [
-                            html.Button(
-                                "Save New",
-                                id=controls.save_id,
-                                n_clicks=0,
-                                type="button",
-                                className="refresh-button saved-view-save-button",
-                            ),
-                            html.Button(
-                                "Delete",
-                                id=controls.delete_id,
-                                n_clicks=0,
-                                type="button",
-                                disabled=True,
-                                className="refresh-button saved-view-delete-button",
+                            html.Label("View", htmlFor=controls.selector_id),
+                            dcc.Dropdown(
+                                id=controls.selector_id,
+                                options=saved_view_options(initial_views),
+                                value=BASE_SAVED_VIEW_ID,
+                                clearable=False,
+                                placeholder=BASE_SAVED_VIEW_LABEL,
                             ),
                         ],
-                        className="saved-view-actions",
-                    ),
-                ],
-                className="control-field saved-view-action-field",
-            ),
-            html.Div(
-                [
-                    html.Div(
-                        "Choose a view to apply its filters on this page.",
-                        id=controls.status_id,
-                        className="saved-view-status",
-                        role="status",
-                        **{"aria-live": "polite"},
+                        className="control-field saved-view-selector-field",
                     ),
                     html.Div(
-                        "Views are page-specific. On Plotly, filesystem changes are "
-                        "shared by this app instance but may be lost after a restart "
-                        "or redeploy.",
-                        className="saved-view-persistence-note",
+                        [
+                            html.Label("New view name", htmlFor=controls.name_id),
+                            dcc.Input(
+                                id=controls.name_id,
+                                type="text",
+                                value="",
+                                maxLength=80,
+                                # Save samples this component as State, so every
+                                # keystroke must reach Dash before an immediate click.
+                                debounce=False,
+                                disabled=False,
+                                placeholder="Name these filters",
+                            ),
+                        ],
+                        className="control-field saved-view-name-field",
+                    ),
+                    html.Div(
+                        [
+                            html.Label("Actions", className="saved-view-actions-label"),
+                            html.Div(
+                                [
+                                    html.Button(
+                                        "Save New",
+                                        id=controls.save_id,
+                                        n_clicks=0,
+                                        type="button",
+                                        className=(
+                                            "refresh-button saved-view-save-button"
+                                        ),
+                                    ),
+                                    html.Button(
+                                        "Delete",
+                                        id=controls.delete_id,
+                                        n_clicks=0,
+                                        type="button",
+                                        disabled=True,
+                                        className=(
+                                            "refresh-button saved-view-delete-button"
+                                        ),
+                                    ),
+                                ],
+                                className="saved-view-actions",
+                            ),
+                        ],
+                        className="control-field saved-view-action-field",
+                    ),
+                    html.Div(
+                        [
+                            html.Div(
+                                "Base / No view is active.",
+                                id=controls.status_id,
+                                className="saved-view-status",
+                                role="status",
+                                **{"aria-live": "polite"},
+                            ),
+                            html.Div(
+                                "Named views are shared across Risk, Stock, and P&L. "
+                                "Each page keeps its own current selection. On Plotly, "
+                                "filesystem changes may be lost after a restart or "
+                                "redeploy.",
+                                className="saved-view-persistence-note",
+                            ),
+                        ],
+                        className="saved-view-copy",
                     ),
                 ],
-                className="saved-view-copy",
+                className="saved-filter-view-panel",
             ),
         ],
         id=f"{controls.prefix}-saved-view-bar",
-        className="saved-filter-view-bar top-controls",
+        open=False,
+        className="saved-filter-view-disclosure top-controls",
         **{"data-saved-view-scope": controls.scope},
     )
 
@@ -187,6 +217,24 @@ def selected_filter_payload(
         else:
             result[field.key] = [str(value) for value in selected]
     return result
+
+
+def base_saved_filter_view(controls: SavedFilterViewControls) -> SavedFilterView:
+    """Return the non-persisted selection that clears this page's filters."""
+
+    return SavedFilterView(
+        identifier=BASE_SAVED_VIEW_ID,
+        scope=controls.scope,
+        name=BASE_SAVED_VIEW_LABEL,
+        filters={field.key: () for field in controls.fields},
+        exclude_selected=False,
+    )
+
+
+def is_base_saved_view(value: object) -> bool:
+    """Treat legacy empty selections as the always-present Base option."""
+
+    return value in (None, "", BASE_SAVED_VIEW_ID)
 
 
 def saved_view_control_values(
@@ -353,28 +401,39 @@ def register_saved_filter_view_callbacks(
             selected = selected_identifier
             name_update: object = no_update
             if triggered == controls.save_id:
-                view = repository.save_new(
-                    controls.scope,
-                    requested_name,
-                    selected_filter_payload(controls, filter_values),
-                    exclude_selected="exclude" in (exclude_value or []),
-                )
+                filters = selected_filter_payload(controls, filter_values)
+                exclude_selected = "exclude" in (exclude_value or [])
+                if is_base_saved_view(selected_identifier):
+                    view = repository.save_new(
+                        controls.scope,
+                        requested_name,
+                        filters,
+                        exclude_selected=exclude_selected,
+                    )
+                    status = f"Saved new view: {view.name}."
+                    name_update = ""
+                else:
+                    view = repository.update(
+                        controls.scope,
+                        selected_identifier,
+                        filters,
+                        exclude_selected=exclude_selected,
+                    )
+                    status = f"Updated view: {view.name}."
                 selected = view.identifier
-                name_update = ""
-                status = f"Saved new {controls.scope} view: {view.name}."
             elif triggered == controls.delete_id:
-                if not selected_identifier:
-                    raise ValueError("Choose a saved view before deleting it")
+                if is_base_saved_view(selected_identifier):
+                    raise ValueError("Choose a named view before deleting it")
                 view = repository.delete(controls.scope, selected_identifier)
-                selected = None
-                status = f"Deleted {controls.scope} view: {view.name}."
+                selected = BASE_SAVED_VIEW_ID
+                status = f"Deleted view: {view.name}. Base is now active."
             else:
-                status = "Saved views are ready."
+                status = "Shared saved views are ready."
 
             views = repository.list(controls.scope)
             identifiers = {view.identifier for view in views}
             if selected not in identifiers:
-                selected = None
+                selected = BASE_SAVED_VIEW_ID
             return saved_view_options(views), selected, name_update, status
         except (OSError, TimeoutError, ValueError) as error:
             try:
@@ -396,14 +455,15 @@ def register_saved_filter_view_callbacks(
         prevent_initial_call=True,
     )
     def apply_saved_view(selected_identifier, *filter_values_and_exclude):
-        if not selected_identifier:
-            raise PreventUpdate
-        try:
-            view = repository.get(controls.scope, selected_identifier)
-        except (OSError, ValueError) as error:
-            raise PreventUpdate from error
         filter_values = filter_values_and_exclude[: len(controls.fields)]
         exclude_value = filter_values_and_exclude[-1]
+        if is_base_saved_view(selected_identifier):
+            view = base_saved_filter_view(controls)
+        else:
+            try:
+                view = repository.get(controls.scope, selected_identifier)
+            except (OSError, ValueError) as error:
+                raise PreventUpdate from error
         return saved_view_apply_request(
             view,
             base_filters=selected_filter_payload(controls, filter_values),
@@ -445,16 +505,27 @@ def register_saved_filter_view_callbacks(
         return request_id
 
     @app.callback(
+        Output(controls.save_id, "children"),
         Output(controls.delete_id, "disabled"),
+        Output(controls.name_id, "disabled"),
         Input(controls.selector_id, "value"),
     )
-    def disable_saved_view_delete(selected_identifier):
-        return not bool(selected_identifier)
+    def sync_saved_view_actions(selected_identifier):
+        named_view = not is_base_saved_view(selected_identifier)
+        return (
+            "Update View" if named_view else "Save New",
+            not named_view,
+            named_view,
+        )
 
 
 __all__ = [
+    "BASE_SAVED_VIEW_ID",
+    "BASE_SAVED_VIEW_LABEL",
     "SavedFilterViewControls",
+    "base_saved_filter_view",
     "build_saved_filter_view_bar",
+    "is_base_saved_view",
     "register_saved_filter_view_callbacks",
     "saved_view_apply_request",
     "saved_view_control_values",

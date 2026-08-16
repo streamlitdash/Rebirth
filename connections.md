@@ -59,9 +59,9 @@ move before P&L would not preserve that answer.
 
 | File | Purpose |
 |---|---|
-| `core/s07_reporting.py` | Loads, validates, and attaches the reporting mapping without altering raw data. |
+| `core/s06_reporting.py` | Loads, validates, and attaches the reporting mapping without altering raw data. |
 | `data/s09_reported.csv` | Four-column CSV contract and replaceable demo rows. |
-| `tests/s15_reporting.py` | Tests schema validation, identity fallback, many-to-one aggregation, thresholds, and separation of Quick Risk from Quick Market. |
+| `tests/s14_reporting.py` | Tests schema validation, identity fallback, many-to-one aggregation, thresholds, and separation of Quick Risk from Quick Market. |
 
 No files were deleted.
 
@@ -78,11 +78,6 @@ No files were deleted.
 | `ui/s07_events.py` | Quick Market callback | Gives Quick Market its own raw-underlying index instead of reusing the Quick Risk default. |
 | `tests/s06_ui.py` | Quick Risk default-index assertion | Covers the new `Reported Underlying -> Underlying -> tenor` default hierarchy. |
 | `README.md` | Architecture, schema, refresh, search and fake-data sections | Documents the new contract and behavior. |
-
-There is also an unrelated change in `core/s06_cashflow.py`. It builds an
-empty-frame text-validation mask using native Python booleans to avoid a
-Pandas 3/PyArrow startup error. It is useful, but it is not required for the
-`Reported Underlying` feature and can be copied or omitted independently.
 
 ## What was not changed
 
@@ -147,7 +142,7 @@ FX,Delta,CNY,CN FX
 
 ### 1. Add the reporting module
 
-Copy `core/s07_reporting.py` in full. Its two public functions are:
+Copy `core/s06_reporting.py` in full. Its two public functions are:
 
 ```python
 load_reported_underlying_mapping(
@@ -226,7 +221,7 @@ one-to-one identity fallback.
 At the top of `core/s02_pipeline.py`:
 
 ```python
-from core.s07_reporting import (
+from core.s06_reporting import (
     REPORTED_UNDERLYING,
     attach_reported_underlying,
     load_reported_underlying_mapping,
@@ -482,7 +477,7 @@ In `ui/s07_events.py`, make the Quick Market callback explicitly use
 
 ### 11. Add tests
 
-Copy `tests/s15_reporting.py` and update the Quick Risk default assertion in
+Copy `tests/s14_reporting.py` and update the Quick Risk default assertion in
 `tests/s06_ui.py`.
 
 The focused tests prove:
@@ -544,7 +539,7 @@ mapping failures.
 
 ## Fast manual checklist
 
-- [ ] Create `core/s07_reporting.py`.
+- [ ] Create `core/s06_reporting.py`.
 - [ ] Create `data/s09_reported.csv` with the exact four headers.
 - [ ] Add `get_reported_underlyings()` in `feeds/s01_sources.py`.
 - [ ] Pass the callable into `RiskRefreshManager`.
@@ -558,4 +553,3 @@ mapping failures.
 - [ ] Reload it through Refresh Portfolios.
 - [ ] Commit it atomically with the snapshot.
 - [ ] Add the reporting tests.
-- [ ] Decide separately whether to include the unrelated cashflow fix.

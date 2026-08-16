@@ -15,3 +15,4 @@ Credit,Delta,creditdeltaeffect
 Credit,Vega,creditvegaeffect
 Commo,Delta,commodeltaeffect
 Commo,Vega,commovegaeffect
+Cash Flow,New,cashfloweffect

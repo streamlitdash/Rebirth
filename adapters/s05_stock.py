@@ -8,7 +8,7 @@ from typing import Protocol
 import numpy as np
 import pandas as pd
 
-from core.s08_stock import (
+from core.s07_stock import (
     STOCK_COLUMNS,
     STOCK_NUMERIC_COLUMNS,
     STOCK_TEXT_COLUMNS,

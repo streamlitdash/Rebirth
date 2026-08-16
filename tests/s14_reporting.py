@@ -11,7 +11,7 @@ from core.s03_search import (
     MARKET_RESULT_COLUMNS,
     SearchCatalog,
 )
-from core.s07_reporting import (
+from core.s06_reporting import (
     REPORTED_UNDERLYING,
     REPORTED_UNDERLYING_COLUMNS,
     attach_reported_underlying,
@@ -280,7 +280,7 @@ def test_quick_risk_uses_reported_identity_but_quick_market_stays_raw() -> None:
                 "ir/delta",
                 "IR",
                 "Delta",
-                "Cross Gamma",
+                "XGAMMA",
                 "CNx",
                 "CNO",
                 "1Y",

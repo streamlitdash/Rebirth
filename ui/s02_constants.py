@@ -3,6 +3,12 @@
 from __future__ import annotations
 
 from core.s01_schema import PORTFOLIO_COLUMN, PORTFOLIO_FIELDS, PortfolioField
+from core.s09_cross_gamma import (
+    CROSS_GAMMA_SOURCE_SPLIT,
+    XGAMMA_RISK_GREEK,
+    XGAMMA_SOURCE_RISK_GREEKS,
+    XGAMMA_VEGA_RISK_GREEK,
+)
 
 PORTFOLIO_UI_FIELD = PortfolioField(
     PORTFOLIO_COLUMN,
@@ -107,7 +113,7 @@ PRODUCT_LABELS = {"xva": "XVA", "hedges": "Hedges"}
 PRODUCT_ORDER = {
     label: position for position, label in enumerate(PRODUCT_LABELS.values())
 }
-SPLIT_ORDER = ("Risk", "New Position", "Gamma", "Cross Gamma")
+SPLIT_ORDER = ("Risk", "New Trades", "Gamma", "XGAMMA")
 
 TOP_EXPOSURE_LABELS = ("Big Risk", "Big dRisk", "Big PL")
 TOP_EXPOSURE_GROUPS = ["label", "risk type", "risk greek", "reported underlying"]
@@ -234,18 +240,30 @@ CREDIT_MEASURE_KEYS = {
     "JTD": "jtd",
 }
 
-RISK_TYPE_ORDER = {"Credit": 0, "IR": 1, "FX": 2, "Commo": 3}
+RISK_TYPE_ORDER = {"Credit": 0, "IR": 1, "FX": 2, "Commo": 3, "Cash Flow": 4}
 IR_GREEK_FAMILIES = {
     "delta": ("Delta", "Inflation", "Gamma", "Bond"),
     "basis": ("XCCY", "Basis"),
     "vega": ("DeltaVega", "InflationVega", "XCCYVega"),
+    "xgamma": (XGAMMA_RISK_GREEK,),
+    "xgamma_vega": (XGAMMA_VEGA_RISK_GREEK,),
 }
+IR_GREEK_FAMILY_LABELS = {
+    "delta": "Delta",
+    "basis": "Basis",
+    "vega": "Vega",
+    "xgamma": XGAMMA_RISK_GREEK,
+    "xgamma_vega": XGAMMA_VEGA_RISK_GREEK,
+}
+if tuple(IR_GREEK_FAMILIES) != tuple(IR_GREEK_FAMILY_LABELS):
+    raise RuntimeError("Every IR Greek family must have one visible tab label")
 
 
 __all__ = [
     "ALT_GROUPS",
     "BASE_GROUPS",
     "BREAKDOWN_DEFAULTS",
+    "CROSS_GAMMA_SOURCE_SPLIT",
     "CREDIT_MEASURES",
     "CREDIT_MEASURE_KEYS",
     "DEFAULT_UNDERLYING_SORT_METRIC",
@@ -260,6 +278,7 @@ __all__ = [
     "FILTER_COLUMNS",
     "FILTER_DIMENSION_ORDER",
     "GRID_METRIC_COLUMNS",
+    "IR_GREEK_FAMILY_LABELS",
     "IR_GREEK_FAMILIES",
     "META_COLUMNS",
     "METRIC_BREAKDOWNS",
@@ -279,6 +298,9 @@ __all__ = [
     "UNDERLYING_SORT_METRICS",
     "VIEW_DIMENSIONS",
     "VIEW_DIMENSION_FIELDS",
+    "XGAMMA_RISK_GREEK",
+    "XGAMMA_SOURCE_RISK_GREEKS",
+    "XGAMMA_VEGA_RISK_GREEK",
     "BASE_GROUPS_NO_PROMOTION",
     "get_active_groups",
     "get_active_alt_groups",

@@ -38,8 +38,8 @@ python -m ruff format --check .
 ```
 
 The clean suite covers schemas, dates, adapters, market routing, tenor order,
-P&L, adjustment storage, UI components, native pages, cashflows, feed caching,
-and a full fake-data refresh. Run it locally; its collected count grows as
+P&L, adjustment storage, UI components, native pages, feed caching, and a full
+fake-data refresh. Run it locally; its collected count grows as
 connector and page contracts are extended.
 The exact final gates are recorded in
 [`RECONSTRUCTION.md`](RECONSTRUCTION.md).
@@ -97,25 +97,27 @@ tooling exceptions.
 | `s01_schema.py` | Canonical Portfolio identity plus one registry for Product, Activity, SignoffGroup, Category, Sub Category, and their roles. |
 | `s02_pipeline.py` | Product catalogue, strict validation, date rules, market/risk joins, P&L, portfolio enrichment, refresh transaction, and progress. |
 | `s03_search.py` | Revision-local indexed Risk Search and full-MarketBook Search. |
-| `s04_pl.py` | Pure PLSEND mapping, aggregation, governance, paired-history validation, overlays, and saved-P&L construction. |
+| `s04_pl.py` | Pure PLSEND mapping, aggregation, governance, Colossus/Predict history validation and period analysis, overlays, and saved-P&L construction. |
 | `s05_storage.py` | Validated, transactional `adjustments/date/portfolio--hash.csv` repository. |
-| `s06_cashflow.py` | Framework-independent Intraday Cashflows schema, date normalization, connector protocol, and validation. |
-| `s07_reporting.py` | Exact CSV validation and post-P&L attachment of `Reported Underlying`. |
-| `s08_stock.py` | Strict dated Stock comparison, Stock-local filtering, and authoritative `many_to_one` Portfolio mapping. |
-| `s09_saved_views.py` | Validated page-scoped saved-filter JSON with deterministic reads, atomic writes, and cross-worker locking. |
+| `s06_reporting.py` | Exact CSV validation and post-P&L attachment of `Reported Underlying`. |
+| `s07_stock.py` | Strict dated Stock comparison, Stock-local filtering, and authoritative `many_to_one` Portfolio mapping. |
+| `s08_saved_views.py` | One validated shared saved-filter catalogue with page-adapted requests, deterministic reads, atomic writes, and cross-worker locking. |
+| `s09_cross_gamma.py` | Pure portfolio-level XGAMMA schema validation, MarketBook scope expansion, input-move development, output aggregation, and release. |
+| `s10_new_trades.py` | Pure New Trades validation, row-local reference selection, ProductSpec MarketBook joins, P&L calculation, cash-flow identity treatment, and audit-detail retention. |
 
 ### `feeds/` and `adapters/`
 
 | File | Responsibility |
 |---|---|
-| `feeds/s01_sources.py` | The site-owned boundary: checker, risk, market, portfolios, thresholds, cashflows, senders, and manager composition. |
+| `feeds/s01_sources.py` | The site-owned boundary: checker, risk, market, portfolios, thresholds, senders, and manager composition. |
 | `adapters/s01_common.py` | Exact-schema/status helpers shared by personal adapters. |
 | `adapters/s02_ir.py` | Working IR Delta curve and IR DeltaVega surface examples. |
 | `adapters/s03_commo.py` | Working Commodity Delta curve example. |
 | `adapters/s03_fx.py` | FX Delta/Gamma/Vega contracts plus the recovered comment-only private builders. |
 | `adapters/s04_credit.py` | Working Credit Delta curve and credit-measure example. |
 | `adapters/s05_stock.py` | Validated replaceable `GetStock` boundary plus clearly marked fake rows. |
-| `adapters/s06_new_positions.py` | Isolated raw `MARKET`/`CASHFLOW` New Positions blotter scaffold; it is not wired into the risk pipeline. |
+| `adapters/s06_new_positions.py` | Strict raw `MARKET`/`CASHFLOW` New Trades blotter with Notional, traded-level availability, execution metadata, and deterministic fake Credit rows. |
+| `adapters/s07_cross_gamma.py` | Strict portfolio-level Cross Gamma sensitivity adapter plus deterministic fake Credit matrices. |
 
 Recovered private adapter bodies and the original shared `run_async` helper are
 preserved as clearly marked, comment-only `REAL` blocks directly inside
@@ -137,15 +139,15 @@ as an unsafe one-line switch. There are no separate `_disabled` source folders.
 | `s01_contracts.py` | Protocols that keep the UI independent from the concrete manager. |
 | `s02_constants.py` | Governed UI view/filter dimensions (including Portfolio), hierarchy fields, metrics, and detail pickers. |
 | `s03_aggregate.py` | Canonical-to-display conversion, Risk include/exclude filters, hierarchy aggregation, and tenor detail preparation. |
-| `s04_components.py` | Pure Dash component, table, chart, date-panel, shell, and page builders. |
-| `s05_cashflows.py` | Pure Intraday Cashflows page/component builder; the schema and loader boundary live in `core/s06_cashflow.py`. |
+| `s04_components.py` | Pure Dash component, table, chart, date-panel, shell, page, and selected New Trades detail builders. |
 | `s05_staticdata.py` | Path-safe selector and table builder for approved fixture/static CSV files. |
-| `s06_plview.py` | The native P&L page, its Aggregate P&L view, sender disclosures, and editable DataTables. |
-| `s07_events.py` | Startup coordinator and Risk/Cashflow/search/date callbacks. |
-| `s08_plevents.py` | Adjustment editors, send/write actions, and Histo/Predicted callbacks. |
+| `s06_plview.py` | The native P&L page, its Aggregate P&L view, Send All action, sender disclosures, and editable DataTables. |
+| `s07_events.py` | Startup coordinator and Risk/search/date callbacks. |
+| `s08_plevents.py` | Adjustment editors, individual/all send and write actions, and Colossus/Predict history callbacks. |
 | `s09_factory.py` | Dash/Flask construction, native Dash Pages registration, shared shell, health, and progress endpoints. |
 | `s10_stock.py` | Dated Stock comparison controls, independent filters, promotion stack, source table, and replaceable source composition. |
-| `s11_saved_views.py` | Reusable saved-view bar, request stores, validation helpers, and callback registration without duplicate filter outputs. |
+| `s11_saved_views.py` | Reusable collapsed shared-view editor, Base/reset requests, and callback registration without duplicate filter outputs. |
+| `s12_plhistory.py` | Pure expandable P&L-history hierarchy, period-cell comparison, type selector, and observed-series chart builders. |
 
 ### `pages/`
 
@@ -168,20 +170,23 @@ while tests and hosted workers can construct more than one app factory.
   selection, clipboard copying, selection dismissal, and progress polling.
 - `assets/s03_select.js` keeps native Dash DataTable selections stable.
 - `data/s01_*.csv` through `s09_*.csv` are explicit fake inputs;
-  `data/histo/` contains paired fake Histo/Predicted P&L partitions, and
-  `data/saved_views/` is the runtime-local saved-filter root.
+  `data/histo/` contains paired fake Colossus/Predict P&L partitions (backed by
+  `histo.csv` and `predicted.csv`), and `data/saved_views/shared/` is the
+  runtime-local shared saved-filter catalogue.
 - `tools/s01_fixtures.py` deterministically rebuilds and validates fake data.
 - `tools/s02_manual.py` creates the diagrams and this manual's PDF.
 - Tests are uniquely numbered from `s01_schema.py` through
-  `s24_saved_views.py`:
+  `s26_new_trades.py`:
   schema, checker/dates, adapters, MarketBook, P&L/storage, UI, integration,
-  cashflow contract, feed cache, lazy P&L/factory behavior, targeted snapshot
+  feed cache, lazy P&L/factory behavior, targeted snapshot
   reads, deterministic fixture generation, cold-start ownership/watchdog, then
   the Plotly deployment bundle and entrypoint, reporting-identity mapping,
   supplied-risk overlays, shared refresh ownership, Stock, the isolated New
-  Positions blotter contract, page-local Risk filtering, and exact isolation of
+  Trades blotter contract, page-local Risk filtering, and exact isolation of
   inline recovered private connector blocks, the inline recovered pipeline
-  contracts, refresh/date lifecycle contracts, and saved filter views.
+  contracts, refresh/date lifecycle contracts, shared saved views, and the
+  expandable Colossus/Predict history explorer, portfolio-level XGAMMA
+  validation/development, and integrated New Trades reference/P&L publication.
 
 | Test file | Main boundary proved |
 |---|---|
@@ -190,25 +195,27 @@ while tests and hosted workers can construct more than one app factory.
 | `tests/s03_adapters.py` | Executable IR, Commodity, and Credit personal-adapter examples. |
 | `tests/s04_market.py` | Dynamic status routing, full MarketBook, risk-only join, and tenor order. |
 | `tests/s05_pl.py` | P&L mapping/overlay/export and transactional adjustment storage. |
-| `tests/s06_ui.py` | Lazy chevrons, the two-axis tenor contract, dynamic status/Move axes, semantic total-row styling, and visible market ranks. |
+| `tests/s06_ui.py` | Lazy chevrons, the two-axis tenor contract, dynamic status/Move axes, selected New Trades detail, semantic total-row styling, and visible market ranks. |
 | `tests/s07_integration.py` | End-to-end fake refresh, trading-timezone dates, one-call status routing/transitions, Portfolio-only preservation, and force validation. |
-| `tests/s08_cashflow.py` | Page-independent cashflow schema and dated loader. |
-| `tests/s09_feeds.py` | Narrow fake Source Type/Underlying partition reuse. |
-| `tests/s10_plui.py` | Outer/child P&L laziness and no-config factory behavior. |
-| `tests/s11_reads.py` | Defensive targeted reads copy only the requested committed frame. |
-| `tests/s12_fixtures.py` | ProductSpec-driven fake schemas, axes, and exact deterministic generation. |
-| `tests/s13_startup.py` | Shell-first startup, one writer, pod-restart recovery, public/internal prefix routing, active-call watchdog, and retryable failures. |
-| `tests/s14_publish.py` | Minimal Plotly bundle contents and native Cloud entrypoint discovery. |
-| `tests/s15_reporting.py` | Cross-product Reported Underlying validation, post-P&L aggregation, thresholds, and raw-market separation. |
-| `tests/s16_overlays.py` | Cross Gamma/New Position validation, replacement, atomic publication, and dashboard release. |
-| `tests/s17_refresh_shell.py` | Shared refresh controls remain single-owner and interactive across native navigation. |
-| `tests/s18_stock.py` | Exact `GetStock` schema, dated outer comparison, Portfolio mapping/filtering, lazy cache, table, and page service. |
-| `tests/s19_new_positions_adapter.py` | Raw `MARKET`/`CASHFLOW` schema, traded-level availability, identity, and direct cashflow P&L. |
-| `tests/s20_risk_filters.py` | Portfolio View-by/filter support, Risk-local include/exclude semantics, consumer wiring, and Stock-state isolation. |
-| `tests/s21_disabled_connectors.py` | Inline switch markers, recovered symbols, comment-only isolation, adjacency, and continued fake-CSV registration. |
-| `tests/s22_disabled_pipeline.py` | Inline recovered pipeline markers plus proof that the validated CSV-compatible formulas/date contract remain active. |
-| `tests/s23_refresh_dates.py` | Force-date click-order lifecycle contract and explicit RiskChecker fallback-age display. |
-| `tests/s24_saved_views.py` | Page-scoped JSON validation, atomic/concurrent writes, safe names, request stores, and filter-output ownership. |
+| `tests/s08_feeds.py` | Narrow fake Source Type/Underlying partition reuse. |
+| `tests/s09_plui.py` | P&L page/filter ownership, Send All and individual sender behavior, history callback wiring, and no-config factory behavior. |
+| `tests/s10_reads.py` | Defensive targeted reads copy only the requested committed frame. |
+| `tests/s11_fixtures.py` | ProductSpec-driven fake schemas, axes, and exact deterministic generation. |
+| `tests/s12_startup.py` | Shell-first startup, one writer, pod-restart recovery, public/internal prefix routing, active-call watchdog, and retryable failures. |
+| `tests/s13_publish.py` | Minimal Plotly bundle contents and native Cloud entrypoint discovery. |
+| `tests/s14_reporting.py` | Cross-product Reported Underlying validation, post-P&L aggregation, thresholds, and raw-market separation. |
+| `tests/s15_overlays.py` | XGAMMA/New Trades supplied-risk overlay validation, replacement, atomic publication, and dashboard release. |
+| `tests/s16_refresh_shell.py` | Shared refresh controls remain single-owner and interactive across native navigation. |
+| `tests/s17_stock.py` | Exact `GetStock` schema, dated outer comparison, Portfolio mapping/filtering, lazy cache, table, and page service. |
+| `tests/s18_new_positions_adapter.py` | Raw New Trades `MARKET`/`CASHFLOW` schema, required Risk, optional Notional and execution metadata, `Traded True` behavior, identity, fake Credit rows, and cash-flow P&L. |
+| `tests/s19_risk_filters.py` | Portfolio View-by/filter support, Risk-local include/exclude semantics, consumer wiring, and Stock-state isolation. |
+| `tests/s20_disabled_connectors.py` | Inline switch markers, recovered symbols, comment-only isolation, adjacency, and continued fake-CSV registration. |
+| `tests/s21_disabled_pipeline.py` | Inline recovered pipeline markers plus proof that the validated CSV-compatible formulas/date contract remain active. |
+| `tests/s22_refresh_dates.py` | Force-date click-order lifecycle contract and explicit RiskChecker fallback-age display. |
+| `tests/s23_saved_views.py` | Shared-catalogue validation, atomic create/update/delete, Base/reset requests, page-state isolation, safe names, and filter-output ownership. |
+| `tests/s24_plhistory.py` | Lazy Colossus/Predict hierarchy, period comparisons, WTD/date windows, type selection, and observed-only chart behavior. |
+| `tests/s25_cross_gamma.py` | Exact XGAMMA matrix schema, adapter-owned XGamma/XGamma Vega source classification, ProductSpec axes, MarketBook scope, stored-Move development, output summation, and fail-closed input/output-market behavior. |
+| `tests/s26_new_trades.py` | Integrated traded-level/Open-reference P&L, official-market preservation, Cash Flow identity calculation, execution metadata, and manager publication. |
 
 ## What happens on startup
 
@@ -470,22 +477,6 @@ To add a new field such as `Desk`, add one `PortfolioField` in
 filter, PL metadata, or position field. The other layers derive their lists from
 that registry; do not add separate hardcoded lists.
 
-### Intraday Cashflows
-
-This independent page has its own core contract:
-
-```text
-input: cashflow_date (normalized, timezone-naive midnight Timestamp)
-exact output columns:
-Cashflow ID, Cashflow Time, Value Date, Portfolio, SignoffGroup,
-Currency, Cashflow Type, Amount, Status
-```
-
-`Cashflow Time` is normalized to UTC, `Value Date` to a date, `Amount` must be
-finite, Currency must be a three-letter code, Cashflow IDs must be unique, and
-Status is one of Pending, Confirmed, Sent, Failed, or Cancelled. Aliases and
-reordered/extra columns fail at `core/s06_cashflow.py` before Dash renders them.
-
 ### Thresholds and PLSEND mapping
 
 Thresholds use exact columns:
@@ -659,7 +650,7 @@ Yellow is therefore a semantic total/P&L cue, not a general highlight colour.
 The same rules cover the main tables, searches, previews, and editable native
 Dash DataTables.
 
-## Reporting dimensions and page-local filters
+## Reporting dimensions, page-local filters, and shared views
 
 Portfolio is a first-class governed UI reporting dimension as well as the
 position key.
@@ -671,33 +662,46 @@ Activity, Signoff Group, Category, and Sub Category. Activity remains the
 default View-by choice.
 
 The Risk filter bar is one five-column desktop row in this exact order:
-Activity, Signoff Group, Portfolio, Category, and Sub Category. Values are ORed
-within one selected field and populated fields
-are ANDed across fields; blank selections are unrestricted. Its page-local
-**Exclude selected values** checkbox is unchecked by default:
+Activity, Signoff Group, Portfolio, Category, and Sub Category. Multiple values
+inside one filter are ORed, while populated filters are ANDed with one another;
+blank selections are unrestricted. For example, Activity `Credit` with
+Portfolio `B` and `D` means `Credit AND (B OR D)`. A row needs one of those
+Portfolios—it cannot be in both `B` and `D` at once. The page-local
+**Exclude rows matching any selected value** checkbox is unchecked by default:
 
 - unchecked: a row must match one selected value in every populated field;
 - checked: each populated set is complemented, so a row must avoid the selected
-  values in every populated field.
+  values in every populated field. In the example, that is
+  `NOT Credit AND NOT (B OR D)`. It removes Credit rows everywhere and B/D rows
+  in every Activity; it is deliberately not just `NOT (Credit AND (B OR D))`.
 
 Risk Type and Split remain ordinary inclusion controls and are not inverted by
 that checkbox. The reporting filters and mode feed Aggregate P&L, Top Book,
 Risk Explorer and its detail, and Quick Risk. Unmapped Books can use only the
 Portfolio subset because unmapped rows have no governed reporting metadata.
 
-Risk, Stock, and P&L use separate IDs, stores, and Exclude checkboxes.
-Navigating or filtering one page therefore does not alter either other page's
-selections.
+Risk, Stock, and P&L use separate IDs, stores, active-view values, and Exclude
+checkboxes. Navigating or filtering one page therefore does not alter either
+other page's live selection.
 
-Each page also has an independent saved-view bar immediately above its filters.
-**Save New** records the five selections plus include/exclude mode as validated
-JSON under `data/saved_views/<page>/`; choosing it submits a small component
-request to the page's existing sole filter-output callback, so saved views do
-not introduce duplicate Dash output owners. Names are normalized and path-safe,
-writes are atomic, and a short filesystem lock serializes workers. Plotly's app
-filesystem is runtime-local, however: saved views may be lost after a restart
-or redeploy. Move this repository boundary to an approved durable database or
-object store when cross-deploy persistence is required.
+The named-view catalogue is nevertheless shared by all three pages. A view
+created in Risk is offered in Stock and P&L, but it affects Stock or P&L only
+after the user explicitly selects it there. The collapsed **Saved views**
+disclosure above each filter row keeps this occasional control out of the way.
+Its always-present **Base / No view** option clears that page's five filters and
+restores include mode. With Base active, **Save New** creates a named view; with
+a named view active, the same action becomes **Update View** and atomically
+replaces that view's filter definition. Deleting a named view returns the page
+to Base.
+
+Named views are validated JSON under `data/saved_views/shared/`. Applying one
+submits a small component request to the active page's existing sole
+filter-output callback, so shared views do not introduce duplicate Dash output
+owners or cross-page live state. Names are normalized and path-safe, writes are
+atomic, and a short filesystem lock serializes workers. Plotly's app filesystem
+is runtime-local, however: saved views may be lost after a restart or redeploy.
+Move this repository boundary to an approved durable database or object store
+when cross-deploy persistence is required.
 
 ## Risk Explorer and detail charts
 
@@ -746,7 +750,7 @@ Risk Type | Risk Greek | Reported Underlying
 ```
 
 Quick Market keeps the raw `Underlying` instead. Typing words such as
-`ir delta cnx` only narrows a bounded
+`ir delta cnx`, `IR DELTA CNX`, or any mixed-case equivalent narrows the same bounded
 list of exact reporting identities; it is not a free-text row query. The
 catalog precomputes one exact identity-to-row map and does not build a
 position-level posting index. Selecting one identity builds a parent/child
@@ -796,28 +800,31 @@ interaction rather than the read-only table selection engine.
 ## P&L workflow and adjustments
 
 The governed send workflow lives on the native `/pnl` page. It is no longer
-mounted inside Risk, and its sections remain independent top-level disclosures
+mounted inside Risk, and its controls remain independent top-level sections
 rather than one nested parent. Aggregate P&L is always visible; its Risk Type
 rows use page-local chevrons to reveal or hide the corresponding Risk Greek
 rows. Its independent filter row is Activity, Signoff Group, Portfolio,
-Category, then Sub Category, with include/exclude mode and P&L-scoped saved
-views:
+Category, then Sub Category, with include/exclude mode and a P&L-local selection
+from the shared saved-view catalogue:
 
-1. **SOG P&L** — filter by SignoffGroup, edit governed rows, save
-   adjustments, then call `send_sog_pl`.
-2. **Portfolio P&L** — filter one Portfolio, edit governed rows, save
-   adjustments, then call `send_portfolio_pl`.
-3. **Write PL to S3** — build the full raw output plus separately flagged
+1. **Send All P&L** — build the complete governed effective P&L once, including
+   saved adjustments, then send defensive copies to both the SOG and Portfolio
+   destinations. Both destinations are attempted independently and the status
+   reports full success, partial delivery, or total failure.
+2. **SOG P&L** — filter by SignoffGroup, edit governed rows, save adjustments,
+   then call `send_sog_pl` for that SOG.
+3. **Portfolio P&L** — filter one Portfolio, edit governed rows, save
+   adjustments, then call `send_portfolio_pl` for that Portfolio.
+4. **Write PL to S3** — build the full raw output plus separately flagged
    adjustment rows, call a configured `write_pl` function, and download CSV.
-4. **P&L Preview** — aggregated base rows with optional adjustment overlay.
-5. **Histo P&L** — show a fully expanded Risk Type → Risk Greek → Underlying →
-   Product → Book table. Selecting a Histo or Predicted numeric cell plots that
-   exact daily hierarchy series with 1W, MTD, YTD, All, and explicit date-range
-   controls.
+5. **P&L Preview** — aggregated base rows with optional adjustment overlay.
+6. **Histo P&L** — lazily expand Risk Type → Risk Greek → Underlying → Product
+   → Book and compare the Colossus and Predict daily series for any selected
+   hierarchy scope.
 
 The former user-facing Raw Data disclosure has been removed. **Aggregate P&L**
-and **Unmapped Books** remain on the native Risk page; the Preview, SOG,
-Portfolio, Write, and Histo workflow belongs only to `/pnl`.
+and **Unmapped Books** remain on the native Risk page; Send All, SOG, Portfolio,
+Write, Preview, and Histo belong only to `/pnl`.
 
 The default history root is `data/histo`, overrideable with
 `PL_HISTORICAL_PATH`. Its strict partition contract is:
@@ -832,13 +839,28 @@ histo/
 
 Every date leaf must contain exactly both files. Each CSV has exact ordered
 columns `Risk Type, Risk Greek, Underlying, Product, Book, PL`, with one finite
-numeric P&L per full hierarchy leaf. The directory supplies `Market Date`; the
-filename supplies `P&L Type` (`Histo` or `Predicted`). The combined loader
-therefore validates uniqueness at Market Date + P&L Type + Risk Type + Risk
-Greek + Underlying + Product + Book grain. The older Portfolio + ConcertoField
-shape is not silently promoted because it cannot truthfully reconstruct the
-new hierarchy identities; `load_historical_pl` remains available only to
-callers that explicitly retain that separate legacy contract.
+numeric P&L per full hierarchy leaf. The directory supplies `Market Date`.
+`histo.csv` is exposed as the user-facing P&L type **Colossus**, while
+`predicted.csv` is exposed as **Predict**; the old Histo/Predicted names remain
+compatible input aliases rather than display labels. The combined loader
+validates uniqueness at Market Date + P&L Type + Risk Type + Risk Greek +
+Underlying + Product + Book grain. The older Portfolio + ConcertoField shape is
+not silently promoted because it cannot truthfully reconstruct the new
+hierarchy identities; `load_historical_pl` remains available only to callers
+that explicitly retain that separate legacy contract.
+
+The Histo P&L table starts at Risk Type and creates lower hierarchy rows only as
+their chevrons are opened. It has three period columns:
+
+- **Daily (P)** is Predict only for the latest Market Date.
+- **MTD** and **YTD** display Colossus by default. Clicking either cell reveals
+  its inline Colossus/Predict comparison for that exact hierarchy scope.
+
+Selecting a period cell also selects its hierarchy scope for the plot. The plot
+type selector can show Colossus, Predict, or Both. Range presets are **WTD**
+(calendar Monday through the latest date), **MTD**, **YTD**, and **All**; the
+date-range picker supports an explicit start and end as well. Series contain
+only observed daily rows—an absent date is not fabricated as zero P&L.
 
 The checked-in SOG and Portfolio sender boundaries reject delivery with an
 explicit fixture-mode error, so the demo cannot falsely claim that rows reached
@@ -859,12 +881,12 @@ def write_pl(rows: pd.DataFrame, market_date: str, revision: int) -> None:
 ```
 
 The workflow is genuinely lazy. Preview, SOG, Portfolio, and Histo P&L each
-have their own native odd/even click gate. Effective rows, dropdown scopes,
-editable stores, and historical rows are created only when their disclosure
-is open, so a risk revision does not serialize hidden copies of P&L. If
-`build_app` receives no `PLSendConfig`, `/pnl` renders an explicit unavailable
-state and the factory omits its workflow stores/callbacks; it does not render
-inert controls.
+have their own native odd/even click gate; Send All builds its governed payload
+only when its button is pressed. Effective rows, dropdown scopes, editable
+stores, and historical rows are created only when requested, so a risk revision
+does not serialize hidden copies of P&L. If `build_app` receives no
+`PLSendConfig`, `/pnl` renders an explicit unavailable state and the factory
+omits its workflow stores/callbacks; it does not render inert controls.
 
 Each editable row is governed:
 
@@ -1024,7 +1046,7 @@ Credit Delta uses the curve shape plus all ten optional Risk/dRisk measure colum
 Adapters deliberately require exact ordered columns. This makes a source change
 fail at its boundary instead of producing a subtly wrong financial join.
 
-## Stock and New Positions boundaries
+## Stock, New Trades, and XGAMMA boundaries
 
 The native `/stock` page deliberately shows one mapped table. Its replaceable
 `adapters/s05_stock.py::get_stock` boundary (also exported as the business-facing
@@ -1065,35 +1087,143 @@ retained with `Portfolio Mapped = False` and `Unmapped` governance metadata.
 Stock has its own prefixed filter controls and store, independent of Risk state:
 Activity, Signoff Group, Portfolio, Category, and Sub Category. Multiple values
 are ORed within one field and populated fields are ANDed across fields. With
-**Exclude selected values** unchecked, selected values are included; checking
-it complements every populated field and ANDs those complements. The server
+**Exclude rows matching any selected value** unchecked, selected values are
+included; checking it complements every populated field and ANDs those
+complements. The server
 caches the unfiltered comparison by risk revision, Current date, Prior date,
 and mapping date, so filter-only changes update the table and counts without
 connector I/O.
 GetStock itself remains lazy and runs only after `/stock` mounts or a dated
 comparison/committed revision requires a reload.
 
-`adapters/s06_new_positions.py` is a separate, deliberately isolated raw-blotter
-scaffold. It validates exact input columns:
+### New Trades
+
+`adapters/s06_new_positions.py` is the replaceable strict New Trades adapter.
+Despite its compatibility filename and public `GetNewPositions` alias, its
+active boundary is a mixed `MARKET`/`CASHFLOW` New Trades blotter with these
+exact ordered input columns:
 
 ```text
 Row Type, Trade ID, Position ID, Risk Type, Risk Greek, Underlying,
-Tenor Swap, Tenor Option, Portfolio, Risk, Quantity, Traded Level,
-Traded Level Known, Cash Flow
+Tenor Swap, Tenor Option, Portfolio, Risk, Notional, Traded Level,
+Traded True, Trade Time, Trader Code, Trader Name, Cash Flow
 ```
 
-- A `MARKET` row requires market identity and at least Risk or Quantity. When
-  `Traded Level Known` is `True`, Traded Level is required; when it is `False`,
-  Traded Level must be blank so a later integration can explicitly fall back to
-  Open. MARKET P&L remains unavailable in this adapter.
-- A `CASHFLOW` row has no market identity, size, or traded level. Its required
-  signed Cash Flow is copied exactly to the derived `PL` column.
-- Trade ID + Position ID is unique across the mixed blotter.
+Trade ID + Position ID is unique across the complete blotter. A `MARKET` row
+requires a registered ProductSpec Risk Type/Greek pair, its declared tenor
+axes, finite Risk, a valid Trade Time, and nonblank Trader Code and Trader Name.
+Risk is the operative sensitivity used by the existing product P&L formula.
+Notional is optional execution/audit metadata; when supplied it must be finite,
+and it is never used to calculate Risk or P&L.
 
-This scaffold is not yet registered as a refresh-manager overlay or converted
-to MarketBook grain. No CrossGamma adapter is created in this feature set;
-CrossGamma integration is explicitly deferred. The manager's pre-existing
-generic supplied-risk overlay hooks remain a separate contract.
+`Traded True` is a required strict Boolean:
+
+- `True` requires a finite Traded Level. That row-local level is the P&L
+  reference.
+- `False` requires Traded Level to be blank. The joined MarketBook Open becomes
+  the P&L reference.
+
+The official shared Open is never overwritten. `core/s10_new_trades.py` joins
+each MARKET trade to its ProductSpec MarketBook with `many_to_one` validation,
+uses Current versus that row's selected reference, and then applies the same
+absolute, percentage, multiplier, or Taylor-gamma convention as the ordinary
+product. Levels and moves remain in the product's existing default market-data
+units; New Trades does not introduce a separate bump or direction conversion.
+Missing required market data leaves P&L unavailable rather than turning it into
+zero.
+
+A `CASHFLOW` row uses the exact reserved identity `Risk Type = Cash Flow`, `Risk
+Greek = New`. It has no market identity, Risk, Notional, execution description,
+or traded level in the raw blotter. The auxiliary Cash Flow ProductSpec uses an
+identity factor of one:
+
+```text
+released Risk = signed Cash Flow
+P&L move = 1
+released PL = signed Cash Flow
+```
+
+Cash Flow is released under `Source Type = new-position/cash-flow`, `Split = New
+Trades`, and `Underlying = Cash Flow`. It participates in Risk/P&L views
+and Quick Risk, but creates no synthetic MarketBook quote, Quick Market result,
+or RiskChecker-age row.
+
+The refresh manager loads New Trades before market retrieval so MARKET-only
+Underlyings expand the required MarketBook scope. Both MARKET and CASHFLOW rows
+are then published at position grain under `Split = New Trades`, with their
+trade audit columns retained in `combined_pl`. Selecting a New Trades cell in
+Risk Explorer adds a descriptive table above the existing tenor plot/table:
+
+```text
+Trade ID, Risk, Notional Traded, Traded Spread / Level,
+Trade Time, Trader Code, Trader Name
+```
+
+The checked-in fixture demonstrates two Credit Delta trades: one with an
+explicit traded level and one that falls back to MarketBook Open. It also
+includes one signed Cash Flow example.
+
+### XGAMMA
+
+`adapters/s07_cross_gamma.py` owns the dated portfolio-level sensitivity source.
+It returns this exact ordered matrix schema:
+
+```text
+Portfolio, Group,
+Input Risk Type, Input Risk Greek, Risk Greek, Input Underlying,
+Input Tenor Swap, Input Tenor Option,
+Output Risk Type, Output Risk Greek, Output Underlying,
+Output Tenor Swap, Output Tenor Option,
+Cross Gamma Sensitivity
+```
+
+Input and output Risk Type/Greek pairs must already exist in `PRODUCT_SPECS`,
+and each side must follow that product's declared tenor axes. `Input Risk Greek`
+continues to identify the real driver MarketBook. The adapter also owns the
+canonical `Risk Greek` that is presented in Risk Explorer: a Vega-family driver
+must supply `XGamma Vega`; every other registered input Greek must supply
+`XGamma`. Tenor order is not an adapter column: the corresponding MarketBook
+owns display ranks. Cash Flow/New is excluded, sensitivities must be finite,
+and an exact duplicate full portfolio/input/output matrix cell fails
+validation.
+
+`core/s09_cross_gamma.py` expands market retrieval for both input and output
+Underlyings, then consumes the existing stored MarketBook `Move` exactly as-is:
+
+```text
+input contribution = Cross Gamma Sensitivity × input MarketBook Move
+
+developed output Risk = sum(input contributions)
+```
+
+Each raw matrix cell is also released as the source sensitivity that was
+actually supplied. That source leg keeps the input Risk Type, uses the
+adapter-authoritative `Risk Greek = XGamma` or `Risk Greek = XGamma Vega`,
+stores the raw Cross Gamma Sensitivity in `Risk`, and remains under `Split =
+Risk`. It is deliberately one row per full input/output matrix cell, even when
+two cells happen to share the same visible input identity.
+
+The developed leg is separate. It keeps the real output Risk Type and Risk
+Greek (for example `FX / Delta`), stores the summed developed amount in `Risk`,
+and uses `Split = XGAMMA`. In other words, the Risk split shows what was
+supplied; the XGAMMA split shows what that sensitivity developed into after the
+input market move.
+
+No hardcoded up/down direction, basis-point conversion, configured bump size,
+or alternative unit convention is applied. Credit and IR use their existing bp
+moves, FX Delta uses its existing percentage move, and every other input follows
+the same MarketBook convention already used by its ProductSpec.
+
+Contributions are summed only when Portfolio, Group, and the complete output
+Risk Type/Greek/Underlying/tenor identity agree. The output ProductSpec and
+MarketBook supply Source Type, quote values, and tenor orders. Both legs have
+unavailable dRisk and PL fixed at zero for this version. A missing or
+unavailable input quote fails the atomic refresh because the risk cannot be
+developed. A missing output quote retains the developed risk and marks market
+data unavailable.
+
+The checked-in adapter contains three visibly fake Credit Delta sensitivities,
+including two distinct inputs that develop and sum into the same output cell.
 
 ## Add a new risk product
 
@@ -1141,10 +1271,15 @@ page copies or second content router. Its prefix-safe routes are:
 | Path | Page-owned content |
 |---|---|
 | `/` | Risk dashboard, including Aggregate P&L and Unmapped Books. |
-| `/pnl` | Always-open filtered Aggregate P&L plus SOG/Portfolio editing and sending, Write PL, Preview, and cell-selectable Histo P&L. |
+| `/pnl` | Always-open filtered Aggregate P&L plus Send All, SOG/Portfolio editing and sending, Write PL, Preview, and expandable Colossus/Predict history. |
 | `/stock` | A lazy Activity → Promotion → temporary Group → CPTY → CRDS stack over the filtered two-date comparison. |
 | `/static-data` | The Statics fixture/static CSV selector and table. |
 | `/404` | Native fallback for unknown paths. |
+
+Every user-filterable native table—Statics, Unmapped Books, P&L Preview, and
+Stock source rows—uses case-insensitive text matching. Quick Risk and Quick
+Market typed searches likewise normalize Unicode and case-fold queries;
+selecting a result still returns its exact canonical identity.
 
 The header, navigation, session stores, and single shared refresh-control shell
 sit outside the page container. Risk and P&L expose that same refresh shell;
@@ -1155,28 +1290,11 @@ revision, so revisiting either route does not repeat the full pandas
 normalization pass. Stock initially serializes only visible hierarchy rows;
 closed branches and the raw source table are loaded explicitly on demand.
 
-The retained Intraday Cashflows modules are a tested extension example, not a
-registered route. Their responsibilities remain separated so the data contract
-can be tested without importing Dash:
-
-```text
-feeds/s01_sources.get_intraday_cashflows(date)
-        │ site-owned I/O
-        ▼
-core/s06_cashflow.load_intraday_cashflows(loader, date)
-        │ normalize date + validate exact schema/types
-        ▼
-ui/s05_cashflows.build_intraday_cashflows_page(frame)
-        │ components only
-        ▼
-ui/s07_events callbacks ── pages/ layout ── dash.page_container
-```
-
 To add another page called Limits:
 
 1. If Limits has external data, create `core/s09_limit.py` with its exact column
    tuple, loader `Protocol`, date normalization, and `validate_limits` function.
-   Follow `core/s06_cashflow.py`; do not make a core module import Dash.
+   Keep that core module independent from Dash and external I/O.
 2. Add one site connector to `feeds/s01_sources.py`. It should only retrieve and
    adapt the source into that exact public schema:
 
@@ -1188,7 +1306,7 @@ def get_limits(limit_date: pd.Timestamp) -> pd.DataFrame:
     ]
 ```
 
-3. Create the next free one-word UI module, `ui/s11_limits.py`, and keep its
+3. Create the next free one-word UI module, `ui/s13_limits.py`, and keep its
    layout builder pure. The callback calls the core loader, catches the error for
    the status panel, and never lets malformed data reach the table.
 
@@ -1237,7 +1355,7 @@ def register_limits_callbacks(app, connector):
 7. Give the page its own connector instead of importing the risk manager unless
    it truly consumes the committed risk snapshot.
 8. Test date forwarding, direct URL navigation, empty data, malformed data, and
-   connector errors. `tests/s08_cashflow.py` is the compact example.
+   connector errors in the next free focused test module.
 
 Common elements are `html.Div`, `html.Button`, `html.Details`, `dcc.Dropdown`,
 `dcc.RadioItems`, `dcc.Graph`, `dcc.Store`, and `dash_table.DataTable`. Keep IDs
@@ -1254,20 +1372,16 @@ makes demo entities obvious without corrupting the schemas being demonstrated.
 
 | File | Checked-in rows | Grain / expected dimensions |
 |---|---:|---|
-| `data/s01_readiness.csv` | 15 | one supplied Risk Type + Risk Greek; Age. One of 16 catalogue pairs is intentionally absent to test Age-0 completion. |
+| `data/s01_readiness.csv` | 16 | one supplied ProductSpec Risk Type + Risk Greek; Age. Auxiliary Cash Flow and Cross Gamma identities do not manufacture readiness rows. |
 | `data/s02_checker.csv` | 32 | Risk Type + Risk Greek + MMMFile + Product inventory rows. This inventory may be partial in a real connector. |
 | `data/s03_risk.csv` | 1,296 | Source Type + Underlying + applicable tenor axes + Portfolio + authoritative Group; Risk/dRisk; optional Credit measures. Multiple Portfolios and tenor layers are present. |
 | `data/s04_open.csv` | 318 | unique Source Type + Underlying + applicable tenor keys; market-owned order; Open. |
 | `data/s05_current.csv` | 318 | same market keys/order as Open; Current. The manager attaches the dynamic Market Status. |
 | `data/s06_portfolios.csv` | 5 | one row per Portfolio with Product and registered reporting metadata. |
-| `data/s07_thresholds.csv` | 16 | one Risk Type + Risk Greek with positive PL/Risk/dRisk limits. |
-| `data/s08_concerto.csv` | 16 | one Risk Type + Risk Greek mapped to exactly one ConcertoField. |
+| `data/s07_thresholds.csv` | 25 | all 16 ProductSpec pairs, Cash Flow/New, and `XGamma` plus `XGamma Vega` for each of the four market Risk Types, each with positive PL/Risk/dRisk limits. |
+| `data/s08_concerto.csv` | 17 | all 16 ProductSpec pairs plus Cash Flow/New, each mapped to exactly one ConcertoField. Cross Gamma source sensitivities have zero P&L and are excluded before PLSEND mapping. |
 | `data/s09_reported.csv` | 4 | unique Risk Type + Risk Greek + Underlying sources mapped to Reported Underlying; multiple sources may share one target. |
-| `data/histo/<YYYY>/<MM-DD>/{histo,predicted}.csv` | 48 | four paired daily partitions; each file has six unique Risk Type + Risk Greek + Underlying + Product + Book rows and exact hierarchy-plus-PL columns. |
-
-The separate fake Intraday Cashflows connector returns four rows with exact
-columns `Cashflow ID`, `Cashflow Time`, `Value Date`, `Portfolio`,
-`SignoffGroup`, `Currency`, `Cashflow Type`, `Amount`, and `Status`.
+| `data/histo/<YYYY>/<MM-DD>/{histo,predicted}.csv` | 48 | four paired daily Colossus/Predict partitions; each backing file has six unique Risk Type + Risk Greek + Underlying + Product + Book rows and exact hierarchy-plus-PL columns. |
 
 The fixture generator validates schemas, finite numbers, uniqueness, complete
 source coverage, MarketBook order, and the visible fake marker:
@@ -1332,11 +1446,11 @@ the committed prior snapshot remains readable while the next one is built.
 | `CUBE_STARTUP_TIMEOUT_SECONDS` | `2400` | Non-destructive startup watchdog. |
 | `CUBE_MARKET_TIMEZONE` | `Europe/London` | IANA trading timezone used to derive the manager's system date and passed to the fake status boundary. |
 | `RISK_PRODUCT_DELAY_SECONDS` | `1` | Operator-visible hold after each post-startup Risk/dRisk product; initial startup remains undelayed. |
-| `PL_HISTORICAL_PATH` | `data/histo` | Root of strict `<YYYY>/<MM-DD>/{histo,predicted}.csv` P&L history partitions. |
+| `PL_HISTORICAL_PATH` | `data/histo` | Root of strict `<YYYY>/<MM-DD>/{histo,predicted}.csv` partitions displayed as Colossus/Predict. |
 | `CONCERTO_MAPPING_PATH` | `data/s08_concerto.csv` | Governed P&L-send mapping. |
 | `PL_ADJUSTMENT_PATH` | `adjustments` | Adjustment root. |
 | `PL_LOCAL_FALLBACK_PATH` | `saved_pl` | Local Write P&L fallback. |
-| `SAVED_FILTER_VIEWS_PATH` | `data/saved_views` | Runtime-local root for validated Risk, Stock, and P&L saved-filter JSON. |
+| `SAVED_FILTER_VIEWS_PATH` | `data/saved_views` | Runtime-local root whose `shared/` child holds the validated Risk/Stock/P&L view catalogue. |
 | `GUNICORN_TIMEOUT_SECONDS` | `300` | Gunicorn request timeout. |
 
 ## Publish to Plotly Cloud
@@ -1409,10 +1523,11 @@ docstrings and type hints are the source of truth.
 - `feeds.s01_sources.get_risk_checker`, `get_risk`, `get_market_state`,
   `get_market_open`, `get_market_status`, `get_portfolio_config`, and
   `get_risk_thresholds` are the production replacement boundaries.
+- `get_new_trades` and `get_cross_gamma_sensitivities` expose the active dated
+  supplemental-risk sources used by the manager.
 - `get_product_connector_adapters` binds a separate personal adapter per Source
   Type; `build_production_refresh_manager` composes the manager.
-- `get_intraday_cashflows`, `send_sog_pl`, and `send_portfolio_pl` are independent
-  page/action boundaries.
+- `send_sog_pl` and `send_portfolio_pl` are independent action boundaries.
 - `adapters.s01_common.exact_frame`, `exact_status`, `exact_underlying`, and
   `market_frame` enforce the small personal-adapter contracts.
 - `build_ir_adapters`, `build_fx_adapters`, `build_commo_adapter`, and
@@ -1421,7 +1536,9 @@ docstrings and type hints are the source of truth.
 - `adapters.s05_stock.get_stock`/`GetStock`, `validate_stock_frame`, and
   `build_stock_adapter` own the replaceable dated Stock boundary.
 - `adapters.s06_new_positions.get_new_positions`, `validate_new_positions`, and
-  `build_new_positions_adapter` own the isolated mixed-blotter scaffold.
+  `build_new_positions_adapter` own the active mixed New Trades blotter.
+- `adapters.s07_cross_gamma.get_cross_gamma`, `validate_cross_gamma_rows`, and
+  `build_cross_gamma_adapter` own the portfolio-level Cross Gamma source.
 
 ### Core
 
@@ -1441,6 +1558,12 @@ docstrings and type hints are the source of truth.
   connector results.
 - `get_product_pl` calculates one product; `build_all_pl` is the strict one-shot
   all-product API.
+- `core.s09_cross_gamma.validate_cross_gamma_rows`,
+  `cross_gamma_market_scope`, and `build_cross_gamma_rows` validate, scope, and
+  develop portfolio-level XGAMMA from stored input MarketBook moves.
+- `core.s10_new_trades.validate_new_trade_rows`, `new_trade_market_scope`, and
+  `build_new_trade_rows` validate, scope, join, and calculate position-grain New
+  Trades while retaining their execution audit trail.
 - `load_config`, `load_thresholds`, `merge_config`, `apply_thresholds`, and
   `to_dashboard_frame` govern the release frame. Threshold application never
   rewrites connector-owned Group values.
@@ -1458,21 +1581,22 @@ docstrings and type hints are the source of truth.
   `apply_adjustment_overlay`, and `build_saved_pl_frame` own P&L governance.
 - `load_plsend_mapping`, `load_portfolio_governance`,
   `normalize_pl_send_rows`, and `validate_pl_send_rows` guard those operations;
-  `load_pl_history` validates paired Histo/Predicted partitions.
+  `load_pl_history` maps paired `histo.csv`/`predicted.csv` partitions to
+  Colossus/Predict, `select_pl_history_series` returns observed daily points,
+  and `pl_history_period_values` owns Daily (P), WTD, MTD, and YTD totals.
 - `LocalCsvAdjustmentRepository.save/load` own adjustment persistence; `save`
   performs scoped staged publish/rollback and explicit Portfolio removal.
-- `normalize_cashflow_date`, `validate_intraday_cashflows`, and
-  `load_intraday_cashflows` in `core/s06_cashflow.py` own the page-independent
-  cashflow contract. `empty_intraday_cashflows` supplies a typed empty result.
 - `compare_stock_snapshots` owns the strict full-outer dated comparison;
   `map_stock_comparison_portfolios` attaches governed Portfolio metadata; and
   `filter_stock_comparison` applies Stock-local include/exclude filters without
   mutating the cached comparison. Stock hierarchy siblings are ranked from the
   filtered frame by descending absolute net current Stock, with labels used
   only to break equal-value ties.
-- `SavedFilterViewRepository` owns validated page-scoped JSON, safe names,
-  deterministic reads, atomic replacement, and cross-worker write locking. It
-  stores filters only—never financial DataFrames or browser-global state.
+- `SavedFilterViewRepository` owns the validated shared catalogue under
+  `data/saved_views/shared`, safe names, deterministic reads, atomic
+  create/update/delete, and cross-worker write locking. It adapts a selected
+  view to the requesting page and stores filters only—never financial
+  DataFrames or browser-global state.
 
 ### UI
 
@@ -1492,16 +1616,19 @@ docstrings and type hints are the source of truth.
 - `build_initial_load_layout` is the first paint; `build_layout` is the full
   Risk page.
 - `build_saved_filter_view_bar`, `register_saved_filter_view_callbacks`, and
-  `saved_view_request_values` provide reusable page-local saved filters while
-  leaving dropdown values with each page's existing sole callback owner.
-- `build_intraday_cashflows_page` renders only already-validated cashflow data.
+  `saved_view_request_values` expose one shared named catalogue through
+  collapsed page-local controls, including Base/reset and Update View, while
+  leaving live dropdown values with each page's existing sole callback owner.
 - `StartupCoordinator` owns the background revision-1 worker;
-  `register_callbacks` owns Risk/search/date/cashflow interaction.
-- `build_pl_page` and `build_pl_send_sections` build the native sender page and
-  its five P&L disclosures;
+  `register_callbacks` owns Risk/search/date interaction.
+- `build_pl_page` and `build_pl_send_sections` build the native sender page,
+  its Send All panel, and five independent P&L disclosures;
   `PLSendConfig` supplies their external boundaries, and
   `register_pl_send_callbacks` owns lazy loading, editing, save, send, and write
   actions.
+- `build_pl_history_table_with_state`, `build_pl_history_figure`, and
+  `build_pl_history_series_selector` render the expandable period table and its
+  Colossus/Predict observed-series viewer.
 - `default_stock_dates`, `load_stock_page_data`, `build_stock_page`, and
   `build_stock_table` own Stock date defaults, source composition, controls, and
   the one-table comparison page.

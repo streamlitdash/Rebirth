@@ -64,15 +64,17 @@ output file.
   `XVA`/`Hedges`; the optional reporting field is `Sub Category`; P&L governance
   uses `ConcertoField`; and Credit exposes SP01, PSP01, PM01, PM01P, Theta, and
   JTD as complete Risk/dRisk pairs.
-- Split is the Risk/Gamma/New Position/Cross Gamma filter axis. `Risk Greek`
+- Split is the Risk/Gamma/New Trades/XGAMMA filter axis. `Risk Greek`
   remains a classification and IR-family concept; there is no generic Greek
   dropdown. Underlying sort, Promotion, and Region remain separate controls.
 - Credit may carry optional Region. The fixture feed derives a deterministic
   demo Region from Group only so the UI path is executable; it is explicitly
   not production geography. Non-Credit products do not fabricate Region.
-- Cross Gamma and New Position keep strict public loader and atomic-cache
-  contracts. Their fixture loaders return correctly typed empty frames rather
-  than inventing financial exposure.
+- XGAMMA and New Trades keep strict public loader and atomic-cache contracts.
+  Their checked-in sources now contain visibly fake Credit examples so the
+  dual source/developed XGAMMA path and traded-level/Open-reference New Trades
+  path can be exercised end to end; replacing those adapters does not change
+  the shared validation boundary.
 - The alternative supplied financial-formula fragments were not selected where
   they contradicted one another: they contained product-key misspellings,
   incompatible gamma scale prose/code, undocumented factors, and inconsistent
@@ -88,9 +90,6 @@ output file.
   `allow_duplicate` and global `initial_duplicate` were not used. Cold startup,
   table/detail rendering, date drafts, and P&L workflows retain distinct owners.
 - The Static Data page is path-safe and exposes only an approved list of files.
-  The older cashflow framework files are retained because they are coherent,
-  tested extension points; they are not silently deleted just because Static
-  Data is the active second route.
 - Real connector code is not imported at module load. The default application
   remains fully usable with fixtures and no private environment. The old
   `s08_plsend.csv`, inherited Plotly application IDs, and two stale pre-Rebirth

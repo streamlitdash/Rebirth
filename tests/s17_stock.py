@@ -22,7 +22,7 @@ from adapters.s05_stock import (
     validate_stock_frame,
 )
 from core.s01_schema import PORTFOLIO_MAPPED_COLUMN, UNMAPPED_VALUE
-from core.s08_stock import (
+from core.s07_stock import (
     CURRENT_MARKET_VALUE_COLUMN,
     MAPPED_STOCK_COMPARISON_COLUMNS,
     MARKET_VALUE_CHANGE_COLUMN,
@@ -46,7 +46,7 @@ from core.s08_stock import (
     summarize_stock_hierarchy,
     summarize_visible_stock_hierarchy,
 )
-from core.s09_saved_views import SavedFilterView
+from core.s08_saved_views import SavedFilterView
 from feeds.s01_sources import build_production_refresh_manager
 from pages import PAGE_SERVICES_CONFIG_KEY
 from pages.stock import layout as stock_page_layout
@@ -64,6 +64,7 @@ from ui.s10_stock import (
     build_stock_page_from_data,
     build_stock_page_from_sources,
     build_stock_page_shell,
+    build_stock_table,
     default_stock_dates,
     normalize_stock_date_pair,
     stock_hierarchy_path_token,
@@ -851,6 +852,15 @@ def test_stock_filter_ids_and_store_are_independent_from_risk() -> None:
     ]
     assert "dimension-filter-store" not in ids
     assert not (set(DIMENSION_FILTER_IDS.values()) & ids)
+
+
+def test_stock_source_table_native_filters_are_case_insensitive() -> None:
+    current, prior = _comparison_legs()
+    mapped = map_stock_comparison_portfolios(current, prior, _config())
+    table = build_stock_table(mapped)
+
+    assert table.filter_action == "native"
+    assert table.filter_options == {"case": "insensitive"}
 
 
 @pytest.mark.parametrize(

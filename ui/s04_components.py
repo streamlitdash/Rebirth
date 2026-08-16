@@ -15,6 +15,7 @@ from plotly.subplots import make_subplots
 from dash import dash_table, dcc, html
 from core.s01_schema import PORTFOLIO_FIELDS, PORTFOLIO_METADATA_COLUMNS
 from core.s03_search import HIERARCHY_DEPTH
+from core.s10_new_trades import NEW_TRADES_SPLIT
 
 from .s03_aggregate import (
     HierarchyAggregationIndex,
@@ -52,6 +53,7 @@ from .s02_constants import (
     EXPANDABLE_METRICS,
     FILTER_DIMENSION_FIELDS,
     GRID_METRIC_COLUMNS,
+    IR_GREEK_FAMILY_LABELS,
     METRIC_BREAKDOWNS,
     METRIC_COLUMNS,
     PLOT_METRICS,
@@ -86,6 +88,26 @@ RISK_SAVED_VIEW_CONTROLS = SavedFilterViewControls(
     filter_ids=DIMENSION_FILTER_IDS,
     exclude_id="risk-filter-exclude-selected",
 )
+
+NEW_TRADE_SPLIT = NEW_TRADES_SPLIT
+NEW_TRADE_DETAIL_COLUMNS = (
+    "trade id",
+    "risk",
+    "notional",
+    "traded level",
+    "trade time",
+    "trader code",
+    "trader name",
+)
+NEW_TRADE_DETAIL_LABELS = {
+    "trade id": "Trade ID",
+    "risk": "Risk",
+    "notional": "Notional Traded",
+    "traded level": "Traded Spread / Level",
+    "trade time": "Trade Time",
+    "trader code": "Trader Code",
+    "trader name": "Trader Name",
+}
 
 
 def _active_groups_for_frame(
@@ -2111,11 +2133,12 @@ def build_credit_multi_table(
         availability_note = (
             "Unavailable connector measures are blank: "
             + ", ".join(missing_measures)
-            + "."
+            + ". Any XGamma source sensitivities retain generic Risk."
         )
     else:
         availability_note = (
-            "All values come from optional connector credit-measure columns."
+            "Connector measure columns drive ordinary Credit rows. Any XGamma "
+            "source sensitivities retain generic Risk."
         )
     return html.Div(
         [
@@ -2600,6 +2623,183 @@ def build_top_book_exposures(
                 sorted(resolved_open_rows), separators=(",", ":")
             ),
         },
+    )
+
+
+def _normalize_new_trade_detail_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    """Normalize a manager-owned trade-detail frame without mutating it.
+
+    Trade metadata remains at position grain and is intentionally separate
+    from the aggregated Risk Explorer frame.  Canonical connector names are
+    accepted here so the UI does not force adapters to emit lowercase labels.
+    """
+
+    if not isinstance(frame, pd.DataFrame):
+        raise TypeError("new_trade_details must be a pandas DataFrame")
+    aliases = {
+        **{
+            field.external_name.strip().casefold(): field.key
+            for field in PORTFOLIO_FIELDS
+        },
+        "portfolio": "portfolio",
+        "notional traded": "notional",
+        "traded spread": "traded level",
+    }
+    normalized = frame.copy()
+    normalized.columns = [
+        aliases.get(str(column).strip().casefold(), str(column).strip().casefold())
+        for column in normalized.columns
+    ]
+    duplicates = normalized.columns[normalized.columns.duplicated()].unique().tolist()
+    if duplicates:
+        raise ValueError(
+            f"Duplicate new-trade detail columns after normalization: {duplicates}"
+        )
+    if "notional" not in normalized:
+        normalized["notional"] = np.nan
+    missing = [
+        column
+        for column in NEW_TRADE_DETAIL_COLUMNS
+        if column != "notional" and column not in normalized
+    ]
+    if missing:
+        raise ValueError(f"Missing new-trade detail columns: {missing}")
+    return normalized
+
+
+def new_trade_detail_frame(
+    frame: pd.DataFrame,
+    context: Mapping[str, str],
+    *,
+    split: str = NEW_TRADE_SPLIT,
+) -> pd.DataFrame:
+    """Return display columns for the selected New Trades hierarchy cell.
+
+    Every selected-context column carried by the detail frame is applied as an
+    exact identity filter.  The manager should therefore enrich this frame
+    with the output Risk identity and portfolio metadata before supplying it;
+    the component never attempts a financial or reporting merge of its own.
+    """
+
+    if not isinstance(context, Mapping):
+        raise TypeError("context must be a mapping")
+    normalized = _normalize_new_trade_detail_columns(frame)
+    if str(context.get("split", "")) != split:
+        return normalized.iloc[0:0].loc[:, list(NEW_TRADE_DETAIL_COLUMNS)]
+
+    scoped = normalized
+    for column, value in context.items():
+        if column == "split" or column not in scoped:
+            continue
+        scoped = scoped.loc[scoped[column].astype(str).eq(str(value))]
+    return scoped.loc[:, list(NEW_TRADE_DETAIL_COLUMNS)].reset_index(drop=True)
+
+
+def _format_new_trade_number(value: object, *, decimals: int) -> str:
+    if pd.isna(value):
+        return "—"
+    if isinstance(value, (bool, np.bool_)):
+        raise ValueError("new-trade numeric display values cannot be boolean")
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("new-trade numeric display values must be numeric") from exc
+    if not np.isfinite(numeric):
+        raise ValueError("new-trade numeric display values must be finite")
+    rendered = f"{numeric:,.{decimals}f}"
+    if decimals:
+        rendered = rendered.rstrip("0").rstrip(".")
+    return "0" if rendered == "-0" else rendered
+
+
+def _format_optional_new_trade_number(value: object, *, decimals: int) -> str:
+    if pd.isna(value):
+        return ""
+    return _format_new_trade_number(value, decimals=decimals)
+
+
+def _format_new_trade_text(value: object) -> str:
+    if pd.isna(value) or not str(value).strip():
+        return "—"
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat(sep=" ")
+    return str(value)
+
+
+def build_new_trade_detail_table(
+    frame: pd.DataFrame,
+    context: Mapping[str, str],
+    *,
+    split: str = NEW_TRADE_SPLIT,
+) -> html.Div | None:
+    """Build the descriptive trade table for an explicit New Trades cell."""
+
+    if str(context.get("split", "")) != split:
+        return None
+    scoped = new_trade_detail_frame(frame, context, split=split)
+    header = html.Thead(
+        html.Tr(
+            [
+                html.Th(NEW_TRADE_DETAIL_LABELS[column], scope="col")
+                for column in NEW_TRADE_DETAIL_COLUMNS
+            ]
+        )
+    )
+    if scoped.empty:
+        body = html.Tbody(
+            html.Tr(
+                html.Td(
+                    "No matching new trades",
+                    colSpan=len(NEW_TRADE_DETAIL_COLUMNS),
+                    className="detail-table-empty",
+                )
+            )
+        )
+    else:
+        rows = []
+        for record in scoped.to_dict("records"):
+            rows.append(
+                html.Tr(
+                    [
+                        html.Td(_format_new_trade_text(record["trade id"])),
+                        html.Td(
+                            _format_new_trade_number(record["risk"], decimals=1),
+                            className="detail-number",
+                        ),
+                        html.Td(
+                            _format_optional_new_trade_number(
+                                record["notional"], decimals=0
+                            ),
+                            className="detail-number",
+                        ),
+                        html.Td(
+                            _format_new_trade_number(
+                                record["traded level"], decimals=6
+                            ),
+                            className="detail-number",
+                        ),
+                        html.Td(_format_new_trade_text(record["trade time"])),
+                        html.Td(_format_new_trade_text(record["trader code"])),
+                        html.Td(_format_new_trade_text(record["trader name"])),
+                    ]
+                )
+            )
+        body = html.Tbody(rows)
+
+    table = html.Table(
+        [
+            html.Caption("Selected new trades", className="sr-only"),
+            header,
+            body,
+        ],
+        className="detail-table",
+    )
+    return html.Div(
+        [
+            html.H3("New trades", className="detail-chart-title"),
+            html.Div(table, className="detail-table-wrap"),
+        ],
+        className="detail-chart-card",
     )
 
 
@@ -3102,6 +3302,7 @@ def _build_detail_panel_from_frame(
     selected_metric: str,
     metric: str,
     tenor_view: str,
+    new_trade_details: pd.DataFrame | None = None,
 ) -> html.Div:
     # Diagnostics: trace tenor view data for debugging
     partitions = detail_tenor_partitions(detail)
@@ -3258,6 +3459,11 @@ def _build_detail_panel_from_frame(
         coverage += f" · {total_detail_rows - included_detail_rows:,} outside this view"
 
     title = f"{selected_context_title(context)} — {metric_title(metric)}"
+    new_trade_table = (
+        build_new_trade_detail_table(new_trade_details, context)
+        if new_trade_details is not None
+        else None
+    )
 
     # Build matrix table for surface view, otherwise use flat table
     if matrix_detail is not None and not matrix_detail.empty:
@@ -3286,6 +3492,7 @@ def _build_detail_panel_from_frame(
                 ],
                 className="detail-header",
             ),
+            *([new_trade_table] if new_trade_table is not None else []),
             html.Div(
                 [
                     html.Div(chart_cards, className="detail-chart detail-chart-stack"),
@@ -3306,6 +3513,8 @@ def build_detail_panel_with_state(
     selection: dict[str, str] | None,
     plot_metric: str,
     tenor_view: str | None = "auto",
+    *,
+    new_trade_details: pd.DataFrame | None = None,
 ) -> tuple[html.Div, list[dict[str, object]], str]:
     """Build one detail panel and its synchronized tenor-view picker state."""
     if not selection:
@@ -3335,6 +3544,7 @@ def build_detail_panel_with_state(
         selected_metric=selected_metric,
         metric=metric,
         tenor_view=resolved_view,
+        new_trade_details=new_trade_details,
     )
     return panel, options, resolved_view
 
@@ -3790,6 +4000,7 @@ def build_unmapped_books_table(frame: pd.DataFrame) -> html.Div:
                     data=table_frame.to_dict("records"),
                     editable=False,
                     filter_action="native",
+                    filter_options={"case": "insensitive"},
                     sort_action="native",
                     sort_mode="multi",
                     page_action="native",
@@ -4698,7 +4909,11 @@ def build_layout(
             html.Div(
                 [
                     html.Div(
-                        "Leave blank to include all values. Risk filters are independent from Stock filters.",
+                        "Include mode uses OR within one filter (B or D) and AND "
+                        "across filters (Credit and Portfolio B or D). Exclude mode "
+                        "removes a row if it matches any selected value in any "
+                        "populated filter. Leave a filter blank for all values; "
+                        "Risk selections remain independent from Stock and P&L.",
                         className="filter-note",
                     ),
                     html.Div(
@@ -4709,7 +4924,7 @@ def build_layout(
                         id="risk-filter-exclude-selected",
                         options=[
                             {
-                                "label": "Exclude selected values",
+                                "label": "Exclude rows matching any selected value",
                                 "value": "exclude",
                             }
                         ],
@@ -4879,9 +5094,8 @@ def build_layout(
                 id="ir-family-tabs",
                 value="delta",
                 children=[
-                    dcc.Tab(label="Delta", value="delta"),
-                    dcc.Tab(label="Basis", value="basis"),
-                    dcc.Tab(label="Vega", value="vega"),
+                    dcc.Tab(label=label, value=family)
+                    for family, label in IR_GREEK_FAMILY_LABELS.items()
                 ],
                 className="workspace-tabs ir-family-tabs",
                 style={"display": "none"},
@@ -5092,6 +5306,7 @@ __all__ = [
     "build_tenor_heatmap",
     "build_line_chart",
     "build_layout",
+    "build_new_trade_detail_table",
     "build_initial_load_layout",
     "build_operating_date_content",
     "build_risk_checker_inventory",
@@ -5105,6 +5320,7 @@ __all__ = [
     "metric_class",
     "metric_header",
     "metric_title",
+    "new_trade_detail_frame",
     "selected_context_title",
     "default_top_book_open_rows",
     "detail_tenor_partitions",

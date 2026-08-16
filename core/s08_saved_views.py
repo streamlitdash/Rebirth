@@ -1,8 +1,10 @@
-"""Durable, page-scoped saved filter-view repository.
+"""Durable shared saved filter-view repository.
 
 The repository stores only small validated JSON documents.  Financial frames
 remain in the refresh manager and browser/session selections remain in Dash
-components; neither belongs in this filesystem boundary.
+components; neither belongs in this filesystem boundary.  Named views form one
+catalogue shared by Risk, Stock, and P&L.  The caller's page scope is retained
+only on the returned value so each page can validate its own apply request.
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ else:
 
 
 SAVED_VIEW_VERSION: Final = 1
+SHARED_SAVED_VIEW_SCOPE: Final = "shared"
 _SCOPE_PATTERN: Final = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 _IDENTIFIER_PATTERN: Final = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,47})--[0-9a-f]{12}$")
 _SLUG_CHARACTERS: Final = re.compile(r"[^a-z0-9]+")
@@ -43,7 +46,7 @@ class SavedViewError(ValueError):
 
 
 class SavedViewConflictError(SavedViewError):
-    """Raised when ``Save New`` receives an existing page-local name."""
+    """Raised when ``Save New`` receives an existing catalogue name."""
 
 
 class SavedViewValidationError(SavedViewError):
@@ -52,7 +55,7 @@ class SavedViewValidationError(SavedViewError):
 
 @dataclass(frozen=True)
 class SavedFilterView:
-    """One immutable, page-local saved selection."""
+    """One immutable saved selection adapted to a consumer page scope."""
 
     identifier: str
     scope: str
@@ -147,11 +150,27 @@ class SavedFilterViewRepository:
         return self._filter_keys
 
     def _scope_directory(self, scope: object) -> tuple[str, Path]:
+        """Validate a consumer scope and return the one shared catalogue."""
+
         normalized = _normalize_scope(scope)
-        directory = (self._root / normalized).resolve()
+        directory = (self._root / SHARED_SAVED_VIEW_SCOPE).resolve()
         if directory.parent != self._root:
-            raise SavedViewValidationError("Saved view scope escapes its repository")
+            raise SavedViewValidationError(
+                "Saved view catalogue escapes its repository"
+            )
         return normalized, directory
+
+    @staticmethod
+    def _for_scope(view: SavedFilterView, scope: str) -> SavedFilterView:
+        """Adapt stored shared metadata to one page-local request authority."""
+
+        return SavedFilterView(
+            identifier=view.identifier,
+            scope=scope,
+            name=view.name,
+            filters=view.filters,
+            exclude_selected=view.exclude_selected,
+        )
 
     @contextmanager
     def _writer_lock(self, directory: Path) -> Iterator[None]:
@@ -288,7 +307,7 @@ class SavedFilterViewRepository:
         scope = _normalize_scope(payload["scope"])
         if scope != expected_scope:
             raise SavedViewValidationError(
-                f"Saved view {path.name!r} belongs to another page scope"
+                f"Saved view {path.name!r} belongs to another catalogue"
             )
         name = normalize_saved_view_name(payload["name"])
         identifier = _normalize_identifier(payload["id"])
@@ -310,30 +329,73 @@ class SavedFilterViewRepository:
             exclude_selected=exclude_selected,
         )
 
-    def list(self, scope: object) -> tuple[SavedFilterView, ...]:
-        """Return a deterministic, fully validated page-local catalogue."""
+    def _stored_views(self, directory: Path) -> tuple[SavedFilterView, ...]:
+        """Read and validate the shared catalogue without adapting page scope."""
 
-        normalized_scope, directory = self._scope_directory(scope)
         if not directory.exists():
             return ()
         if not directory.is_dir():
             raise SavedViewValidationError(
-                f"Saved view scope {normalized_scope!r} is not a directory"
+                "Saved view shared catalogue is not a directory"
             )
         views = [
-            self._decode(path, normalized_scope)
+            self._decode(path, SHARED_SAVED_VIEW_SCOPE)
             for path in sorted(directory.glob("*.json"), key=lambda item: item.name)
         ]
         duplicate_names = len({view.name.casefold() for view in views}) != len(views)
         if duplicate_names:
             raise SavedViewValidationError(
-                f"Saved view scope {normalized_scope!r} contains duplicate names"
+                "Saved view shared catalogue contains duplicate names"
             )
         return tuple(
             sorted(
                 views,
                 key=lambda view: (view.name.casefold(), view.name, view.identifier),
             )
+        )
+
+    def _write_atomic(self, directory: Path, view: SavedFilterView) -> None:
+        """Replace one complete JSON document without exposing partial bytes."""
+
+        document = {
+            "version": SAVED_VIEW_VERSION,
+            "id": view.identifier,
+            "scope": SHARED_SAVED_VIEW_SCOPE,
+            "name": view.name,
+            "filters": {key: list(view.filters[key]) for key in self._filter_keys},
+            "exclude_selected": view.exclude_selected,
+        }
+        descriptor, temporary_name = tempfile.mkstemp(
+            dir=directory,
+            prefix=f".{view.identifier}.",
+            suffix=".tmp",
+            text=True,
+        )
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+                json.dump(
+                    document,
+                    handle,
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, directory / f"{view.identifier}.json")
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+
+    def list(self, scope: object) -> tuple[SavedFilterView, ...]:
+        """Return the shared catalogue adapted to one consumer page scope."""
+
+        normalized_scope, directory = self._scope_directory(scope)
+        return tuple(
+            self._for_scope(view, normalized_scope)
+            for view in self._stored_views(directory)
         )
 
     def get(self, scope: object, identifier: object) -> SavedFilterView:
@@ -344,9 +406,12 @@ class SavedFilterViewRepository:
         path = directory / f"{normalized_identifier}.json"
         if not path.is_file():
             raise FileNotFoundError(
-                f"Saved view {normalized_identifier!r} does not exist in {normalized_scope!r}"
+                f"Saved view {normalized_identifier!r} does not exist"
             )
-        return self._decode(path, normalized_scope)
+        return self._for_scope(
+            self._decode(path, SHARED_SAVED_VIEW_SCOPE),
+            normalized_scope,
+        )
 
     def save_new(
         self,
@@ -364,61 +429,58 @@ class SavedFilterViewRepository:
             raise SavedViewValidationError("Saved view include/exclude mode is invalid")
         normalized_filters = self._normalize_filters(filters)
         identifier = _saved_view_identifier(normalized_name)
-        view = SavedFilterView(
+        stored_view = SavedFilterView(
             identifier=identifier,
-            scope=normalized_scope,
+            scope=SHARED_SAVED_VIEW_SCOPE,
             name=normalized_name,
             filters=normalized_filters,
             exclude_selected=exclude_selected,
         )
         with self._writer_lock(directory):
-            existing = self.list(normalized_scope)
+            existing = self._stored_views(directory)
             if any(
                 item.name.casefold() == normalized_name.casefold() for item in existing
             ):
                 raise SavedViewConflictError(
-                    f"A {normalized_scope} view named {normalized_name!r} already exists"
+                    f"A saved view named {normalized_name!r} already exists"
                 )
-            target = directory / f"{identifier}.json"
-            document = {
-                "version": SAVED_VIEW_VERSION,
-                "id": identifier,
-                "scope": normalized_scope,
-                "name": normalized_name,
-                "filters": {
-                    key: list(normalized_filters[key]) for key in self._filter_keys
-                },
-                "exclude_selected": exclude_selected,
-            }
-            descriptor, temporary_name = tempfile.mkstemp(
-                dir=directory,
-                prefix=f".{identifier}.",
-                suffix=".tmp",
-                text=True,
+            self._write_atomic(directory, stored_view)
+        return self._for_scope(stored_view, normalized_scope)
+
+    def update(
+        self,
+        scope: object,
+        identifier: object,
+        filters: Mapping[str, Sequence[str] | None],
+        *,
+        exclude_selected: bool,
+    ) -> SavedFilterView:
+        """Atomically overwrite one named view's filters without renaming it."""
+
+        normalized_scope, directory = self._scope_directory(scope)
+        normalized_identifier = _normalize_identifier(identifier)
+        if not isinstance(exclude_selected, bool):
+            raise SavedViewValidationError("Saved view include/exclude mode is invalid")
+        normalized_filters = self._normalize_filters(filters)
+        with self._writer_lock(directory):
+            path = directory / f"{normalized_identifier}.json"
+            if not path.is_file():
+                raise FileNotFoundError(
+                    f"Saved view {normalized_identifier!r} does not exist"
+                )
+            current = self._decode(path, SHARED_SAVED_VIEW_SCOPE)
+            stored_view = SavedFilterView(
+                identifier=current.identifier,
+                scope=SHARED_SAVED_VIEW_SCOPE,
+                name=current.name,
+                filters=normalized_filters,
+                exclude_selected=exclude_selected,
             )
-            temporary = Path(temporary_name)
-            try:
-                with os.fdopen(
-                    descriptor, "w", encoding="utf-8", newline="\n"
-                ) as handle:
-                    json.dump(
-                        document,
-                        handle,
-                        ensure_ascii=False,
-                        indent=2,
-                        sort_keys=True,
-                    )
-                    handle.write("\n")
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                os.replace(temporary, target)
-            finally:
-                if temporary.exists():
-                    temporary.unlink()
-        return view
+            self._write_atomic(directory, stored_view)
+        return self._for_scope(stored_view, normalized_scope)
 
     def delete(self, scope: object, identifier: object) -> SavedFilterView:
-        """Delete one exact page-local view while holding the writer guard."""
+        """Delete one exact shared view while holding the writer guard."""
 
         normalized_scope, directory = self._scope_directory(scope)
         normalized_identifier = _normalize_identifier(identifier)
@@ -426,16 +488,16 @@ class SavedFilterViewRepository:
             path = directory / f"{normalized_identifier}.json"
             if not path.is_file():
                 raise FileNotFoundError(
-                    f"Saved view {normalized_identifier!r} does not exist in "
-                    f"{normalized_scope!r}"
+                    f"Saved view {normalized_identifier!r} does not exist"
                 )
-            view = self._decode(path, normalized_scope)
+            view = self._decode(path, SHARED_SAVED_VIEW_SCOPE)
             path.unlink()
-        return view
+        return self._for_scope(view, normalized_scope)
 
 
 __all__ = [
     "SAVED_VIEW_VERSION",
+    "SHARED_SAVED_VIEW_SCOPE",
     "SavedFilterView",
     "SavedFilterViewRepository",
     "SavedViewConflictError",

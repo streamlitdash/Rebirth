@@ -8,14 +8,21 @@ import pytest
 from core.s04_pl import (
     ADJUSTMENT,
     BOOK,
+    COLOSSUS_TYPE,
     CONCERTO_FIELD,
     HISTORICAL_PL_COLUMNS,
     HISTO_TYPE,
     HISTORY_FILE_COLUMNS,
     HISTORY_TYPE,
     PL_HISTORY_COLUMNS,
+    PL_HISTORY_DAILY_PERIOD,
+    PL_HISTORY_MTD_PERIOD,
+    PL_HISTORY_PERIOD_COLUMNS,
+    PL_HISTORY_WTD_PERIOD,
+    PL_HISTORY_YTD_PERIOD,
     PL_SEND_COLUMNS,
     PLSendValidationError,
+    PREDICT_TYPE,
     PREDICTED_TYPE,
     PRODUCT,
     RISK_GREEK,
@@ -27,8 +34,13 @@ from core.s04_pl import (
     empty_pl_send_frame,
     load_historical_pl,
     load_pl_history,
+    normalize_pl_history_types,
+    pl_history_period_bounds,
+    pl_history_period_values,
+    select_pl_history_series,
 )
 from core.s05_storage import AdjustmentPersistenceError, LocalCsvAdjustmentRepository
+from core.s09_cross_gamma import XGAMMA_RISK_GREEK, XGAMMA_VEGA_RISK_GREEK
 
 
 MARKET_DATE = "2026-07-20"
@@ -118,6 +130,59 @@ def _history_leaf(root, market_date: str, *, duplicate: bool = False):
     return leaf
 
 
+def _analysis_history() -> pd.DataFrame:
+    """History with deliberate missing dates/types and more than one leaf."""
+
+    return pd.DataFrame(
+        [
+            ["2025-12-31", "Histo", "IR", "Delta", "EUR", "XVA", "BOOK_A", 100.0],
+            [
+                "2025-12-31",
+                "Predicted",
+                "IR",
+                "Delta",
+                "EUR",
+                "XVA",
+                "BOOK_A",
+                90.0,
+            ],
+            ["2026-01-02", COLOSSUS_TYPE, "IR", "Delta", "EUR", "XVA", "BOOK_A", 1.0],
+            ["2026-01-02", PREDICT_TYPE, "IR", "Delta", "EUR", "XVA", "BOOK_A", 2.0],
+            ["2026-07-31", COLOSSUS_TYPE, "IR", "Delta", "EUR", "XVA", "BOOK_A", 3.0],
+            ["2026-07-31", PREDICT_TYPE, "IR", "Delta", "EUR", "XVA", "BOOK_A", 4.0],
+            ["2026-08-01", COLOSSUS_TYPE, "IR", "Delta", "EUR", "XVA", "BOOK_A", 5.0],
+            ["2026-08-01", PREDICT_TYPE, "IR", "Delta", "EUR", "XVA", "BOOK_A", 6.0],
+            ["2026-08-10", COLOSSUS_TYPE, "IR", "Delta", "EUR", "XVA", "BOOK_A", 10.0],
+            ["2026-08-10", PREDICT_TYPE, "IR", "Delta", "EUR", "XVA", "BOOK_A", 11.0],
+            ["2026-08-10", COLOSSUS_TYPE, "IR", "Delta", "EUR", "XVA", "BOOK_B", 2.0],
+            ["2026-08-10", PREDICT_TYPE, "IR", "Delta", "EUR", "XVA", "BOOK_B", 3.0],
+            ["2026-08-11", COLOSSUS_TYPE, "IR", "Delta", "EUR", "XVA", "BOOK_A", 4.0],
+            ["2026-08-13", PREDICT_TYPE, "IR", "Delta", "EUR", "XVA", "BOOK_A", 5.0],
+            [
+                "2026-08-14",
+                COLOSSUS_TYPE,
+                "FX",
+                "Delta",
+                "EUR/USD",
+                "Hedge",
+                "BOOK_C",
+                7.0,
+            ],
+            [
+                "2026-08-14",
+                PREDICT_TYPE,
+                "FX",
+                "Delta",
+                "EUR/USD",
+                "Hedge",
+                "BOOK_C",
+                8.0,
+            ],
+        ],
+        columns=list(PL_HISTORY_COLUMNS),
+    )
+
+
 def test_historical_pl_normalizes_and_sorts_the_exact_daily_grain(tmp_path) -> None:
     source = tmp_path / "historical.csv"
     _historical_pl().to_csv(source, index=False)
@@ -173,6 +238,125 @@ def test_pl_history_loads_strict_actual_and_predicted_date_partitions(tmp_path) 
         & history[BOOK].eq("BOOK_A")
     ]
     assert actual.iloc[0]["PL"] == 10.0
+
+
+def test_pl_history_file_names_emit_canonical_user_facing_type_labels(
+    tmp_path,
+) -> None:
+    root = tmp_path / "histo"
+    _history_leaf(root, "2026-08-15")
+
+    history = load_pl_history(root)
+
+    assert COLOSSUS_TYPE == "Colossus"
+    assert PREDICT_TYPE == "Predict"
+    assert HISTO_TYPE == COLOSSUS_TYPE
+    assert PREDICTED_TYPE == PREDICT_TYPE
+    assert set(history[HISTORY_TYPE]) == {COLOSSUS_TYPE, PREDICT_TYPE}
+    assert normalize_pl_history_types(["Predicted", "real", "Histo"]) == (
+        COLOSSUS_TYPE,
+        PREDICT_TYPE,
+    )
+
+
+def test_pl_history_series_aggregates_exact_path_once_per_observed_day_and_type() -> (
+    None
+):
+    history = _analysis_history()
+
+    series = select_pl_history_series(
+        history,
+        ("IR", "Delta", "EUR", "XVA"),
+        ("actual", "Predicted"),
+    )
+
+    assert list(series.columns) == ["Market Date", HISTORY_TYPE, "PL"]
+    assert not series.duplicated(["Market Date", HISTORY_TYPE]).any()
+    assert "2026-08-12" not in series["Market Date"].tolist()
+    monday = series.loc[series["Market Date"].eq("2026-08-10")]
+    assert monday[[HISTORY_TYPE, "PL"]].values.tolist() == [
+        [COLOSSUS_TYPE, 12.0],
+        [PREDICT_TYPE, 14.0],
+    ]
+    assert set(series[HISTORY_TYPE]) == {COLOSSUS_TYPE, PREDICT_TYPE}
+
+
+def test_pl_history_series_supports_total_and_keeps_missing_identity_empty() -> None:
+    history = _analysis_history()
+
+    total = select_pl_history_series(history, (), PREDICT_TYPE)
+    missing = select_pl_history_series(history, ("Credit",))
+
+    latest = total.loc[total["Market Date"].eq("2026-08-14")]
+    assert latest[[HISTORY_TYPE, "PL"]].values.tolist() == [[PREDICT_TYPE, 8.0]]
+    assert list(missing.columns) == ["Market Date", HISTORY_TYPE, "PL"]
+    assert missing.empty
+
+
+def test_pl_history_period_bounds_use_calendar_monday_month_and_year() -> None:
+    assert pl_history_period_bounds("2026-08-12") == {
+        PL_HISTORY_DAILY_PERIOD: ("2026-08-12", "2026-08-12"),
+        PL_HISTORY_WTD_PERIOD: ("2026-08-10", "2026-08-12"),
+        PL_HISTORY_MTD_PERIOD: ("2026-08-01", "2026-08-12"),
+        PL_HISTORY_YTD_PERIOD: ("2026-01-01", "2026-08-12"),
+    }
+
+
+def test_pl_history_period_values_use_global_latest_and_required_type_semantics() -> (
+    None
+):
+    values = pl_history_period_values(_analysis_history())
+
+    assert list(values.columns) == list(PL_HISTORY_PERIOD_COLUMNS)
+    assert values.loc[
+        values["Period"].eq(PL_HISTORY_DAILY_PERIOD), HISTORY_TYPE
+    ].tolist() == [PREDICT_TYPE]
+    assert values.loc[values["Period"].eq(PL_HISTORY_DAILY_PERIOD), "PL"].tolist() == [
+        8.0
+    ]
+    for period in (
+        PL_HISTORY_WTD_PERIOD,
+        PL_HISTORY_MTD_PERIOD,
+        PL_HISTORY_YTD_PERIOD,
+    ):
+        assert values.loc[values["Period"].eq(period), HISTORY_TYPE].tolist() == [
+            COLOSSUS_TYPE,
+            PREDICT_TYPE,
+        ]
+
+    totals = {
+        (row["Period"], row[HISTORY_TYPE]): row["PL"]
+        for row in values.to_dict("records")
+    }
+    assert totals == {
+        (PL_HISTORY_DAILY_PERIOD, PREDICT_TYPE): 8.0,
+        (PL_HISTORY_WTD_PERIOD, COLOSSUS_TYPE): 23.0,
+        (PL_HISTORY_WTD_PERIOD, PREDICT_TYPE): 27.0,
+        (PL_HISTORY_MTD_PERIOD, COLOSSUS_TYPE): 28.0,
+        (PL_HISTORY_MTD_PERIOD, PREDICT_TYPE): 33.0,
+        (PL_HISTORY_YTD_PERIOD, COLOSSUS_TYPE): 32.0,
+        (PL_HISTORY_YTD_PERIOD, PREDICT_TYPE): 39.0,
+    }
+
+
+def test_pl_history_period_values_do_not_fall_back_or_fabricate_missing_daily() -> None:
+    history = _analysis_history()
+
+    global_latest = pl_history_period_values(history, ("IR",))
+    explicit_ir_latest = pl_history_period_values(
+        history,
+        ("IR",),
+        as_of="2026-08-13",
+    )
+    missing = pl_history_period_values(history, ("Credit",))
+
+    assert global_latest.loc[global_latest["Period"].eq(PL_HISTORY_DAILY_PERIOD)].empty
+    assert explicit_ir_latest.loc[
+        explicit_ir_latest["Period"].eq(PL_HISTORY_DAILY_PERIOD),
+        [HISTORY_TYPE, "PL"],
+    ].values.tolist() == [[PREDICT_TYPE, 5.0]]
+    assert list(missing.columns) == list(PL_HISTORY_PERIOD_COLUMNS)
+    assert missing.empty
 
 
 def test_pl_history_reuses_unchanged_csvs_and_invalidates_on_file_change(
@@ -276,6 +460,84 @@ def test_pl_base_aggregates_each_portfolio_concerto_field_once() -> None:
     ]
     assert base[CONCERTO_FIELD].eq("irdeltaeffect").all()
     assert base[ADJUSTMENT].eq(False).all()
+
+
+def test_pl_base_excludes_only_zero_pl_cross_gamma_source_sensitivities() -> None:
+    mapping = pd.DataFrame(
+        [
+            ["Credit", "Delta", "creditdeltaeffect"],
+            ["IR", "Delta", "irdeltaeffect"],
+        ],
+        columns=["Risk Type", "Risk Greek", CONCERTO_FIELD],
+    )
+    raw = pd.DataFrame(
+        [
+            [
+                MARKET_DATE,
+                "Credit",
+                XGAMMA_RISK_GREEK,
+                "Risk",
+                "BOOK_A",
+                "SOG_A",
+                0.0,
+                True,
+            ],
+            [
+                MARKET_DATE,
+                "Credit",
+                "Delta",
+                "XGAMMA",
+                "BOOK_A",
+                "SOG_A",
+                0.0,
+                True,
+            ],
+            [
+                MARKET_DATE,
+                "IR",
+                "Delta",
+                "Risk",
+                "BOOK_B",
+                "SOG_B",
+                0.0,
+                True,
+            ],
+        ],
+        columns=[
+            "Market Date",
+            "Risk Type",
+            "Risk Greek",
+            "Split",
+            "Portfolio",
+            "SignoffGroup",
+            "PL",
+            "Portfolio Mapped",
+        ],
+    )
+
+    base = build_pl_send_base(raw, mapping, _governance())
+
+    assert base[["Risk Type", "Risk Greek", CONCERTO_FIELD, "PL"]].values.tolist() == [
+        ["Credit", "Delta", "creditdeltaeffect", 0.0],
+        ["IR", "Delta", "irdeltaeffect", 0.0],
+    ]
+
+
+@pytest.mark.parametrize("source_greek", [XGAMMA_RISK_GREEK, XGAMMA_VEGA_RISK_GREEK])
+def test_pl_base_rejects_nonzero_cross_gamma_source_sensitivity_pl(
+    source_greek: str,
+) -> None:
+    raw = _raw_pl().iloc[[0]].copy()
+    raw["Risk Type"] = "Credit"
+    raw["Risk Greek"] = source_greek
+    raw["Split"] = "Risk"
+    raw["PL"] = 1.0
+
+    with pytest.raises(
+        PLSendValidationError,
+        match="Cross Gamma source-sensitivity rows must have PL=0",
+    ):
+        build_pl_send_base(raw, _mapping(), _governance())
 
 
 def test_adjustment_overlay_replaces_same_date_portfolio_and_concerto_field() -> None:

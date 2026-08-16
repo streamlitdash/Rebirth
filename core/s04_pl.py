@@ -8,6 +8,7 @@ senders can therefore share one fail-closed financial data contract.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
@@ -23,10 +24,15 @@ from core.s01_schema import (
     PORTFOLIO_MAPPED_COLUMN,
     PORTFOLIO_METADATA_COLUMNS,
 )
+from core.s09_cross_gamma import (
+    CROSS_GAMMA_SOURCE_SPLIT,
+    XGAMMA_SOURCE_RISK_GREEKS,
+)
 
 
 RISK_TYPE = "Risk Type"
 RISK_GREEK = "Risk Greek"
+SPLIT = "Split"
 PORTFOLIO = PORTFOLIO_COLUMN
 SIGNOFF_GROUP = PL_SIGNOFF_COLUMN
 CONCERTO_FIELD = "ConcertoField"
@@ -51,8 +57,26 @@ ADJUSTMENT_KEY = (MARKET_DATE, PORTFOLIO, CONCERTO_FIELD)
 HISTORICAL_PL_COLUMNS = (MARKET_DATE, PORTFOLIO, CONCERTO_FIELD, PL)
 HISTORICAL_PL_KEY = ADJUSTMENT_KEY
 HISTORY_TYPE = "P&L Type"
-HISTO_TYPE = "Histo"
-PREDICTED_TYPE = "Predicted"
+COLOSSUS_TYPE = "Colossus"
+PREDICT_TYPE = "Predict"
+# Compatibility names for callers that still describe the backing file names.
+# Their values deliberately remain the canonical, user-facing labels.
+HISTO_TYPE = COLOSSUS_TYPE
+PREDICTED_TYPE = PREDICT_TYPE
+PL_HISTORY_TYPES = (COLOSSUS_TYPE, PREDICT_TYPE)
+PL_HISTORY_PERIOD = "Period"
+PL_HISTORY_PERIOD_START = "Start Date"
+PL_HISTORY_PERIOD_END = "End Date"
+PL_HISTORY_DAILY_PERIOD = "Daily (P)"
+PL_HISTORY_WTD_PERIOD = "WTD"
+PL_HISTORY_MTD_PERIOD = "MTD"
+PL_HISTORY_YTD_PERIOD = "YTD"
+PL_HISTORY_PERIODS = (
+    PL_HISTORY_DAILY_PERIOD,
+    PL_HISTORY_WTD_PERIOD,
+    PL_HISTORY_MTD_PERIOD,
+    PL_HISTORY_YTD_PERIOD,
+)
 UNDERLYING = "Underlying"
 PRODUCT = "Product"
 BOOK = "Book"
@@ -71,12 +95,29 @@ PL_HISTORY_COLUMNS = (
     PL,
 )
 PL_HISTORY_KEY = (MARKET_DATE, HISTORY_TYPE, *HISTORY_IDENTITY_COLUMNS)
+PL_HISTORY_SERIES_COLUMNS = (MARKET_DATE, HISTORY_TYPE, PL)
+PL_HISTORY_PERIOD_COLUMNS = (
+    PL_HISTORY_PERIOD,
+    PL_HISTORY_PERIOD_START,
+    PL_HISTORY_PERIOD_END,
+    HISTORY_TYPE,
+    PL,
+)
 
 _HISTORY_YEAR_PATTERN = re.compile(r"\d{4}")
 _HISTORY_DATE_PATTERN = re.compile(r"(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])")
 _HISTORY_FILES = {
     "histo.csv": HISTO_TYPE,
     "predicted.csv": PREDICTED_TYPE,
+}
+_HISTORY_TYPE_ALIASES = {
+    "actual": COLOSSUS_TYPE,
+    "colossus": COLOSSUS_TYPE,
+    "histo": COLOSSUS_TYPE,
+    "historical": COLOSSUS_TYPE,
+    "real": COLOSSUS_TYPE,
+    "predict": PREDICT_TYPE,
+    "predicted": PREDICT_TYPE,
 }
 
 FrameSource: TypeAlias = pd.DataFrame | str | Path
@@ -474,6 +515,268 @@ def load_pl_history(source: FrameSource) -> pd.DataFrame:
     return _load_pl_history_uncached(source)
 
 
+def _canonical_pl_history_type(value: object, *, label: str) -> str:
+    """Return the canonical user-facing label for one compatible type name."""
+
+    if not isinstance(value, str) or not value.strip():
+        raise PLSendValidationError(f"{label} must contain nonblank text")
+    normalized = value.strip().casefold()
+    try:
+        return _HISTORY_TYPE_ALIASES[normalized]
+    except KeyError as exc:
+        raise PLSendValidationError(
+            f"{label} must be one of {list(PL_HISTORY_TYPES)}; found {value!r}"
+        ) from exc
+
+
+def normalize_pl_history_types(
+    history_types: object | Sequence[object] | None = None,
+) -> tuple[str, ...]:
+    """Normalize selected type names to canonical Colossus/Predict labels.
+
+    ``Histo``/``Actual``/``Real`` and ``Predicted`` remain accepted input
+    aliases. Output ordering is always stable and canonical, independent of
+    the caller's selection order.
+    """
+
+    if history_types is None:
+        return PL_HISTORY_TYPES
+    if isinstance(history_types, str):
+        values = (history_types,)
+    elif isinstance(history_types, Sequence):
+        values = tuple(history_types)
+    else:
+        raise TypeError("history types must be text or a sequence of text values")
+    selected = {
+        _canonical_pl_history_type(value, label="P&L history type") for value in values
+    }
+    return tuple(
+        history_type for history_type in PL_HISTORY_TYPES if history_type in selected
+    )
+
+
+def _normalize_pl_history_for_analysis(history: pd.DataFrame) -> pd.DataFrame:
+    """Validate an in-memory strict-history frame for pure analysis helpers."""
+
+    if not isinstance(history, pd.DataFrame):
+        raise TypeError("P&L history must be a pandas DataFrame")
+    _require_columns(history, list(PL_HISTORY_COLUMNS), label="P&L history")
+    normalized = history.loc[:, list(PL_HISTORY_COLUMNS)].copy(deep=True)
+    normalized = _normalise_market_dates(normalized, label="P&L history")
+    normalized = _normalise_text_columns(
+        normalized,
+        list(HISTORY_IDENTITY_COLUMNS),
+        label="P&L history",
+    )
+    normalized[HISTORY_TYPE] = [
+        _canonical_pl_history_type(value, label="P&L history type")
+        for value in normalized[HISTORY_TYPE]
+    ]
+    normalized = _normalise_pl(normalized, label="P&L history")
+    duplicate_keys = normalized.duplicated(list(PL_HISTORY_KEY), keep=False)
+    if duplicate_keys.any():
+        keys = (
+            normalized.loc[duplicate_keys, list(PL_HISTORY_KEY)]
+            .drop_duplicates()
+            .to_dict("records")
+        )
+        raise PLSendValidationError(
+            f"P&L history contains duplicate daily hierarchy keys: {keys}"
+        )
+    return normalized.sort_values(list(PL_HISTORY_KEY), kind="stable").reset_index(
+        drop=True
+    )
+
+
+def _normalize_pl_history_path(path: Sequence[object]) -> tuple[str, ...]:
+    """Validate one ordered Risk Type-to-Book hierarchy prefix."""
+
+    if isinstance(path, (str, bytes)) or not isinstance(path, Sequence):
+        raise TypeError("P&L history path must be a sequence")
+    if len(path) > len(HISTORY_IDENTITY_COLUMNS):
+        raise PLSendValidationError(
+            "P&L history path cannot be deeper than Risk Type, Risk Greek, "
+            "Underlying, Product, Book"
+        )
+    normalized: list[str] = []
+    for depth, value in enumerate(path):
+        if value is None or isinstance(value, (bool, np.bool_)):
+            raise PLSendValidationError(
+                f"P&L history path value for {HISTORY_IDENTITY_COLUMNS[depth]!r} "
+                "must be nonblank text"
+            )
+        text = str(value).strip()
+        if not text:
+            raise PLSendValidationError(
+                f"P&L history path value for {HISTORY_IDENTITY_COLUMNS[depth]!r} "
+                "must be nonblank text"
+            )
+        normalized.append(text)
+    return tuple(normalized)
+
+
+def _empty_pl_history_series() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            MARKET_DATE: pd.Series(dtype="string"),
+            HISTORY_TYPE: pd.Series(dtype="string"),
+            PL: pd.Series(dtype="float64"),
+        }
+    )
+
+
+def _select_normalized_pl_history_series(
+    history: pd.DataFrame,
+    path: tuple[str, ...],
+    history_types: tuple[str, ...],
+) -> pd.DataFrame:
+    """Aggregate a validated exact hierarchy prefix without filling its gaps."""
+
+    if history.empty or not history_types:
+        return _empty_pl_history_series()
+    scoped = history.loc[history[HISTORY_TYPE].isin(history_types)]
+    for column, value in zip(HISTORY_IDENTITY_COLUMNS[: len(path)], path, strict=True):
+        scoped = scoped.loc[scoped[column].eq(value)]
+    if scoped.empty:
+        return _empty_pl_history_series()
+    daily = scoped.groupby(
+        [MARKET_DATE, HISTORY_TYPE],
+        as_index=False,
+        sort=False,
+        observed=True,
+    )[PL].sum(min_count=1)
+    type_order = {
+        history_type: index for index, history_type in enumerate(PL_HISTORY_TYPES)
+    }
+    daily["_P&L Type Order"] = daily[HISTORY_TYPE].map(type_order)
+    daily = daily.sort_values(
+        [MARKET_DATE, "_P&L Type Order"],
+        kind="stable",
+    ).drop(columns="_P&L Type Order")
+    return daily.loc[:, list(PL_HISTORY_SERIES_COLUMNS)].reset_index(drop=True)
+
+
+def select_pl_history_series(
+    history: pd.DataFrame,
+    path: Sequence[object] = (),
+    history_types: object | Sequence[object] | None = None,
+) -> pd.DataFrame:
+    """Return observed daily P&L for one exact hierarchy prefix and type set.
+
+    An empty path represents the total across all identities. The result has
+    exactly one row per observed Market Date and P&L Type. Missing paths,
+    dates, or types stay absent; this helper never inserts zero-valued rows.
+    """
+
+    normalized_history = _normalize_pl_history_for_analysis(history)
+    normalized_path = _normalize_pl_history_path(path)
+    normalized_types = normalize_pl_history_types(history_types)
+    return _select_normalized_pl_history_series(
+        normalized_history,
+        normalized_path,
+        normalized_types,
+    )
+
+
+def pl_history_period_bounds(as_of: object) -> dict[str, tuple[str, str]]:
+    """Return inclusive Daily/WTD/MTD/YTD bounds ending on ``as_of``.
+
+    WTD always starts on the calendar Monday containing ``as_of``. The helper
+    intentionally does not snap to an observed date; absent dates must remain
+    distinguishable from genuine zero P&L.
+    """
+
+    end = pd.Timestamp(normalize_market_date(as_of))
+    starts = {
+        PL_HISTORY_DAILY_PERIOD: end,
+        PL_HISTORY_WTD_PERIOD: end - pd.Timedelta(days=end.weekday()),
+        PL_HISTORY_MTD_PERIOD: end.replace(day=1),
+        PL_HISTORY_YTD_PERIOD: end.replace(month=1, day=1),
+    }
+    end_text = end.date().isoformat()
+    return {
+        period: (starts[period].date().isoformat(), end_text)
+        for period in PL_HISTORY_PERIODS
+    }
+
+
+def _empty_pl_history_period_values() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            PL_HISTORY_PERIOD: pd.Series(dtype="string"),
+            PL_HISTORY_PERIOD_START: pd.Series(dtype="string"),
+            PL_HISTORY_PERIOD_END: pd.Series(dtype="string"),
+            HISTORY_TYPE: pd.Series(dtype="string"),
+            PL: pd.Series(dtype="float64"),
+        }
+    )
+
+
+def pl_history_period_values(
+    history: pd.DataFrame,
+    path: Sequence[object] = (),
+    as_of: object = None,
+) -> pd.DataFrame:
+    """Summarize one hierarchy prefix at the governed reporting periods.
+
+    With no explicit ``as_of``, every path uses the latest date in the full
+    history frame, rather than silently falling back to that path's last
+    observation. ``Daily (P)`` therefore contains only Predict on that exact
+    date. WTD, MTD, and YTD contain each observed Colossus/Predict total in
+    their inclusive window. Missing observations produce no row, never zero.
+    """
+
+    normalized_history = _normalize_pl_history_for_analysis(history)
+    normalized_path = _normalize_pl_history_path(path)
+    if normalized_history.empty:
+        if as_of is not None:
+            normalize_market_date(as_of)
+        return _empty_pl_history_period_values()
+    resolved_as_of = (
+        normalize_market_date(as_of)
+        if as_of is not None
+        else str(normalized_history[MARKET_DATE].max())
+    )
+    series = _select_normalized_pl_history_series(
+        normalized_history,
+        normalized_path,
+        PL_HISTORY_TYPES,
+    )
+    if series.empty:
+        return _empty_pl_history_period_values()
+
+    bounds = pl_history_period_bounds(resolved_as_of)
+    rows: list[dict[str, object]] = []
+    for period in PL_HISTORY_PERIODS:
+        start_date, end_date = bounds[period]
+        period_types = (
+            (PREDICT_TYPE,) if period == PL_HISTORY_DAILY_PERIOD else PL_HISTORY_TYPES
+        )
+        window = series.loc[
+            series[MARKET_DATE].between(start_date, end_date, inclusive="both")
+            & series[HISTORY_TYPE].isin(period_types)
+        ]
+        for history_type in period_types:
+            values = window.loc[window[HISTORY_TYPE].eq(history_type), PL]
+            if values.empty:
+                continue
+            value = values.sum(min_count=1)
+            if pd.isna(value):
+                continue
+            rows.append(
+                {
+                    PL_HISTORY_PERIOD: period,
+                    PL_HISTORY_PERIOD_START: start_date,
+                    PL_HISTORY_PERIOD_END: end_date,
+                    HISTORY_TYPE: history_type,
+                    PL: float(value),
+                }
+            )
+    if not rows:
+        return _empty_pl_history_period_values()
+    return pd.DataFrame(rows, columns=list(PL_HISTORY_PERIOD_COLUMNS))
+
+
 def load_portfolio_governance(source: FrameSource) -> pd.DataFrame:
     """Return governed Portfolio metadata with exactly one row per Portfolio."""
     frame = _read_frame(source, label="portfolio governance")
@@ -657,13 +960,24 @@ def _mapped_raw_rows(
     )
     frame = frame.loc[_portfolio_mapped_mask(frame, label=label)].copy()
 
-    frame = _normalise_text_columns(
-        frame,
-        [RISK_TYPE, RISK_GREEK, PORTFOLIO, SIGNOFF_GROUP],
-        label=label,
-    )
+    text_columns = [RISK_TYPE, RISK_GREEK, PORTFOLIO, SIGNOFF_GROUP]
+    if SPLIT in frame:
+        text_columns.append(SPLIT)
+    frame = _normalise_text_columns(frame, text_columns, label=label)
     frame = _normalise_market_dates(frame, label=label)
     frame = _normalise_pl(frame, label=label)
+    if SPLIT in frame:
+        source_mask = frame[RISK_GREEK].isin(XGAMMA_SOURCE_RISK_GREEKS) & frame[
+            SPLIT
+        ].eq(CROSS_GAMMA_SOURCE_SPLIT)
+        invalid_source = source_mask & frame[PL].ne(0.0)
+        if invalid_source.any():
+            rows = frame.index[invalid_source].tolist()[:5]
+            raise PLSendValidationError(
+                f"{label} Cross Gamma source-sensitivity rows must have PL=0; "
+                f"invalid rows {rows}"
+            )
+        frame = frame.loc[~source_mask].copy()
     governed_mapping = load_plsend_mapping(mapping)
     governed_portfolios = load_portfolio_governance(portfolio_governance)
 
@@ -937,6 +1251,7 @@ __all__ = [
     "ADJUSTMENT",
     "ADJUSTMENT_KEY",
     "BOOK",
+    "COLOSSUS_TYPE",
     "HISTORICAL_PL_COLUMNS",
     "HISTORICAL_PL_KEY",
     "HISTORY_FILE_COLUMNS",
@@ -952,8 +1267,20 @@ __all__ = [
     "PL_SEND_COLUMNS",
     "PL_SEND_KEY",
     "PL_HISTORY_COLUMNS",
+    "PL_HISTORY_DAILY_PERIOD",
     "PL_HISTORY_KEY",
+    "PL_HISTORY_MTD_PERIOD",
+    "PL_HISTORY_PERIOD",
+    "PL_HISTORY_PERIOD_COLUMNS",
+    "PL_HISTORY_PERIOD_END",
+    "PL_HISTORY_PERIOD_START",
+    "PL_HISTORY_PERIODS",
+    "PL_HISTORY_SERIES_COLUMNS",
+    "PL_HISTORY_TYPES",
+    "PL_HISTORY_WTD_PERIOD",
+    "PL_HISTORY_YTD_PERIOD",
     "PORTFOLIO",
+    "PREDICT_TYPE",
     "PREDICTED_TYPE",
     "PRODUCT",
     "RECORD_TYPE",
@@ -971,6 +1298,10 @@ __all__ = [
     "load_pl_history",
     "load_portfolio_governance",
     "normalize_market_date",
+    "normalize_pl_history_types",
     "normalize_pl_send_rows",
+    "pl_history_period_bounds",
+    "pl_history_period_values",
+    "select_pl_history_series",
     "validate_pl_send_rows",
 ]

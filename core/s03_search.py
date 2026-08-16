@@ -294,7 +294,7 @@ def _build_exact_positions(
 
 
 def _dropdown_search_terms(search_value: str | None) -> tuple[str, ...]:
-    """Normalize a dropdown search once; exact pivot selection stays unchanged."""
+    """Case-fold typed search terms; exact pivot selection stays unchanged."""
     if search_value is None:
         return ()
     if not isinstance(search_value, str):
@@ -308,7 +308,7 @@ def _dropdown_search_terms(search_value: str | None) -> tuple[str, ...]:
 
 
 def _dropdown_search_label(value: str) -> str:
-    """Compact punctuation so EUR/USD is discoverable by typing EURUSD."""
+    """Case-fold and compact labels so EUR/USD is discoverable as ``eurusd``."""
     return "".join(_normalised_parts(value))
 
 
@@ -928,7 +928,7 @@ class SearchCatalog:
         limit: int = 100,
         include: str | None = None,
     ) -> tuple[str, ...]:
-        """Return a bounded filtered slice of full-MarketBook identities."""
+        """Return a case-insensitive filtered slice of MarketBook identities."""
 
         selected_limit = _validate_limit(limit)
         terms = _dropdown_search_terms(search_value)
@@ -958,7 +958,7 @@ class SearchCatalog:
         limit: int = 100,
         include: str | None = None,
     ) -> tuple[str, ...]:
-        """Return a bounded, server-filtered slice of exact dropdown values.
+        """Return a bounded, case-insensitive slice of exact dropdown values.
 
         Display-label normalization is precomputed at catalog publication. The
         scan stops as soon as ``limit`` matches are found. A valid current

@@ -29,13 +29,16 @@ from .s03_aggregate import (
     apply_filters,
     default_open_rows,
     filter_ir_family,
+    frame_for_context,
     ordered_unique,
     parse_row_key,
+    row_key,
     prepare_risk_data,
     recompute_filtered_promotion,
     selected_underlying_sort_metric,
 )
 from .s04_components import (
+    NEW_TRADE_SPLIT,
     RISK_SAVED_VIEW_CONTROLS,
     build_aggregate_pl_table,
     build_alt_risk_table,
@@ -93,6 +96,80 @@ FORCE_DRAFT_STORE_ID = "force-risk-draft-store"
 FORCE_RENDER_STORE_ID = "force-risk-render-store"
 REFRESH_RESULT_STORE_ID = "refresh-result-store"
 STARTUP_UI_ERROR_CONFIG_KEY = "CUBE_STARTUP_UI_ERROR"
+
+
+def _new_trade_detail_requested(
+    selected_context: Mapping[str, str],
+    splits: Sequence[str] | None,
+) -> bool:
+    """Recognize New Trades from either the row path or its exact page filter."""
+
+    selected_split = selected_context.get("split")
+    return selected_split == NEW_TRADE_SPLIT or (
+        selected_split is None and tuple(splits or ()) == (NEW_TRADE_SPLIT,)
+    )
+
+
+def _new_trade_details_for_selection(
+    combined: pd.DataFrame,
+    selected_context: Mapping[str, str],
+    active_risk_type: str | None,
+    ir_family: str | None,
+    splits: Sequence[str] | None,
+    dimension_filters: Mapping[str, Sequence[str] | None],
+    *,
+    exclude_selected: bool = False,
+) -> pd.DataFrame:
+    """Return position-grain New Trades behind the visible hierarchy cell.
+
+    Promotion is deliberately recomputed after the page filters, exactly as it
+    is for Risk Explorer.  This is what lets a source trade placed in the
+    filtered ``Other`` bucket remain traceable even when its global snapshot
+    classification was promoted by other positions.
+    """
+
+    if not isinstance(combined, pd.DataFrame):
+        raise TypeError("combined must be a pandas DataFrame")
+    if "Trade ID" not in combined:
+        return combined.iloc[0:0].copy()
+    valid_trade_id = combined["Trade ID"].map(
+        lambda value: isinstance(value, str) and bool(value.strip())
+    )
+    valid_split = combined.get("Split", pd.Series("", index=combined.index))
+    trace = combined.loc[valid_trade_id & valid_split.eq(NEW_TRADE_SPLIT)].copy()
+    if trace.empty:
+        return trace
+
+    prepared = prepare_risk_data(trace)
+    filtered = apply_filters(
+        filter_ir_family(prepared, active_risk_type, ir_family),
+        [active_risk_type] if active_risk_type else [],
+        list(splits or ()),
+        dimension_filters,
+        exclude_selected=exclude_selected,
+    )
+    if filtered.empty:
+        return trace.iloc[0:0].copy()
+    trace_index_column = "__new_trade_trace_index__"
+    filtered[trace_index_column] = filtered.index
+    classified = recompute_filtered_promotion(filtered)
+    scoped = frame_for_context(classified, dict(selected_context))
+    if scoped.empty:
+        return trace.iloc[0:0].copy()
+    selected = trace.loc[scoped[trace_index_column].tolist()].copy()
+    # The source rows have already been scoped with the filter-local promotion
+    # classification above.  Drop their snapshot-global promotion columns so
+    # the pure detail component cannot apply the selected display bucket a
+    # second time against a stale global value.
+    promotion_columns = [
+        column
+        for column in selected.columns
+        if str(column).strip().casefold()
+        in {"display bucket", "promotion reason", "promotion score"}
+    ]
+    return selected.drop(columns=promotion_columns)
+
+
 STARTUP_COORDINATOR_CONFIG_KEY = "CUBE_STARTUP_COORDINATOR"
 _UNSET = object()
 _LOGGER = logging.getLogger(__name__)
@@ -1884,11 +1961,41 @@ def register_callbacks(
             table_view == "alt" or credit_view == "single"
         ):
             filtered = apply_credit_measure(filtered, credit_measure)
+
+        filtered_splits = (
+            set(filtered["split"].dropna().astype(str))
+            if "split" in filtered
+            else set()
+        )
+        new_trades_selected = _new_trade_detail_requested(
+            selected_context, splits
+        ) or filtered_splits == {NEW_TRADE_SPLIT}
+        detail_selection = selection
+        if new_trades_selected and "split" not in selected_context:
+            detail_selection = dict(selection)
+            detail_selection["key"] = row_key(
+                {**selected_context, "split": NEW_TRADE_SPLIT}
+            )
+
+        new_trade_details = None
+        if new_trades_selected:
+            combined = refresh_manager.read_frame("combined_pl").frame
+            detail_context = parse_row_key(detail_selection.get("key"))
+            new_trade_details = _new_trade_details_for_selection(
+                combined,
+                detail_context,
+                detail_risk_type,
+                ir_family,
+                splits,
+                reporting_filter_map(dimension_values),
+                exclude_selected=exclude_selected,
+            )
         return build_detail_panel_with_state(
             filtered,
-            selection,
+            detail_selection,
             compose_detail_metric(plot_measure, plot_component),
             tenor_view,
+            new_trade_details=new_trade_details,
         )
 
     @app.callback(

@@ -81,6 +81,7 @@ def _build_static_data_table(file_key: str) -> html.Div:
                 data=df.to_dict("records"),
                 editable=False,
                 filter_action="native",
+                filter_options={"case": "insensitive"},
                 sort_action="native",
                 sort_mode="multi",
                 column_selectable="single",

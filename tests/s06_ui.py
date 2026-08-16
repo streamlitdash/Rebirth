@@ -11,6 +11,8 @@ from dash import dash_table, dcc, html
 
 from ui.s04_components import (
     QUICK_SEARCH_HIERARCHY_DEPTH,
+    build_detail_panel_with_state,
+    build_new_trade_detail_table,
     build_quick_market_result,
     build_quick_market_search,
     build_quick_search,
@@ -64,15 +66,15 @@ def test_connector_owned_groups_have_no_hard_coded_display_taxonomy() -> None:
 def test_split_labels_follow_the_canonical_filter_order() -> None:
     frame = pd.DataFrame(
         {
-            "split": ["Cross Gamma", "Gamma", "Risk", "New Position"],
+            "split": ["XGAMMA", "Gamma", "Risk", "New Trades"],
         }
     )
 
     assert ordered_unique(frame, "split") == [
         "Risk",
-        "New Position",
+        "New Trades",
         "Gamma",
-        "Cross Gamma",
+        "XGAMMA",
     ]
 
 
@@ -332,6 +334,121 @@ def test_detail_surface_places_swap_tenors_above_and_outside_the_heatmap() -> No
     assert figure.layout.margin.t == 90
 
 
+def test_new_trade_detail_table_filters_selected_context_and_is_empty_safe() -> None:
+    details = pd.DataFrame(
+        {
+            "Trade ID": ["TRADE-001", "TRADE-002"],
+            "Risk": [10_000.0, -25_000.0],
+            "Notional": [1_000_000.0, 2_500_000.0],
+            "Traded Level": [101.5, 127.25],
+            "Trade Time": [
+                pd.Timestamp("2026-08-16 09:30:00"),
+                pd.Timestamp("2026-08-16 09:45:00"),
+            ],
+            "Trader Code": ["AA1", "BB2"],
+            "Trader Name": ["Alex Alpha", "Blair Beta"],
+            "Risk Type": ["Credit", "Credit"],
+            "Portfolio": ["BOOK_A", "BOOK_B"],
+        }
+    )
+    context = {
+        "risk type": "Credit",
+        "split": "New Trades",
+        "portfolio": "BOOK_B",
+    }
+
+    component = build_new_trade_detail_table(details, context)
+
+    assert component is not None
+    assert _table_headers(component) == [
+        "Trade ID",
+        "Risk",
+        "Notional Traded",
+        "Traded Spread / Level",
+        "Trade Time",
+        "Trader Code",
+        "Trader Name",
+    ]
+    assert _table_row_values(component) == [
+        [
+            "TRADE-002",
+            "-25,000",
+            "2,500,000",
+            "127.25",
+            "2026-08-16 09:45:00",
+            "BB2",
+            "Blair Beta",
+        ]
+    ]
+    assert (
+        build_new_trade_detail_table(
+            details,
+            {**context, "split": "Risk"},
+        )
+        is None
+    )
+
+    empty = build_new_trade_detail_table(details.iloc[0:0], context)
+    empty_cell = next(
+        item
+        for item in _walk(empty)
+        if isinstance(item, html.Td) and item.children == "No matching new trades"
+    )
+    assert empty_cell.colSpan == 7
+
+    without_notional = build_new_trade_detail_table(
+        details.drop(columns="Notional"),
+        context,
+    )
+    assert _table_row_values(without_notional)[0][2] == ""
+
+
+def test_new_trade_table_sits_above_existing_tenor_detail() -> None:
+    risk = pd.DataFrame(
+        {
+            "risk type": ["Credit"],
+            "risk greek": ["Delta"],
+            "source type": ["credit/delta"],
+            "underlying": ["ACME"],
+            "tenor swap": ["5Y"],
+            "tenor swap order": [1],
+            "tenor option": ["N/A"],
+            "tenor option order": [0],
+            "split": ["New Trades"],
+            "open": [100.0],
+            "current": [101.0],
+            "move": [1.0],
+            "risk": [25_000.0],
+            "risk expo": [25_000.0],
+            "risk hedges": [0.0],
+        }
+    )
+    details = pd.DataFrame(
+        {
+            "Trade ID": ["TRADE-001"],
+            "Risk": [25_000.0],
+            "Traded Level": [99.75],
+            "Trade Time": ["2026-08-16 09:30:00"],
+            "Trader Code": ["AA1"],
+            "Trader Name": ["Alex Alpha"],
+        }
+    )
+
+    panel, _options, _view = build_detail_panel_with_state(
+        risk,
+        {
+            "key": row_key({"split": "New Trades"}),
+            "metric": "risk",
+        },
+        "risk",
+        new_trade_details=details,
+    )
+
+    assert panel.children[1].className == "detail-chart-card"
+    assert panel.children[1].children[0].children == "New trades"
+    assert panel.children[2].className == "detail-grid"
+
+
 def test_market_surface_and_table_follow_both_connector_rank_axes() -> None:
     swaps = (("10Y", 2), ("1Y", 0), ("5Y", 1))
     options = (("2Y", 2), ("1M", 0), ("6M", 1))
@@ -581,6 +698,7 @@ def test_unmapped_inspector_exposes_tenor_ranks() -> None:
     )
     assert expected <= {column["id"] for column in table.columns}
     assert table.page_size == 25
+    assert table.filter_options == {"case": "insensitive"}
 
 
 def test_unmapped_note_distinguishes_rows_from_portfolios() -> None:

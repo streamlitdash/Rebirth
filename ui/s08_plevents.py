@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import uuid
 from collections.abc import Mapping, Sequence
@@ -12,22 +11,20 @@ from threading import RLock
 from typing import Callable
 
 import pandas as pd
-import plotly.graph_objects as go
 from dash import ALL, Dash, Input, Output, Patch, State, ctx, dcc, html, no_update
 from dash.exceptions import PreventUpdate
 from core.s01_schema import PORTFOLIO_MAPPED_COLUMN, PORTFOLIO_METADATA_COLUMNS
 from core.s04_pl import (
     ADJUSTMENT,
+    COLOSSUS_TYPE,
+    HISTORY_TYPE,
     MARKET_DATE,
     PL,
     CONCERTO_FIELD,
-    HISTO_TYPE,
-    HISTORY_TYPE,
-    HISTORY_IDENTITY_COLUMNS,
     PL_SEND_COLUMNS,
     PLSendValidationError,
     PORTFOLIO,
-    PREDICTED_TYPE,
+    PREDICT_TYPE,
     RISK_GREEK,
     RISK_TYPE,
     SIGNOFF_GROUP,
@@ -38,12 +35,12 @@ from core.s04_pl import (
     load_pl_history,
     load_plsend_mapping,
     load_portfolio_governance,
+    pl_history_period_bounds,
+    select_pl_history_series as select_history_series,
 )
 from .s06_plview import (
     DISPLAY_COLUMNS,
     GRID_ROW_ID,
-    HISTORY_HIERARCHY_COLUMNS,
-    HISTORY_VALUE_COLUMNS,
     PL_AGGREGATE_TOGGLE_TYPE,
     PL_FILTER_FIELDS,
     PL_FILTER_IDS,
@@ -59,6 +56,15 @@ from .s11_saved_views import (
     saved_view_request_id,
     saved_view_request_matches_base,
     saved_view_request_values,
+)
+from .s12_plhistory import (
+    PL_HISTORY_METRIC_CELL_TYPE,
+    PL_HISTORY_ROW_TOGGLE_TYPE,
+    build_pl_history_figure,
+    build_pl_history_table_with_state,
+    pl_history_path_from_token,
+    toggle_pl_history_comparison_tokens,
+    toggle_pl_history_open_tokens,
 )
 
 
@@ -157,201 +163,6 @@ def _display_records(frame: pd.DataFrame) -> list[dict[str, object]]:
         lambda value: _CHECKED if bool(value) else _UNCHECKED
     )
     return display.to_dict("records")
-
-
-def _history_value(frame: pd.DataFrame, history_type: str) -> float | None:
-    """Aggregate one latest-day hierarchy cell without fabricating missing data."""
-    values = frame.loc[frame[HISTORY_TYPE].eq(history_type), PL]
-    if values.empty:
-        return None
-    value = values.sum(min_count=1)
-    return None if pd.isna(value) else float(value)
-
-
-def build_pl_history_hierarchy(history: pd.DataFrame) -> list[dict[str, object]]:
-    """Return the all-date identity union with latest-day values, fully expanded."""
-    if history.empty:
-        return []
-    latest_date = max(history[MARKET_DATE].astype(str))
-    rows: list[dict[str, object]] = []
-
-    def ordered_values(frame: pd.DataFrame, column: str) -> list[str]:
-        values = frame[column].astype(str).drop_duplicates().tolist()
-        if column == RISK_TYPE:
-            return sorted(
-                values,
-                key=lambda value: (RISK_TYPE_ORDER.get(value, 99), value.casefold()),
-            )
-        return sorted(values, key=str.casefold)
-
-    def visit(scope: pd.DataFrame, depth: int, path: tuple[str, ...]) -> None:
-        column = HISTORY_HIERARCHY_COLUMNS[depth]
-        for value in ordered_values(scope, column):
-            child = scope.loc[scope[column].astype(str).eq(value)]
-            child_path = (*path, value)
-            latest_child = child.loc[child[MARKET_DATE].astype(str).eq(latest_date)]
-            row: dict[str, object] = {
-                hierarchy_column: (child_path[index] if index < len(child_path) else "")
-                for index, hierarchy_column in enumerate(HISTORY_HIERARCHY_COLUMNS)
-            }
-            row.update(
-                {
-                    HISTO_TYPE: _history_value(latest_child, HISTO_TYPE),
-                    PREDICTED_TYPE: _history_value(latest_child, PREDICTED_TYPE),
-                    "id": json.dumps(child_path, separators=(",", ":")),
-                }
-            )
-            rows.append(row)
-            if depth + 1 < len(HISTORY_HIERARCHY_COLUMNS):
-                visit(child, depth + 1, child_path)
-
-    # The table must not erase a valid historical series merely because that
-    # identity is absent on the latest global day. Its latest-day cells remain
-    # blank, but either Histo/Predicted cell can still select the older series.
-    visit(history, 0, ())
-    return rows
-
-
-def history_selection_from_cell(
-    active_cell: Mapping[str, object] | None,
-    rows: Sequence[Mapping[str, object]],
-    previous: Mapping[str, object] | None = None,
-) -> dict[str, object]:
-    """Translate one numeric table cell into a stable hierarchy-series selection."""
-    if not rows:
-        return {}
-    if active_cell is None:
-        return dict(previous or {})
-    column = str(active_cell.get("column_id", ""))
-    row_index = active_cell.get("row")
-    if column not in HISTORY_VALUE_COLUMNS or not isinstance(row_index, int):
-        return dict(previous or {})
-    if row_index < 0 or row_index >= len(rows):
-        return dict(previous or {})
-    record = rows[row_index]
-    path = [
-        str(record[column_name])
-        for column_name in HISTORY_HIERARCHY_COLUMNS
-        if str(record.get(column_name, "")).strip()
-    ]
-    if not path:
-        return dict(previous or {})
-    return {"history_type": column, "path": path}
-
-
-def select_pl_history_series(
-    history: pd.DataFrame,
-    selection: Mapping[str, object] | None,
-) -> pd.DataFrame:
-    """Aggregate the selected hierarchy node to exactly one P&L per day."""
-    if history.empty or not selection:
-        return history.iloc[0:0].copy()
-    history_type = str(selection.get("history_type", ""))
-    path = selection.get("path")
-    if history_type not in HISTORY_VALUE_COLUMNS or not isinstance(path, list):
-        return history.iloc[0:0].copy()
-    if not path or len(path) > len(HISTORY_IDENTITY_COLUMNS):
-        return history.iloc[0:0].copy()
-    scoped = history.loc[history[HISTORY_TYPE].eq(history_type)]
-    for column, value in zip(HISTORY_IDENTITY_COLUMNS, path, strict=False):
-        scoped = scoped.loc[scoped[column].astype(str).eq(str(value))]
-    if scoped.empty:
-        return scoped
-    daily = (
-        scoped.groupby(MARKET_DATE, as_index=False, sort=True)[PL]
-        .sum(min_count=1)
-        .sort_values(MARKET_DATE, kind="stable")
-    )
-    daily[HISTORY_TYPE] = history_type
-    return daily[[MARKET_DATE, HISTORY_TYPE, PL]]
-
-
-def history_range_bounds(
-    series: pd.DataFrame,
-    preset: str,
-    *,
-    start_date: object = None,
-    end_date: object = None,
-) -> tuple[str | None, str | None]:
-    """Resolve 1W/MTD/YTD/All or an explicit inclusive daily date window."""
-    if series.empty:
-        return None, None
-    available = pd.to_datetime(series[MARKET_DATE], errors="raise")
-    minimum = available.min().normalize()
-    maximum = available.max().normalize()
-    normalized = str(preset or "all").strip().casefold()
-    if normalized == "custom":
-        start = pd.Timestamp(start_date).normalize() if start_date else minimum
-        end = pd.Timestamp(end_date).normalize() if end_date else maximum
-    elif normalized == "1w":
-        start, end = maximum - pd.Timedelta(days=6), maximum
-    elif normalized == "mtd":
-        start, end = maximum.replace(day=1), maximum
-    elif normalized == "ytd":
-        start, end = maximum.replace(month=1, day=1), maximum
-    else:
-        start, end = minimum, maximum
-    if start > end:
-        start, end = end, start
-    start = min(max(start, minimum), maximum)
-    end = min(max(end, minimum), maximum)
-    if start > end:
-        start, end = end, start
-    return start.date().isoformat(), end.date().isoformat()
-
-
-def _historical_pl_figure(
-    frame: pd.DataFrame,
-    selection: Mapping[str, object] | None = None,
-) -> go.Figure:
-    """Plot one selected hierarchy/type series at the governed daily grain."""
-    figure = go.Figure()
-    path = [str(value) for value in (selection or {}).get("path", [])]
-    history_type = str((selection or {}).get("history_type", ""))
-    label = " → ".join(path)
-    if frame.empty:
-        figure.add_annotation(
-            text="Select a populated Histo or Predicted cell to plot its daily P&L.",
-            x=0.5,
-            y=0.5,
-            xref="paper",
-            yref="paper",
-            showarrow=False,
-        )
-    else:
-        ordered = frame.sort_values(MARKET_DATE, kind="stable")
-        figure.add_trace(
-            go.Scatter(
-                x=ordered[MARKET_DATE],
-                y=ordered[PL],
-                mode="lines+markers",
-                name=history_type,
-                line={
-                    "color": "#1f77b4" if history_type == HISTO_TYPE else "#ff7f0e",
-                    "dash": "solid" if history_type == HISTO_TYPE else "dash",
-                },
-                marker={
-                    "symbol": "circle" if history_type == HISTO_TYPE else "diamond"
-                },
-                customdata=[[history_type, label] for _index in ordered.index],
-                hovertemplate=(
-                    "Market Date %{x}<br>P&L Type %{customdata[0]}<br>"
-                    "Scope %{customdata[1]}<br>P&L %{y:,.2f}<extra></extra>"
-                ),
-            )
-        )
-    title = f"{history_type} P&L · {label}" if label else "Historical P&L"
-    figure.update_layout(
-        title=title,
-        xaxis_title="Market Date",
-        yaxis_title="P&L",
-        hovermode="x unified",
-        margin={"l": 70, "r": 30, "t": 60, "b": 70},
-        template="plotly_white",
-    )
-    figure.update_xaxes(type="date", automargin=True)
-    figure.update_yaxes(automargin=True, tickformat=",.2f", zeroline=True)
-    return figure
 
 
 def _domain_frame(records: list[dict[str, object]] | None) -> pd.DataFrame:
@@ -1145,92 +956,192 @@ def register_pl_send_callbacks(
     )
 
     @app.callback(
-        Output("pl-history-grid", "data"),
+        Output("pl-history-grid", "children"),
         Output("pl-history-status", "children"),
         Output("pl-history-date-range", "min_date_allowed"),
         Output("pl-history-date-range", "max_date_allowed"),
+        Output("pl-history-open-paths", "data"),
+        Output("pl-history-open-comparisons", "data"),
+        Output("pl-history-selection-store", "data"),
         Input("pl-history-summary", "n_clicks"),
+        Input({"type": PL_HISTORY_ROW_TOGGLE_TYPE, "path": ALL}, "n_clicks"),
+        Input(
+            {
+                "type": PL_HISTORY_METRIC_CELL_TYPE,
+                "path": ALL,
+                "period": ALL,
+                "comparison": ALL,
+            },
+            "n_clicks",
+        ),
+        State("pl-history-open-paths", "data"),
+        State("pl-history-open-comparisons", "data"),
+        State("pl-history-selection-store", "data"),
         prevent_initial_call=True,
     )
-    def render_historical_pl_hierarchy(summary_clicks):
-        """Load once per disclosure and render every latest-day hierarchy node."""
-        if not int(summary_clicks or 0) % 2:
-            return (
-                [],
-                "Open Histo P&L to load its validated hierarchy.",
-                None,
-                None,
-            )
-        if config.history_source is None:
-            return [], "No historical P&L source is configured.", None, None
+    def render_historical_pl_hierarchy(
+        summary_clicks,
+        _row_clicks,
+        _metric_clicks,
+        open_path_tokens,
+        open_comparison_tokens,
+        selection_state,
+    ):
+        """Load and lazily render one expandable Colossus/Predict hierarchy."""
         try:
-            history = current_pl_history(reload=True)
-        except (PLSendValidationError, TypeError) as exc:
-            return (
-                [],
-                f"Historical P&L could not be loaded: {exc}",
-                None,
-                None,
+            trigger = ctx.triggered_id
+        except Exception:
+            trigger = None
+
+        def has_click(values: object) -> bool:
+            return isinstance(values, Sequence) and any(
+                isinstance(value, int) and not isinstance(value, bool) and value > 0
+                for value in values
             )
-        rows = build_pl_history_hierarchy(history)
+
+        if trigger == "pl-history-summary" and not int(summary_clicks or 0) % 2:
+            return (no_update,) * 7
+        if config.history_source is None:
+            return (
+                html.Div(
+                    "No historical P&L source is configured.",
+                    className="static-data-empty",
+                ),
+                "No historical P&L source is configured.",
+                None,
+                None,
+                [],
+                [],
+                {},
+            )
+        try:
+            history = current_pl_history(reload=trigger == "pl-history-summary")
+        except (PLSendValidationError, TypeError) as exc:
+            message = f"Historical P&L could not be loaded: {exc}"
+            return (
+                html.Div(message, className="static-data-empty"),
+                message,
+                None,
+                None,
+                [],
+                [],
+                {},
+            )
+
+        next_open = open_path_tokens
+        next_comparisons = open_comparison_tokens
+        next_selection = dict(selection_state or {})
+        if (
+            has_click(_row_clicks)
+            and isinstance(trigger, dict)
+            and trigger.get("type") == PL_HISTORY_ROW_TOGGLE_TYPE
+        ):
+            next_open = toggle_pl_history_open_tokens(
+                open_path_tokens,
+                trigger.get("path"),
+            )
+        elif (
+            has_click(_metric_clicks)
+            and isinstance(trigger, dict)
+            and trigger.get("type") == PL_HISTORY_METRIC_CELL_TYPE
+        ):
+            path = pl_history_path_from_token(trigger.get("path"))
+            if path is not None:
+                next_selection = {
+                    "path": list(path),
+                    "period": str(trigger.get("period", "")),
+                }
+            comparison = trigger.get("comparison")
+            if comparison:
+                next_comparisons = toggle_pl_history_comparison_tokens(
+                    open_comparison_tokens,
+                    comparison,
+                )
+        elif not next_selection:
+            next_selection = {"path": []}
+
+        table, effective_open, effective_comparisons, effective_selection = (
+            build_pl_history_table_with_state(
+                history,
+                open_path_tokens=next_open,
+                open_comparison_tokens=next_comparisons,
+                selection=next_selection,
+            )
+        )
+        if history.empty:
+            return (
+                table,
+                "No validated Colossus/Predict P&L history is available.",
+                None,
+                None,
+                effective_open,
+                effective_comparisons,
+                effective_selection,
+            )
         dates = sorted(history[MARKET_DATE].astype(str).unique())
-        latest = dates[-1]
+        status = (
+            f"Colossus / Predict · {len(dates):,} daily partitions · "
+            f"{dates[0]} to {dates[-1]}. Expand only the branches you need."
+        )
         return (
-            rows,
-            f"{len(rows):,} fully expanded hierarchy rows · latest daily values {latest}.",
+            table,
+            status,
             dates[0],
             dates[-1],
+            effective_open,
+            effective_comparisons,
+            effective_selection,
         )
 
     @app.callback(
         Output("pl-history-chart", "figure"),
         Output("pl-history-range-store", "data"),
-        Output("pl-history-selection-store", "data"),
         Output("pl-history-plot-status", "children"),
-        Output("pl-history-range-1w", "className"),
+        Output("pl-history-range-wtd", "className"),
         Output("pl-history-range-mtd", "className"),
         Output("pl-history-range-ytd", "className"),
         Output("pl-history-range-all", "className"),
         Output("pl-history-date-range", "start_date"),
         Output("pl-history-date-range", "end_date"),
-        Input("pl-history-grid", "data"),
-        Input("pl-history-grid", "active_cell"),
-        Input("pl-history-range-1w", "n_clicks"),
+        Input("pl-history-selection-store", "data"),
+        Input("pl-history-series-selector", "value"),
+        Input("pl-history-range-wtd", "n_clicks"),
         Input("pl-history-range-mtd", "n_clicks"),
         Input("pl-history-range-ytd", "n_clicks"),
         Input("pl-history-range-all", "n_clicks"),
         Input("pl-history-date-range", "start_date"),
         Input("pl-history-date-range", "end_date"),
         State("pl-history-range-store", "data"),
-        State("pl-history-selection-store", "data"),
         prevent_initial_call=True,
     )
     def render_historical_pl_chart(
-        rows,
-        active_cell,
-        _one_week_clicks,
+        selection_state,
+        series_choice,
+        _wtd_clicks,
         _mtd_clicks,
         _ytd_clicks,
         _all_clicks,
         explicit_start,
         explicit_end,
         range_state,
-        selection_state,
     ):
-        """Plot the selected numeric hierarchy cell over one daily date window."""
-        empty_figure = _historical_pl_figure(pd.DataFrame(), {})
-        if not rows or config.history_source is None:
+        """Plot observed Colossus/Predict rows for the selected hierarchy scope."""
+        empty_figure = build_pl_history_figure(pd.DataFrame(), path=())
+        if config.history_source is None or not isinstance(selection_state, Mapping):
             classes = ["pl-history-range-button"] * 4
             classes[-1] += " is-active"
             return (
                 empty_figure,
                 {"preset": "all"},
-                {},
-                "Select a numeric hierarchy cell to plot its daily series.",
+                "Select a P&L hierarchy cell to plot its observed daily series.",
                 *classes,
                 None,
                 None,
             )
+        raw_path = selection_state.get("path")
+        if not isinstance(raw_path, list):
+            raw_path = []
+        path = tuple(str(value) for value in raw_path)
         try:
             history = current_pl_history()
         except (PLSendValidationError, TypeError) as exc:
@@ -1238,27 +1149,38 @@ def register_pl_send_callbacks(
             return (
                 empty_figure,
                 dict(range_state or {}),
-                dict(selection_state or {}),
                 f"Historical P&L could not be loaded: {exc}",
                 *classes,
                 explicit_start,
                 explicit_end,
             )
+        if history.empty:
+            classes = ["pl-history-range-button"] * 4
+            classes[-1] += " is-active"
+            return (
+                empty_figure,
+                {"preset": "all"},
+                "No validated Colossus/Predict P&L history is available.",
+                *classes,
+                None,
+                None,
+            )
+
+        choice_types = {
+            "colossus": (COLOSSUS_TYPE,),
+            "predict": (PREDICT_TYPE,),
+            "both": (COLOSSUS_TYPE, PREDICT_TYPE),
+        }
+        selected_types = choice_types.get(str(series_choice), choice_types["both"])
+        all_series = select_history_series(history, path)
+        series = all_series.loc[all_series[HISTORY_TYPE].isin(selected_types)]
 
         try:
             trigger = ctx.triggered_id
         except Exception:
             trigger = None
-        selection = history_selection_from_cell(active_cell, rows, selection_state)
-        if not selection:
-            selection = history_selection_from_cell(
-                {"row": 0, "column_id": HISTO_TYPE},
-                rows,
-            )
-        series = select_pl_history_series(history, selection)
-
         preset_by_button = {
-            "pl-history-range-1w": "1w",
+            "pl-history-range-wtd": "wtd",
             "pl-history-range-mtd": "mtd",
             "pl-history-range-ytd": "ytd",
             "pl-history-range-all": "all",
@@ -1275,50 +1197,54 @@ def register_pl_send_callbacks(
             explicit_start != prior_range.get("start_date")
             or explicit_end != prior_range.get("end_date")
         ):
-            preset = "custom"
+            preset = "custom" if explicit_start or explicit_end else "all"
             start_date = explicit_start
             end_date = explicit_end
-        elif not prior_range:
-            preset = "all"
 
-        resolved_start, resolved_end = history_range_bounds(
-            series,
-            preset,
-            start_date=start_date,
-            end_date=end_date,
-        )
-        if resolved_start is not None and resolved_end is not None:
-            visible = series.loc[
-                series[MARKET_DATE]
-                .astype(str)
-                .between(
-                    resolved_start,
-                    resolved_end,
-                    inclusive="both",
-                )
-            ]
+        global_dates = pd.to_datetime(history[MARKET_DATE], errors="raise")
+        global_minimum = global_dates.min().normalize()
+        global_maximum = global_dates.max().normalize()
+        period_bounds = pl_history_period_bounds(global_maximum)
+        if preset in {"wtd", "mtd", "ytd"}:
+            start, end = period_bounds[preset.upper()]
+        elif preset == "custom":
+            start = (
+                pd.Timestamp(start_date).normalize() if start_date else global_minimum
+            )
+            end = pd.Timestamp(end_date).normalize() if end_date else global_maximum
+            start = min(max(start, global_minimum), global_maximum)
+            end = min(max(end, global_minimum), global_maximum)
+            if start > end:
+                start, end = end, start
         else:
-            visible = series
+            start, end = global_minimum, global_maximum
+            preset = "all"
+        resolved_start = pd.Timestamp(start).date().isoformat()
+        resolved_end = pd.Timestamp(end).date().isoformat()
+        visible = series.loc[
+            series[MARKET_DATE]
+            .astype(str)
+            .between(resolved_start, resolved_end, inclusive="both")
+        ]
         resolved_range = {
             "preset": preset,
             "start_date": resolved_start,
             "end_date": resolved_end,
         }
-        label = " → ".join(str(value) for value in selection.get("path", []))
+        label = " → ".join(path) or "TOTAL"
+        type_label = " / ".join(selected_types)
         status = (
-            f"{selection.get('history_type', '')} · {label} · "
-            f"{resolved_start or '—'} to {resolved_end or '—'} · "
-            f"{len(visible):,} daily observations."
+            f"{type_label} · {label} · {resolved_start} to {resolved_end} · "
+            f"{len(visible):,} observed daily points (missing dates are not zero-filled)."
         )
-        active_preset = preset if preset in {"1w", "mtd", "ytd", "all"} else None
+        active_preset = preset if preset in {"wtd", "mtd", "ytd", "all"} else None
         classes = [
             "pl-history-range-button" + (" is-active" if active_preset == value else "")
-            for value in ("1w", "mtd", "ytd", "all")
+            for value in ("wtd", "mtd", "ytd", "all")
         ]
         return (
-            _historical_pl_figure(visible, selection),
+            build_pl_history_figure(visible, path=path),
             resolved_range,
-            selection,
             status,
             *classes,
             resolved_start,
@@ -1769,6 +1695,54 @@ def register_pl_send_callbacks(
         return f"success · sent {len(rows):,} governed rows"
 
     @app.callback(
+        Output("pl-send-all-status", "children"),
+        Input("send-all-pl-button", "n_clicks"),
+        prevent_initial_call=True,
+        running=[(Output("send-all-pl-button", "disabled"), True, False)],
+    )
+    def send_all(n_clicks):
+        if not n_clicks:
+            raise PreventUpdate
+
+        try:
+            snapshot = current_pl_snapshot()
+            if snapshot is None:
+                return "Not sent: P&L data is still loading."
+            effective, mapping, governance = _effective_rows(
+                snapshot,
+                config,
+                include_adjustments=True,
+            )
+            rows = collapse_pl_send_rows(effective, mapping, governance)
+            if rows.empty:
+                raise ValueError("there are no governed rows to send")
+            payload = rows[list(DISPLAY_COLUMNS)].copy(deep=True)
+        except Exception as exc:
+            return f"Not sent: could not build governed P&L: {exc}"
+
+        succeeded: list[str] = []
+        failed: list[str] = []
+        for label, sender in (
+            ("SOG", config.send_sog_pl),
+            ("Portfolio", config.send_portfolio_pl),
+        ):
+            try:
+                sender(payload.copy(deep=True))
+                succeeded.append(label)
+            except Exception as exc:
+                failed.append(f"{label} failed ({exc})")
+
+        row_count = len(payload)
+        if not failed:
+            return f"success · sent {row_count:,} governed rows to SOG and Portfolio"
+        if succeeded:
+            return (
+                f"Partially sent · {', '.join(succeeded)} succeeded; "
+                f"{'; '.join(failed)}"
+            )
+        return f"Not sent · {'; '.join(failed)}"
+
+    @app.callback(
         Output("pl-send-sog-status", "children"),
         Input("send-sog-pl-button", "n_clicks"),
         State("pl-send-sog-grid", "data"),
@@ -1864,10 +1838,6 @@ def register_pl_send_callbacks(
 __all__ = [
     "PLSendConfig",
     "WritePLFunction",
-    "build_pl_history_hierarchy",
-    "history_range_bounds",
-    "history_selection_from_cell",
     "register_pl_aggregate_callbacks",
     "register_pl_send_callbacks",
-    "select_pl_history_series",
 ]

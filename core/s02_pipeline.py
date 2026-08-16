@@ -42,10 +42,21 @@ from core.s01_schema import (
     UNMAPPED_VALUE,
 )
 from core.s03_search import SearchCatalog, SearchResult, build_search_catalog
-from core.s07_reporting import (
+from core.s06_reporting import (
     REPORTED_UNDERLYING,
     attach_reported_underlying,
     load_reported_underlying_mapping,
+)
+from core.s09_cross_gamma import (
+    XGAMMA_SOURCE_RISK_GREEKS,
+    XGAMMA_SPLIT,
+    build_cross_gamma_rows,
+    cross_gamma_market_scope,
+)
+from core.s10_new_trades import (
+    NEW_TRADES_SPLIT,
+    build_new_trade_rows,
+    new_trade_market_scope,
 )
 
 
@@ -131,7 +142,7 @@ MarketUnit = Literal["pips", "outright", "vol_points", "bp"]
 #     "taylor_gamma",
 # ]
 # === ACTIVE VALIDATED FORMULA ENGINE =========================================
-PlFormula = Literal["absolute", "percentage", "taylor_gamma"]
+PlFormula = Literal["absolute", "percentage", "taylor_gamma", "identity"]
 FrameSource = pd.DataFrame | Callable[[], pd.DataFrame] | None
 DataFrameSource = pd.DataFrame | str | Path
 GovernanceSource = DataFrameSource | Callable[[], pd.DataFrame]
@@ -140,6 +151,8 @@ ProductSources = Mapping[str, Mapping[str, FrameSource]]
 RiskCheckerResult = tuple[pd.DataFrame, pd.DataFrame]
 MarketStatusResolver = Callable[[pd.Timestamp], str]
 RiskOverlayLoader = Callable[[pd.Timestamp], pd.DataFrame]
+DirectPLLoader = Callable[[pd.Timestamp], pd.DataFrame]
+DatedFrameLoader = Callable[[pd.Timestamp], pd.DataFrame]
 RISK_OVERLAY_COLUMNS = (
     SOURCE_TYPE,
     UNDERLYING,
@@ -148,6 +161,34 @@ RISK_OVERLAY_COLUMNS = (
     PORTFOLIO,
     GROUP,
     RISK,
+)
+DIRECT_PL_INPUT_COLUMNS = (
+    SOURCE_TYPE,
+    RISK_TYPE,
+    RISK_GREEK,
+    PORTFOLIO,
+    PL,
+)
+DIRECT_PL_RELEASE_COLUMNS = (
+    SOURCE_TYPE,
+    RISK_TYPE,
+    RISK_GREEK,
+    SPLIT,
+    GROUP,
+    UNDERLYING,
+    TENOR_SWAP,
+    TENOR_OPTION,
+    TENOR_SWAP_ORDER,
+    TENOR_OPTION_ORDER,
+    PORTFOLIO,
+    RISK,
+    DRISK,
+    OPEN,
+    CURRENT,
+    PL,
+    MARKET_MOVE,
+    MARKET_AVAILABLE,
+    MARKET_DATA_STATUS,
 )
 FrameName = Literal[
     "risk_status",
@@ -239,6 +280,20 @@ class ProductSpec:
     @property
     def market_keys(self) -> list[str]:
         return [RISK_TYPE, RISK_GREEK, UNDERLYING, *self.tenor_columns]
+
+
+@dataclass(frozen=True)
+class DirectPLClassification:
+    """One ProductSpec-backed identity that deliberately has no MarketBook."""
+
+    product_spec: ProductSpec
+    source_type: str
+    risk_type: str
+    risk_greek: str
+    split: str
+    underlying: str
+    group: str
+    market_data_status: str
 
 
 # === RECOVERED ORIGINAL PRODUCT METADATA (COMMENTED OUT) ====================
@@ -405,6 +460,50 @@ PRODUCT_SPECS: dict[str, ProductSpec] = {
     ),
 }
 
+# Cash Flow is a real ProductSpec-backed calculation, but it is deliberately an
+# auxiliary New Trades product rather than part of the aged Risk/MarketBook
+# inventory.  Its identity formula is ``Risk x 1``; no synthetic quote is
+# published to Quick Market and no readiness row is manufactured.
+CASH_FLOW_PRODUCT_SPEC = ProductSpec(
+    "cashflownew",
+    "new-position/cash-flow",
+    "Cash Flow",
+    "New",
+    (),
+    "outright",
+    "identity",
+)
+
+# Auxiliary classifications stay separate from ``PRODUCT_SPECS`` so they do
+# not acquire normal Risk connectors, RiskChecker ageing, or market quotes.
+NEW_POSITION_CASH_FLOW_CLASSIFICATION = DirectPLClassification(
+    product_spec=CASH_FLOW_PRODUCT_SPEC,
+    source_type=CASH_FLOW_PRODUCT_SPEC.source_type,
+    risk_type=CASH_FLOW_PRODUCT_SPEC.risk_type,
+    risk_greek=CASH_FLOW_PRODUCT_SPEC.risk_greek,
+    split=NEW_TRADES_SPLIT,
+    underlying="Cash Flow",
+    group="Cash Flow",
+    market_data_status="Identity P&L; market data not applicable",
+)
+DIRECT_PL_CLASSIFICATIONS = (NEW_POSITION_CASH_FLOW_CLASSIFICATION,)
+DIRECT_PL_CLASSIFICATIONS_BY_SOURCE_TYPE = {
+    classification.source_type: classification
+    for classification in DIRECT_PL_CLASSIFICATIONS
+}
+if len(DIRECT_PL_CLASSIFICATIONS_BY_SOURCE_TYPE) != len(DIRECT_PL_CLASSIFICATIONS):
+    raise RuntimeError("Direct P&L classification Source Type values must be unique")
+for classification in DIRECT_PL_CLASSIFICATIONS:
+    if (
+        classification.source_type != classification.product_spec.source_type
+        or classification.risk_type != classification.product_spec.risk_type
+        or classification.risk_greek != classification.product_spec.risk_greek
+        or classification.product_spec.pl_formula != "identity"
+    ):
+        raise RuntimeError(
+            "Direct P&L classification identity must match an identity ProductSpec"
+        )
+
 
 def _validate_multiplier(value: object, *, label: str) -> float:
     """Return a finite real multiplier while rejecting bool and string coercion."""
@@ -497,6 +596,24 @@ if len(PRODUCT_SPECS_BY_SOURCE_TYPE) != len(PRODUCT_SPECS):
 _PRODUCT_PAIRS = {(spec.risk_type, spec.risk_greek) for spec in PRODUCT_SPECS.values()}
 if len(_PRODUCT_PAIRS) != len(PRODUCT_SPECS):
     raise RuntimeError("Product catalogue Risk Type/Risk Greek pairs must be unique")
+DIRECT_PL_RISK_PAIRS = frozenset(
+    (classification.risk_type, classification.risk_greek)
+    for classification in DIRECT_PL_CLASSIFICATIONS
+)
+if len(DIRECT_PL_RISK_PAIRS) != len(DIRECT_PL_CLASSIFICATIONS):
+    raise RuntimeError("Direct P&L Risk Type/Risk Greek pairs must be unique")
+if _PRODUCT_PAIRS & DIRECT_PL_RISK_PAIRS:
+    raise RuntimeError("Direct P&L identities must not also be ProductSpecs")
+CROSS_GAMMA_INPUT_RISK_PAIRS = frozenset(
+    (risk_type, source_risk_greek)
+    for risk_type in {spec.risk_type for spec in PRODUCT_SPECS.values()}
+    for source_risk_greek in XGAMMA_SOURCE_RISK_GREEKS
+)
+if (_PRODUCT_PAIRS | DIRECT_PL_RISK_PAIRS) & CROSS_GAMMA_INPUT_RISK_PAIRS:
+    raise RuntimeError("Cross Gamma input identities must be release-only pairs")
+RELEASE_RISK_PAIRS = frozenset(
+    _PRODUCT_PAIRS | DIRECT_PL_RISK_PAIRS | CROSS_GAMMA_INPUT_RISK_PAIRS
+)
 
 
 def _load_frame(
@@ -1101,6 +1218,8 @@ def _raw_market_move(frame: pd.DataFrame) -> pd.Series:
 
 def _pnl_move(spec: ProductSpec, frame: pd.DataFrame) -> pd.Series:
     """Apply the product's configured absolute or percentage move convention."""
+    if spec.pl_formula == "identity":
+        return pd.Series(1.0, index=frame.index, dtype=float)
     raw_move = _raw_market_move(frame)
     if spec.pl_formula == "percentage":
         nonzero_open = frame[OPEN].where(frame[OPEN].ne(0.0))
@@ -1241,6 +1360,69 @@ def _with_dashboard_tenors(frame: pd.DataFrame, spec: ProductSpec) -> pd.DataFra
     return result
 
 
+def build_direct_pl_rows(source: pd.DataFrame) -> pd.DataFrame:
+    """Release auxiliary identity products without fabricating market data."""
+
+    if not isinstance(source, pd.DataFrame):
+        raise TypeError("direct P&L loader must return a pandas DataFrame")
+    actual_columns = tuple(source.columns)
+    if actual_columns != DIRECT_PL_INPUT_COLUMNS:
+        raise ValueError(
+            "direct P&L columns must be exactly "
+            f"{list(DIRECT_PL_INPUT_COLUMNS)} in that order; "
+            f"found {list(actual_columns)}"
+        )
+    if source.empty:
+        return pd.DataFrame(columns=list(DIRECT_PL_RELEASE_COLUMNS))
+
+    validated = _require_nonblank(
+        source,
+        [SOURCE_TYPE, RISK_TYPE, RISK_GREEK, PORTFOLIO],
+        "direct P&L",
+    )
+    validated = _coerce_numeric(validated, [PL], "direct P&L")
+    frames: list[pd.DataFrame] = []
+    for source_type, source_rows in validated.groupby(SOURCE_TYPE, sort=False):
+        try:
+            classification = DIRECT_PL_CLASSIFICATIONS_BY_SOURCE_TYPE[source_type]
+        except KeyError as exc:
+            raise ValueError(
+                f"Unknown Source Type {source_type!r} in direct P&L"
+            ) from exc
+        invalid_identity = source_rows[RISK_TYPE].ne(
+            classification.risk_type
+        ) | source_rows[RISK_GREEK].ne(classification.risk_greek)
+        if invalid_identity.any():
+            rows = source_rows.index[invalid_identity].tolist()[:5]
+            raise ValueError(
+                f"direct P&L Source Type {source_type!r} requires Risk Type="
+                f"{classification.risk_type!r} and Risk Greek="
+                f"{classification.risk_greek!r} at rows {rows}"
+            )
+
+        result = source_rows.loc[:, list(DIRECT_PL_INPUT_COLUMNS)].copy()
+        result[SPLIT] = classification.split
+        result[GROUP] = classification.group
+        result[UNDERLYING] = classification.underlying
+        result[TENOR_SWAP] = "N/A"
+        result[TENOR_OPTION] = "N/A"
+        result[TENOR_SWAP_ORDER] = pd.Series(pd.NA, index=result.index, dtype="Int64")
+        result[TENOR_OPTION_ORDER] = pd.Series(pd.NA, index=result.index, dtype="Int64")
+        # Identity products deliberately expose their signed amount as both
+        # Risk and P&L.  The effective factor is one; Open/Current remain absent
+        # because there is no real market quote behind a cash-flow event.
+        result[RISK] = result[PL]
+        result[DRISK] = np.nan
+        result[OPEN] = np.nan
+        result[CURRENT] = np.nan
+        result[MARKET_MOVE] = np.nan
+        result[MARKET_AVAILABLE] = False
+        result[MARKET_DATA_STATUS] = classification.market_data_status
+        frames.append(result.loc[:, list(DIRECT_PL_RELEASE_COLUMNS)])
+
+    return pd.concat(frames, ignore_index=True, sort=False)
+
+
 def build_risk_overlay(
     source: pd.DataFrame,
     *,
@@ -1251,7 +1433,7 @@ def build_risk_overlay(
 
     ``Source Type`` selects an existing product contract, so overlays reuse the
     validated target product's identity and market shape.  Version one keeps
-    P&L at zero: Cross Gamma/New Position are supplied target exposures, not a
+    P&L at zero: Cross Gamma/New Trades are supplied target exposures, not a
     second independent P&L engine.
     """
 
@@ -1330,6 +1512,32 @@ def build_risk_overlay(
         frames.append(result)
 
     return pd.concat(frames, ignore_index=True, sort=False)
+
+
+def _with_supplemental_credit_sp01(frame: pd.DataFrame) -> pd.DataFrame:
+    """Attach the default Credit measure without inventing alternate measures.
+
+    New Trades and XGAMMA carry the same generic Credit Delta sensitivity as
+    the normal Risk adapter.  In the Credit UI that sensitivity is SP01.  dRisk
+    remains unavailable for these supplemental rows and is not replaced with a
+    fabricated zero.
+    """
+
+    if frame.empty:
+        return frame
+    result = frame.copy()
+    credit_delta = result[RISK_TYPE].eq("Credit") & result[RISK_GREEK].eq("Delta")
+    if not credit_delta.any():
+        return result
+    risk_sp01 = f"{RISK} SP01"
+    drisk_sp01 = f"{DRISK} SP01"
+    if risk_sp01 not in result:
+        result[risk_sp01] = np.nan
+    if drisk_sp01 not in result:
+        result[drisk_sp01] = np.nan
+    result.loc[credit_delta, risk_sp01] = result.loc[credit_delta, RISK]
+    result.loc[credit_delta, drisk_sp01] = result.loc[credit_delta, DRISK]
+    return result
 
 
 def build_all_pl(
@@ -1513,12 +1721,12 @@ def load_reported_underlyings(
     if source is None:
         return load_reported_underlying_mapping(
             None,
-            allowed_pairs=_PRODUCT_PAIRS,
+            allowed_pairs=RELEASE_RISK_PAIRS,
         )
     resolved = _load_governance_source(source, label="Reported Underlying mapping")
     return load_reported_underlying_mapping(
         resolved,
-        allowed_pairs=_PRODUCT_PAIRS,
+        allowed_pairs=RELEASE_RISK_PAIRS,
     )
 
 
@@ -1966,7 +2174,7 @@ def build_dashboard_dataframe(
     reported = attach_reported_underlying(
         configured,
         reported_underlyings,
-        allowed_pairs=_PRODUCT_PAIRS,
+        allowed_pairs=RELEASE_RISK_PAIRS,
     )
     enriched = apply_thresholds(reported, thresholds)
     return to_dashboard_frame(enriched.loc[enriched[PORTFOLIO_MAPPED].eq(True)])
@@ -2129,8 +2337,14 @@ class RiskRefreshManager:
         market_status_resolver: MarketStatusResolver,
         # PRODUCTION INTEGRATION POINT: generic fallbacks for uncovered products.
         risk_loader: Callable[[pd.Timestamp, str], pd.DataFrame] | None = None,
+        cross_gamma_matrix_loader: DatedFrameLoader | None = None,
+        new_trades_loader: DatedFrameLoader | None = None,
+        # Legacy already-developed overlay boundaries remain supported for
+        # existing integrations. New composition should prefer the two raw
+        # loaders above so market scope and calculations stay governed here.
         cross_gamma_loader: RiskOverlayLoader | None = None,
         new_position_loader: RiskOverlayLoader | None = None,
+        new_position_direct_pl_loader: DirectPLLoader | None = None,
         market_open_loader: GenericMarketConnector | None = None,
         market_status_loader: GenericMarketConnector | None = None,
         # PRODUCTION INTEGRATION POINT: preferred per-source connector mapping.
@@ -2210,6 +2424,34 @@ class RiskRefreshManager:
             raise TypeError(
                 f"risk overlay loaders must be callable: {invalid_overlay_loaders}"
             )
+        invalid_raw_loaders = [
+            name
+            for name, loader in (
+                ("cross_gamma_matrix_loader", cross_gamma_matrix_loader),
+                ("new_trades_loader", new_trades_loader),
+            )
+            if loader is not None and not callable(loader)
+        ]
+        if invalid_raw_loaders:
+            raise TypeError(
+                f"supplemental raw loaders must be callable: {invalid_raw_loaders}"
+            )
+        if cross_gamma_matrix_loader is not None and cross_gamma_loader is not None:
+            raise ValueError(
+                "configure either raw Cross Gamma matrix loading or the legacy "
+                "developed-risk overlay, not both"
+            )
+        if new_trades_loader is not None and (
+            new_position_loader is not None or new_position_direct_pl_loader is not None
+        ):
+            raise ValueError(
+                "configure either the unified New Trades loader or legacy New "
+                "Position overlay/direct-P&L loaders, not both"
+            )
+        if new_position_direct_pl_loader is not None and not callable(
+            new_position_direct_pl_loader
+        ):
+            raise TypeError("new_position_direct_pl_loader must be callable")
         self._config_source = config
         self._threshold_source = thresholds
         self._reported_underlying_source = reported_underlyings
@@ -2227,8 +2469,11 @@ class RiskRefreshManager:
         self._risk_checker_loader = risk_checker_loader
         self._market_status_resolver = market_status_resolver
         self._risk_loader = risk_loader or get_risk
+        self._cross_gamma_matrix_loader = cross_gamma_matrix_loader
+        self._new_trades_loader = new_trades_loader
         self._cross_gamma_loader = cross_gamma_loader
         self._new_position_loader = new_position_loader
+        self._new_position_direct_pl_loader = new_position_direct_pl_loader
         self._market_open_loader = market_open_loader or get_market_open
         self._market_status_loader = market_status_loader or get_market_status
         self._connector_adapters = adapters
@@ -3020,6 +3265,24 @@ class RiskRefreshManager:
         return tuple(risk_frame[UNDERLYING].drop_duplicates().tolist())
 
     @staticmethod
+    def _requested_market_underlyings(
+        risk_frame: pd.DataFrame,
+        supplemental: Sequence[str] = (),
+    ) -> tuple[str, ...]:
+        """Union base Risk and supplemental scopes without changing order."""
+
+        requested = list(RiskRefreshManager._risk_underlyings(risk_frame))
+        for raw_underlying in supplemental:
+            if not isinstance(raw_underlying, str) or not raw_underlying.strip():
+                raise ValueError(
+                    "supplemental market scope Underlying values must be nonblank text"
+                )
+            underlying = raw_underlying.strip()
+            if underlying not in requested:
+                requested.append(underlying)
+        return tuple(requested)
+
+    @staticmethod
     def _reject_unrequested_market_underlyings(
         frame: pd.DataFrame,
         requested: tuple[str, ...],
@@ -3056,7 +3319,7 @@ class RiskRefreshManager:
         reported = attach_reported_underlying(
             configured,
             reported_underlyings,
-            allowed_pairs=_PRODUCT_PAIRS,
+            allowed_pairs=RELEASE_RISK_PAIRS,
         )
         enriched = _apply_validated_thresholds(reported, thresholds)
         mapped = enriched.loc[enriched[PORTFOLIO_MAPPED].eq(True)].copy()
@@ -3618,6 +3881,9 @@ class RiskRefreshManager:
                     + int(bool(recalculate_source_types))
                     + int(self._cross_gamma_loader is not None)
                     + int(self._new_position_loader is not None)
+                    + int(self._new_position_direct_pl_loader is not None)
+                    + int(self._cross_gamma_matrix_loader is not None)
+                    + int(self._new_trades_loader is not None)
                 )
                 self._set_progress_total(planned_total)
 
@@ -3662,6 +3928,95 @@ class RiskRefreshManager:
                     if risk_product_delay > 0:
                         self._sleep(risk_product_delay)
 
+                # Raw supplemental sources are loaded exactly once before
+                # MarketBook calls. Their input/target identities expand the
+                # connector scope without becoming ordinary aged Risk rows.
+                raw_cross_gamma: pd.DataFrame | None = None
+                raw_new_trades: pd.DataFrame | None = None
+                supplemental_market_scope: dict[str, list[str]] = {}
+
+                def add_supplemental_scope(
+                    scope: Mapping[str, Sequence[str]],
+                ) -> None:
+                    for source_type, underlyings in scope.items():
+                        if source_type not in PRODUCT_SPECS_BY_SOURCE_TYPE:
+                            raise ValueError(
+                                "supplemental market scope has unknown Source Type "
+                                f"{source_type!r}"
+                            )
+                        values = supplemental_market_scope.setdefault(source_type, [])
+                        for underlying in underlyings:
+                            if underlying not in values:
+                                values.append(underlying)
+
+                if self._cross_gamma_matrix_loader is not None:
+                    loader = self._cross_gamma_matrix_loader
+                    self._progress_step(
+                        _callable_name(loader),
+                        "risk",
+                        message="Loading portfolio XGAMMA sensitivities.",
+                    )
+                    raw_cross_gamma = loader(market_date)
+                    add_supplemental_scope(cross_gamma_market_scope(raw_cross_gamma))
+
+                if self._new_trades_loader is not None:
+                    loader = self._new_trades_loader
+                    self._progress_step(
+                        _callable_name(loader),
+                        "risk",
+                        message="Loading and validating New Trades.",
+                    )
+                    raw_new_trades = loader(market_date)
+                    add_supplemental_scope(new_trade_market_scope(raw_new_trades))
+
+                # Supplemental identities may expand or shrink between
+                # refreshes. Reuse a cached quote leg only when its Underlying
+                # scope exactly matches base Risk plus the current raw sources;
+                # otherwise an old XGAMMA/New Trades-only quote could linger in
+                # Quick Market after its source row disappeared.
+                if (
+                    self._cross_gamma_matrix_loader is not None
+                    or self._new_trades_loader is not None
+                ):
+                    for source_type in PRODUCT_SPECS_BY_SOURCE_TYPE:
+                        requested_underlyings = self._requested_market_underlyings(
+                            next_risk[source_type],
+                            supplemental_market_scope.get(source_type, ()),
+                        )
+                        requested = set(requested_underlyings)
+                        opened = next_open.get(source_type)
+                        current_status = next_status.get(source_type)
+                        opened_underlyings = (
+                            set(opened[UNDERLYING]) if opened is not None else set()
+                        )
+                        status_underlyings = (
+                            set(current_status[UNDERLYING])
+                            if current_status is not None
+                            else set()
+                        )
+                        if requested != opened_underlyings:
+                            open_source_types.add(source_type)
+                        if requested != status_underlyings:
+                            market_status_source_types.add(source_type)
+
+                recalculate_source_types = (
+                    changed_source_types
+                    | open_source_types
+                    | market_status_source_types
+                )
+                self._set_progress_total(
+                    3
+                    + 2 * len(changed_source_types)
+                    + int(bool(open_source_types))
+                    + int(bool(market_status_source_types))
+                    + int(bool(recalculate_source_types))
+                    + int(self._cross_gamma_loader is not None)
+                    + int(self._new_position_loader is not None)
+                    + int(self._new_position_direct_pl_loader is not None)
+                    + int(self._cross_gamma_matrix_loader is not None)
+                    + int(self._new_trades_loader is not None)
+                )
+
                 if open_source_types or market_status_source_types:
                     self._wait_for_stage(
                         "market", has_snapshot=base_snapshot is not None
@@ -3679,8 +4034,9 @@ class RiskRefreshManager:
                     )
                 for spec in open_specs:
                     source_type = spec.source_type
-                    requested_underlyings = self._risk_underlyings(
-                        next_risk[source_type]
+                    requested_underlyings = self._requested_market_underlyings(
+                        next_risk[source_type],
+                        supplemental_market_scope.get(source_type, ()),
                     )
                     if spec.risk_type == "Commo" and not commodity_market_enabled:
                         raw_open, _ = self._disabled_market_sources(
@@ -3729,8 +4085,9 @@ class RiskRefreshManager:
                     )
                 for spec in status_specs:
                     source_type = spec.source_type
-                    requested_underlyings = self._risk_underlyings(
-                        next_risk[source_type]
+                    requested_underlyings = self._requested_market_underlyings(
+                        next_risk[source_type],
+                        supplemental_market_scope.get(source_type, ()),
                     )
                     if spec.risk_type == "Commo" and not commodity_market_enabled:
                         _, raw_status = self._disabled_market_sources(
@@ -3842,8 +4199,8 @@ class RiskRefreshManager:
 
                 next_overlay_frames = dict(base_overlay_frames)
                 for overlay_key, split, loader in (
-                    ("cross_gamma", "Cross Gamma", self._cross_gamma_loader),
-                    ("new_position", "New Position", self._new_position_loader),
+                    ("cross_gamma", XGAMMA_SPLIT, self._cross_gamma_loader),
+                    ("new_position", NEW_TRADES_SPLIT, self._new_position_loader),
                 ):
                     if loader is None:
                         continue
@@ -3852,15 +4209,68 @@ class RiskRefreshManager:
                         "pl",
                         message=f"Loading developed risk for {split}.",
                     )
-                    overlay = build_risk_overlay(
-                        loader(market_date),
-                        split=split,
-                        market_frames=next_market,
+                    overlay = _with_supplemental_credit_sp01(
+                        build_risk_overlay(
+                            loader(market_date),
+                            split=split,
+                            market_frames=next_market,
+                        )
                     )
                     if not overlay.empty:
                         overlay[RISK_DATE] = market_date
                         overlay[MARKET_DATE] = market_date
                     next_overlay_frames[overlay_key] = overlay
+
+                if raw_cross_gamma is not None:
+                    self._progress_activity(
+                        "build_cross_gamma_rows",
+                        "pl",
+                        message="Developing and aggregating XGAMMA output risk.",
+                    )
+                    cross_gamma = _with_supplemental_credit_sp01(
+                        build_cross_gamma_rows(
+                            raw_cross_gamma,
+                            next_market,
+                        )
+                    )
+                    if not cross_gamma.empty:
+                        cross_gamma[RISK_DATE] = market_date
+                        cross_gamma[MARKET_DATE] = market_date
+                    next_overlay_frames["xgamma"] = cross_gamma
+
+                if raw_new_trades is not None:
+                    self._progress_activity(
+                        "build_new_trade_rows",
+                        "pl",
+                        message=(
+                            "Calculating New Trades from traded or opening reference "
+                            "levels."
+                        ),
+                    )
+                    new_trades = _with_supplemental_credit_sp01(
+                        build_new_trade_rows(
+                            raw_new_trades,
+                            next_market,
+                            multipliers=self._multipliers,
+                        )
+                    )
+                    if not new_trades.empty:
+                        new_trades[RISK_DATE] = market_date
+                        new_trades[MARKET_DATE] = market_date
+                    next_overlay_frames["new_trades"] = new_trades
+
+                if self._new_position_direct_pl_loader is not None:
+                    loader = self._new_position_direct_pl_loader
+                    self._progress_step(
+                        _callable_name(loader),
+                        "pl",
+                        message="Loading direct P&L for New Trades cash flows.",
+                    )
+                    direct_pl = build_direct_pl_rows(loader(market_date))
+                    if not direct_pl.empty:
+                        direct_pl[RISK_DATE] = market_date
+                        direct_pl[MARKET_DATE] = market_date
+                    next_overlay_frames["new_position_cash_flow"] = direct_pl
 
                 self._progress_step(
                     "_commit_full_snapshot",
@@ -4019,10 +4429,19 @@ __all__ = [
     "AGE",
     "AGE_DEFAULTED",
     "CHECKER_DATE",
+    "CASH_FLOW_PRODUCT_SPEC",
     "ControlSnapshot",
     "CREDIT_MEASURE_COLUMNS",
     "CREDIT_MEASURES",
+    "CROSS_GAMMA_INPUT_RISK_PAIRS",
     "CURRENT",
+    "DIRECT_PL_CLASSIFICATIONS",
+    "DIRECT_PL_CLASSIFICATIONS_BY_SOURCE_TYPE",
+    "DIRECT_PL_INPUT_COLUMNS",
+    "DIRECT_PL_RELEASE_COLUMNS",
+    "DIRECT_PL_RISK_PAIRS",
+    "DirectPLClassification",
+    "DirectPLLoader",
     "EFFECTIVE_RISK_DATE",
     "FORCE_RISK",
     "FrameName",
@@ -4033,6 +4452,7 @@ __all__ = [
     "MARKET_DATA_STATUS",
     "MARKET_STATUS",
     "MarketStatusResolver",
+    "NEW_POSITION_CASH_FLOW_CLASSIFICATION",
     "OFFICIAL",
     "PRODUCT_SPECS",
     "PRODUCT_SPECS_BY_SOURCE_TYPE",
@@ -4047,6 +4467,7 @@ __all__ = [
     "RefreshInProgressError",
     "RefreshProgressSnapshot",
     "RefreshSnapshot",
+    "RELEASE_RISK_PAIRS",
     "REPORTED_UNDERLYING",
     "REGION",
     "RISK_OVERLAY_COLUMNS",
@@ -4064,6 +4485,7 @@ __all__ = [
     "TENOR_SWAP_ORDER",
     "apply_thresholds",
     "build_all_pl",
+    "build_direct_pl_rows",
     "build_risk_overlay",
     "build_dashboard_dataframe",
     "checker_date_for",

@@ -17,7 +17,7 @@ from adapters.s05_stock import (
     normalize_stock_date,
 )
 from core.s01_schema import PORTFOLIO_MAPPED_COLUMN
-from core.s08_stock import (
+from core.s07_stock import (
     CURRENT_MARKET_VALUE_COLUMN,
     CURRENT_QUANTITY_COLUMN,
     MAPPED_STOCK_COMPARISON_COLUMNS,
@@ -594,6 +594,7 @@ def build_stock_table(mapped_stock: pd.DataFrame) -> dash_table.DataTable:
         data=_json_records(frame),
         editable=False,
         filter_action="native",
+        filter_options={"case": "insensitive"},
         sort_action="native",
         sort_mode="multi",
         page_action="native",
@@ -990,7 +991,11 @@ def build_stock_page_shell(
             html.Div(
                 [
                     html.Div(
-                        "Leave blank to include all values. Stock filters are independent from Risk filters.",
+                        "Include mode uses OR within one filter (B or D) and AND "
+                        "across filters (Credit and Portfolio B or D). Exclude mode "
+                        "removes a row if it matches any selected value in any "
+                        "populated filter. Leave a filter blank for all values; "
+                        "Stock selections remain independent from Risk and P&L.",
                         className="filter-note",
                     ),
                     html.Div(
@@ -1001,7 +1006,7 @@ def build_stock_page_shell(
                         id="stock-filter-exclude-selected",
                         options=[
                             {
-                                "label": "Exclude selected values",
+                                "label": "Exclude rows matching any selected value",
                                 "value": "exclude",
                             }
                         ],

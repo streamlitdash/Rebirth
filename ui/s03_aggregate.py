@@ -16,6 +16,7 @@ from .s02_constants import (
     BREAKDOWN_DEFAULTS,
     CREDIT_MEASURE_KEYS,
     CREDIT_MEASURES,
+    CROSS_GAMMA_SOURCE_SPLIT,
     DEFAULT_UNDERLYING_SORT_METRIC,
     DEFAULT_VIEW_DIMENSION,
     DIMENSION_LABELS,
@@ -33,6 +34,7 @@ from .s02_constants import (
     TOP_EXPOSURE_LABELS,
     UNDERLYING_SORT_METRICS,
     VIEW_DIMENSIONS,
+    XGAMMA_SOURCE_RISK_GREEKS,
 )
 
 
@@ -556,7 +558,7 @@ def recompute_filtered_promotion(data: pd.DataFrame) -> pd.DataFrame:
 def filter_ir_family(
     data: pd.DataFrame, risk_type: str | None, family: str | None
 ) -> pd.DataFrame:
-    """Restrict IR rows to the selected Delta, Basis, Vega, or Gamma family."""
+    """Restrict IR rows to the selected ordinary or XGamma family."""
     if risk_type != "IR":
         return data
     allowed = IR_GREEK_FAMILIES.get(str(family or "delta"), IR_GREEK_FAMILIES["delta"])
@@ -571,11 +573,34 @@ def credit_measure_column(metric: str, measure: str) -> str:
     return f"{metric} {CREDIT_MEASURE_KEYS[normalized_measure]}"
 
 
+def _credit_cross_gamma_source_mask(frame: pd.DataFrame) -> pd.Series:
+    """Identify generic Credit Cross Gamma sensitivities, not output risk."""
+
+    required = {"risk greek", "split"}
+    if not required.issubset(frame.columns):
+        return pd.Series(False, index=frame.index, dtype=bool)
+    mask = frame["risk greek"].isin(XGAMMA_SOURCE_RISK_GREEKS) & frame["split"].eq(
+        CROSS_GAMMA_SOURCE_SPLIT
+    )
+    if "risk type" in frame:
+        mask &= frame["risk type"].eq("Credit")
+    return mask
+
+
 def credit_measure_available(frame: pd.DataFrame, measure: str) -> bool:
-    """Whether a real connector supplied both values for one credit measure."""
-    return not frame.empty and all(
+    """Whether at least one complete metric is available for a Credit measure.
+
+    Credit Cross Gamma source sensitivities deliberately have generic Risk and
+    no connector-measure values.  They are excluded from connector completeness
+    so their intentional blanks do not disable a complete ordinary Credit
+    measure.  :func:`credit_measure_values` overlays generic Risk only for those
+    exact source rows and leaves their connector columns untouched.
+    """
+
+    connector_rows = frame.loc[~_credit_cross_gamma_source_mask(frame)]
+    return not connector_rows.empty and any(
         (column := credit_measure_column(metric, measure)) in frame
-        and frame[column].notna().all()
+        and connector_rows[column].notna().all()
         for metric in ("risk", "drisk")
     )
 
@@ -596,12 +621,21 @@ def credit_measure_values(
     """
     if metric == "pl":
         return frame["pl"].astype(float)
+    source_mask = _credit_cross_gamma_source_mask(frame)
+    connector_mask = ~source_mask
     column = credit_measure_column(metric, measure)
-    locally_complete = column in frame and frame[column].notna().all()
+    locally_complete = (
+        connector_mask.any()
+        and column in frame
+        and frame.loc[connector_mask, column].notna().all()
+    )
     use_connector = locally_complete and connector_complete is not False
+    selected = pd.Series(np.nan, index=frame.index, dtype=float)
     if use_connector:
-        return frame[column].astype(float)
-    return pd.Series(np.nan, index=frame.index, dtype=float)
+        selected.loc[connector_mask] = frame.loc[connector_mask, column].astype(float)
+    if metric == "risk":
+        selected.loc[source_mask] = frame.loc[source_mask, "risk"].astype(float)
+    return selected
 
 
 def apply_credit_measure(

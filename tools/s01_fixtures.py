@@ -41,7 +41,9 @@ from core.s01_schema import (  # noqa: E402 - support execution from any directo
 )
 from core.s02_pipeline import (  # noqa: E402 - support execution from any directory
     CREDIT_MEASURE_COLUMNS,
+    CROSS_GAMMA_INPUT_RISK_PAIRS,
     CURRENT,
+    DIRECT_PL_CLASSIFICATIONS,
     PRODUCT_SPECS_BY_SOURCE_TYPE,
 )
 
@@ -469,6 +471,26 @@ def build_datasets() -> dict[str, list[dict[str, str]]]:
         }
         for product in PRODUCT_SPECS_BY_SOURCE_TYPE.values()
     ]
+    thresholds.extend(
+        {
+            "Risk Type": classification.risk_type,
+            "Risk Greek": classification.risk_greek,
+            "PL": "25000",
+            "Risk": "2500000",
+            "dRisk": "250000",
+        }
+        for classification in DIRECT_PL_CLASSIFICATIONS
+    )
+    thresholds.extend(
+        {
+            "Risk Type": risk_type,
+            "Risk Greek": risk_greek,
+            "PL": "25000",
+            "Risk": "2500000",
+            "dRisk": "250000",
+        }
+        for risk_type, risk_greek in sorted(CROSS_GAMMA_INPUT_RISK_PAIRS)
+    )
     return {
         "s01_readiness.csv": readiness,
         "s02_checker.csv": checker,
@@ -551,14 +573,14 @@ def validate_datasets(datasets: Mapping[str, Sequence[Mapping[str, str]]]) -> No
                 f"{filename} row {index} columns differ from exact schema {schema}",
             )
 
-    expected_pairs = {
+    product_pairs = {
         (spec.risk_type, spec.risk_greek)
         for spec in PRODUCT_SPECS_BY_SOURCE_TYPE.values()
     }
     readiness = datasets["s01_readiness.csv"]
     readiness_pairs = [(row["Risk Type"], row["Risk Greek"]) for row in readiness]
     _require(
-        set(readiness_pairs) == expected_pairs,
+        set(readiness_pairs) == product_pairs,
         "Readiness pair coverage is incomplete",
     )
     _require(len(readiness_pairs) == len(set(readiness_pairs)), "Readiness duplicates")
@@ -571,7 +593,7 @@ def validate_datasets(datasets: Mapping[str, Sequence[Mapping[str, str]]]) -> No
     ]
     _require(len(checker_keys) == len(set(checker_keys)), "Checker rows must be unique")
     _require(
-        {(row["Risk Type"], row["Risk Greek"]) for row in checker} == expected_pairs,
+        {(row["Risk Type"], row["Risk Greek"]) for row in checker} == product_pairs,
         "Checker pair coverage is incomplete",
     )
     checker_products: dict[tuple[str, str], set[str]] = defaultdict(set)
@@ -730,7 +752,18 @@ def validate_datasets(datasets: Mapping[str, Sequence[Mapping[str, str]]]) -> No
 
     thresholds = datasets["s07_thresholds.csv"]
     threshold_pairs = [(row["Risk Type"], row["Risk Greek"]) for row in thresholds]
-    _require(set(threshold_pairs) == expected_pairs, "Threshold coverage is incomplete")
+    expected_threshold_pairs = (
+        product_pairs
+        | {
+            (classification.risk_type, classification.risk_greek)
+            for classification in DIRECT_PL_CLASSIFICATIONS
+        }
+        | set(CROSS_GAMMA_INPUT_RISK_PAIRS)
+    )
+    _require(
+        set(threshold_pairs) == expected_threshold_pairs,
+        "Threshold coverage is incomplete",
+    )
     _require(len(threshold_pairs) == len(set(threshold_pairs)), "Thresholds duplicate")
     for row in thresholds:
         for column in ("PL", "Risk", "dRisk"):

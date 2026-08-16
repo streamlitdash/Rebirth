@@ -26,23 +26,34 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+from adapters.s06_new_positions import (
+    CASHFLOW as NEW_POSITION_CASHFLOW,
+    ROW_TYPE as NEW_POSITION_ROW_TYPE,
+    get_new_positions as get_new_position_blotter,
+)
+from adapters.s07_cross_gamma import get_cross_gamma as get_cross_gamma_matrix
 from core.s01_schema import (
     PORTFOLIO_CONFIG_REQUIRED_COLUMNS,
     PORTFOLIO_FIELD_BY_KEY,
     TENOR_COLUMNS,
     TENOR_ORDER_COLUMNS,
 )
-from core.s06_cashflow import INTRADAY_CASHFLOW_COLUMNS
-
 from core.s02_pipeline import (
     CREDIT_MEASURE_COLUMNS,
     CURRENT,
+    DIRECT_PL_INPUT_COLUMNS,
     LIVE,
     MARKET_STATUS,
     OFFICIAL,
+    NEW_POSITION_CASH_FLOW_CLASSIFICATION,
+    PL,
+    PORTFOLIO,
     PRODUCT_SPECS_BY_SOURCE_TYPE,
     REGION,
+    RISK_GREEK,
     RISK_OVERLAY_COLUMNS,
+    RISK_TYPE,
+    SOURCE_TYPE,
     ProductConnectorAdapter,
     RiskRefreshManager,
 )
@@ -516,16 +527,52 @@ def get_cross_gamma_risk(market_date: pd.Timestamp) -> pd.DataFrame:
     return pd.DataFrame(columns=list(RISK_OVERLAY_COLUMNS))
 
 
+def get_cross_gamma_sensitivities(market_date: pd.Timestamp) -> pd.DataFrame:
+    """Return validated portfolio-level XGAMMA sensitivity matrix rows."""
+
+    selected_date = _normalized_date(market_date, parameter="market_date")
+    return get_cross_gamma_matrix(selected_date)
+
+
 def get_new_positions(market_date: pd.Timestamp) -> pd.DataFrame:
     """Return fixture intraday new-position target-risk rows.
 
     The deterministic demo has no invented positions, so an exact header-only
     frame is the truthful fixture.  A production replacement returns the same
-    seven canonical fields and the pipeline supplies ``Split = New Position``.
+    seven canonical fields and the pipeline supplies ``Split = New Trades``.
     """
 
     _normalized_date(market_date, parameter="market_date")
     return pd.DataFrame(columns=list(RISK_OVERLAY_COLUMNS))
+
+
+def get_new_trades(market_date: pd.Timestamp) -> pd.DataFrame:
+    """Return the validated mixed MARKET/CASHFLOW New Trades blotter."""
+
+    selected_date = _normalized_date(market_date, parameter="market_date")
+    return get_new_position_blotter(selected_date)
+
+
+def get_new_position_cash_flows(market_date: pd.Timestamp) -> pd.DataFrame:
+    """Return only validated CASHFLOW rows for the direct-P&L release path.
+
+    The raw adapter's illustrative MARKET rows remain deliberately isolated
+    until their traded-level and MarketBook calculation is implemented.  This
+    explicit selection cannot reinterpret them as zero-risk P&L rows.
+    """
+
+    selected_date = _normalized_date(market_date, parameter="market_date")
+    blotter = get_new_position_blotter(selected_date)
+    cash_flows = blotter.loc[
+        blotter[NEW_POSITION_ROW_TYPE].eq(NEW_POSITION_CASHFLOW),
+        [RISK_TYPE, RISK_GREEK, PORTFOLIO, PL],
+    ].copy()
+    cash_flows.insert(
+        0,
+        SOURCE_TYPE,
+        NEW_POSITION_CASH_FLOW_CLASSIFICATION.source_type,
+    )
+    return cash_flows.loc[:, list(DIRECT_PL_INPUT_COLUMNS)].reset_index(drop=True)
 
 
 def get_market_open(
@@ -826,75 +873,6 @@ def get_reported_underlyings() -> pd.DataFrame:
     return frame.copy()
 
 
-def get_intraday_cashflows(cashflow_date: pd.Timestamp) -> pd.DataFrame:
-    """Return demo cashflows for the new page through its own connector.
-
-    Replace only this function body with the real cashflow API. The canonical
-    validator in ``core/s06_cashflow.py`` rejects aliases or malformed values.
-    """
-    selected = _normalized_date(cashflow_date, parameter="cashflow_date")
-    timestamp = selected.tz_localize("UTC")
-    rows = [
-        (
-            "CF-001",
-            timestamp + pd.Timedelta(hours=8, minutes=15),
-            "BOOK_A",
-            "SOG_ALPHA",
-            "USD",
-            "Settlement",
-            1_250_000.0,
-            "Sent",
-        ),
-        (
-            "CF-002",
-            timestamp + pd.Timedelta(hours=9, minutes=40),
-            "BOOK_B",
-            "SOG_ALPHA",
-            "GBP",
-            "Coupon",
-            -275_500.0,
-            "Pending",
-        ),
-        (
-            "CF-003",
-            timestamp + pd.Timedelta(hours=11, minutes=5),
-            "BOOK_C",
-            "SOG_BETA",
-            "EUR",
-            "Premium",
-            540_000.0,
-            "Confirmed",
-        ),
-        (
-            "CF-004",
-            timestamp + pd.Timedelta(hours=13, minutes=20),
-            "BOOK_D",
-            "SOG_BETA",
-            "JPY",
-            "Settlement",
-            -82_000_000.0,
-            "Pending",
-        ),
-    ]
-    return pd.DataFrame(
-        [
-            {
-                "Cashflow ID": f"FAKE_REPLACE_ME-{cashflow_id}",
-                "Cashflow Time": cashflow_time,
-                "Value Date": selected + pd.offsets.BDay(1),
-                "Portfolio": f"FAKE_REPLACE_ME - {portfolio}",
-                "SignoffGroup": f"FAKE_REPLACE_ME - {signoff_group}",
-                "Currency": currency,
-                "Cashflow Type": cashflow_type,
-                "Amount": amount,
-                "Status": status,
-            }
-            for cashflow_id, cashflow_time, portfolio, signoff_group, currency, cashflow_type, amount, status in rows
-        ],
-        columns=list(INTRADAY_CASHFLOW_COLUMNS),
-    )
-
-
 def send_sog_pl(frame: pd.DataFrame) -> None:
     """Reject external SOG delivery while the fixture boundary is active."""
     # === RECOVERED ORIGINAL SENDER (COMMENTED OUT) ===========================
@@ -1051,8 +1029,8 @@ def build_production_refresh_manager(
         risk_checker_loader=get_risk_checker,
         market_status_resolver=resolve_market_state,
         risk_loader=get_risk,
-        cross_gamma_loader=get_cross_gamma_risk,
-        new_position_loader=get_new_positions,
+        cross_gamma_matrix_loader=get_cross_gamma_sensitivities,
+        new_trades_loader=get_new_trades,
         market_open_loader=get_market_open,
         market_status_loader=get_market_status,
         connector_adapters=get_product_connector_adapters(),
@@ -1067,11 +1045,13 @@ __all__ = [
     "FakeCsvConnectorError",
     "build_production_refresh_manager",
     "get_cross_gamma_risk",
+    "get_cross_gamma_sensitivities",
     "get_market_open",
     "get_market_state",
     "get_market_status",
-    "get_intraday_cashflows",
     "get_new_positions",
+    "get_new_position_cash_flows",
+    "get_new_trades",
     "get_portfolio_config",
     "get_product_connector_adapters",
     "get_reported_underlyings",

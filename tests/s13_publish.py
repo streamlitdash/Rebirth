@@ -38,11 +38,16 @@ def test_stage_bundle_uses_conventional_runtime_names(tmp_path: Path) -> None:
         Path("adapters/s04_credit.py"),
         Path("adapters/s05_stock.py"),
         Path("adapters/s06_new_positions.py"),
-        Path("core/s08_stock.py"),
-        Path("core/s09_saved_views.py"),
+        Path("adapters/s07_cross_gamma.py"),
+        Path("core/s06_reporting.py"),
+        Path("core/s07_stock.py"),
+        Path("core/s08_saved_views.py"),
+        Path("core/s09_cross_gamma.py"),
+        Path("core/s10_new_trades.py"),
         Path("feeds/s01_sources.py"),
         Path("ui/s10_stock.py"),
         Path("ui/s11_saved_views.py"),
+        Path("ui/s12_plhistory.py"),
         Path("data/saved_views/README.md"),
     ):
         assert (staged / relative_path).read_bytes() == (

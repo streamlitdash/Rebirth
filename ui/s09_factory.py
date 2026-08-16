@@ -25,7 +25,7 @@ from dash import (
 )
 from flask import jsonify, request
 from dash.exceptions import MissingCallbackContextException
-from core.s09_saved_views import SavedFilterViewRepository
+from core.s08_saved_views import SavedFilterViewRepository
 
 from pages import PAGE_SERVICES_CONFIG_KEY
 from pages.not_found_404 import layout as not_found_page_layout

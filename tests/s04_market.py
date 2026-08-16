@@ -278,9 +278,10 @@ def test_market_dropdown_search_is_tokenized_but_selection_is_exact() -> None:
         market_date=pd.Timestamp("2026-07-20"),
     )
 
-    assert catalog.search_market_udl_options("ir delta usd") == (
-        "IR | Delta | USD-SOFR",
-    )
+    for typed_query in ("ir delta usd", "IR DELTA USD", "Ir DeLtA UsD"):
+        assert catalog.search_market_udl_options(typed_query) == (
+            "IR | Delta | USD-SOFR",
+        )
     assert catalog.pivot_market_exact(
         "ir delta usd", index_columns=(TENOR_SWAP,)
     ).frame.empty
@@ -303,9 +304,13 @@ def test_search_catalog_keeps_exact_indexes_without_row_level_postings() -> None
         market_date=pd.Timestamp("2026-07-20"),
     )
 
-    assert catalog.search_combine_udl_options("ir delta usd") == (
-        "IR | Delta | USD-SOFR",
-    )
+    for typed_query in ("ir delta usd", "IR DELTA USD", "Ir DeLtA UsD"):
+        assert catalog.search_combine_udl_options(typed_query) == (
+            "IR | Delta | USD-SOFR",
+        )
+    assert catalog.pivot_combined(
+        "ir delta usd", index_columns=(TENOR_SWAP,)
+    ).frame.empty
     assert not hasattr(catalog, "_risk_postings")
     assert not hasattr(catalog, "_market_postings")
     assert not hasattr(catalog, "_risk_pivot_postings")

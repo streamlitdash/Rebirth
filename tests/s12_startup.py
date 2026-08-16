@@ -799,3 +799,15 @@ def test_static_data_columns_use_only_supported_dash_properties() -> None:
 
     assert table.columns
     assert all("resizable" not in column for column in table.columns)
+
+
+def test_static_data_native_filters_are_case_insensitive() -> None:
+    table_layout = build_static_data_table("s01_readiness.csv")
+    table = next(
+        item
+        for item in _walk(table_layout)
+        if getattr(item, "id", None) == "static-data-table-s01_readiness"
+    )
+
+    assert table.filter_action == "native"
+    assert table.filter_options == {"case": "insensitive"}

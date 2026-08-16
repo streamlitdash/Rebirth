@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pandas as pd
 from dash import dcc, html
 
-from core.s09_saved_views import SavedFilterView
+from core.s08_saved_views import SavedFilterView
 from core.s03_search import MARKET_RESULT_COLUMNS, SearchCatalog
 from ui import s07_events as events_module
 from ui.s02_constants import (
@@ -213,6 +213,58 @@ def test_prepare_retains_real_portfolio_and_filter_modes_use_position_grain() ->
     assert unrestricted["portfolio"].tolist() == ["BOOK-A", "BOOK-B"]
 
 
+def test_include_and_exclude_modes_have_explicit_boolean_semantics() -> None:
+    frame = pd.DataFrame(
+        {
+            "row": [
+                "Credit / B",
+                "Credit / D",
+                "Credit / C",
+                "Rates / B",
+                "Rates / C",
+            ],
+            "risk type": ["IR"] * 5,
+            "split": ["Risk"] * 5,
+            "activity": ["Credit", "Credit", "Credit", "Rates", "Rates"],
+            "portfolio": ["B", "D", "C", "B", "C"],
+            "pl": [1.0] * 5,
+        }
+    )
+    selections = {"activity": ["Credit"], "portfolio": ["B", "D"]}
+
+    included = apply_filters(frame, None, None, selections)
+    excluded = apply_filters(
+        frame,
+        None,
+        None,
+        selections,
+        exclude_selected=True,
+    )
+
+    assert included["row"].tolist() == ["Credit / B", "Credit / D"]
+    # Exclude mode is (NOT Credit) AND (NOT B or D), not merely the inverse
+    # of the included intersection.
+    assert excluded["row"].tolist() == ["Rates / C"]
+
+
+def test_ir_family_tabs_expose_xgamma_sources_as_dedicated_choices() -> None:
+    prepared = prepare_risk_data(_raw_risk_frame())
+    layout = build_layout(prepared, _snapshot(), refresh_enabled=True)
+    tabs = next(
+        item
+        for item in _walk(layout)
+        if isinstance(item, dcc.Tabs) and item.id == "ir-family-tabs"
+    )
+
+    assert [(tab.label, tab.value) for tab in tabs.children] == [
+        ("Delta", "delta"),
+        ("Basis", "basis"),
+        ("Vega", "vega"),
+        ("XGamma", "xgamma"),
+        ("XGamma Vega", "xgamma_vega"),
+    ]
+
+
 def test_filtered_cache_distinguishes_include_and_exclude_generations() -> None:
     prepared = prepare_risk_data(_raw_risk_frame())
     cache = _RiskDataCache(prepared, revision=7)
@@ -406,7 +458,10 @@ def test_portfolio_is_rendered_as_a_filter_and_a_view_by_dimension() -> None:
         "BOOK-B",
     ]
     assert exclude_mode.options == [
-        {"label": "Exclude selected values", "value": "exclude"}
+        {
+            "label": "Exclude rows matching any selected value",
+            "value": "exclude",
+        }
     ]
     assert exclude_mode.value == []
     assert [control.children[0].children for control in filter_row.children] == [

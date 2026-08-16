@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -11,6 +12,7 @@ import pytest
 from core.s01_schema import TENOR_OPTION, TENOR_SWAP, TENOR_SWAP_ORDER
 from core.s02_pipeline import (
     CURRENT,
+    DIRECT_PL_INPUT_COLUMNS,
     DRISK,
     DRISK_THRESHOLD,
     GROUP,
@@ -18,6 +20,7 @@ from core.s02_pipeline import (
     MARKET_DATA_STATUS,
     MARKET_MOVE,
     MARKET_STATUS,
+    NEW_POSITION_CASH_FLOW_CLASSIFICATION,
     OFFICIAL,
     OPEN,
     PL,
@@ -29,20 +32,25 @@ from core.s02_pipeline import (
     RISK_OVERLAY_COLUMNS,
     RISK_THRESHOLD,
     RISK_TYPE,
+    SOURCE_TYPE,
     RiskRefreshManager,
     SPLIT,
     UNDERLYING,
     build_risk_overlay,
+    build_direct_pl_rows,
     get_product_market,
 )
+from core.s04_pl import CONCERTO_FIELD, build_pl_send_base
 from feeds.s01_sources import (
     get_cross_gamma_risk,
     get_new_positions,
+    get_new_position_cash_flows,
     get_portfolio_config,
     get_product_connector_adapters,
     get_reported_underlyings,
     get_risk_checker,
     get_risk_thresholds,
+    build_production_refresh_manager,
 )
 
 
@@ -70,6 +78,23 @@ def _overlay_row(
             ]
         ],
         columns=list(RISK_OVERLAY_COLUMNS),
+    )
+
+
+def _direct_cash_flows(*values: float) -> pd.DataFrame:
+    classification = NEW_POSITION_CASH_FLOW_CLASSIFICATION
+    return pd.DataFrame(
+        [
+            [
+                classification.source_type,
+                classification.risk_type,
+                classification.risk_greek,
+                "FAKE_REPLACE_ME - BOOK_A",
+                value,
+            ]
+            for value in values
+        ],
+        columns=list(DIRECT_PL_INPUT_COLUMNS),
     )
 
 
@@ -118,14 +143,14 @@ def _ir_market() -> pd.DataFrame:
     ("split", "source", "market_frames", "expected_type", "expected_tenor"),
     [
         (
-            "Cross Gamma",
+            "XGAMMA",
             _overlay_row("fx/delta", "EURUSD", 125.0),
             {"fx/delta": _fx_market()},
             "FX",
             "Spot",
         ),
         (
-            "New Position",
+            "New Trades",
             _overlay_row("ir/delta", "USD-SOFR", -40.0, tenor_swap="5Y"),
             {"ir/delta": _ir_market()},
             "IR",
@@ -162,7 +187,7 @@ def test_overlay_api_derives_product_identity_and_attaches_target_market(
 def test_overlay_without_target_market_is_retained_as_unavailable() -> None:
     result = build_risk_overlay(
         _overlay_row("fx/delta", "GBPUSD", 75.0),
-        split="Cross Gamma",
+        split="XGAMMA",
         market_frames={},
     )
 
@@ -186,6 +211,110 @@ def test_fixture_overlay_hooks_return_the_exact_empty_contract() -> None:
     ):
         assert frame.empty
         assert frame.columns.tolist() == expected_columns
+
+
+def test_direct_pl_converter_preserves_signed_values_without_market_data() -> None:
+    result = build_direct_pl_rows(_direct_cash_flows(50_000.0, -12_500.0))
+
+    assert result[PL].tolist() == [50_000.0, -12_500.0]
+    assert result[RISK].tolist() == [50_000.0, -12_500.0]
+    assert result[DRISK].isna().all()
+    assert result[[OPEN, CURRENT, MARKET_MOVE]].isna().all().all()
+    assert result[MARKET_AVAILABLE].eq(False).all()
+    assert result[RISK_TYPE].eq("Cash Flow").all()
+    assert result[RISK_GREEK].eq("New").all()
+    assert result[UNDERLYING].eq("Cash Flow").all()
+    assert result[SPLIT].eq("New Trades").all()
+    assert result[SOURCE_TYPE].eq("new-position/cash-flow").all()
+    assert (
+        result[MARKET_DATA_STATUS].eq("Identity P&L; market data not applicable").all()
+    )
+
+
+def test_direct_pl_converter_rejects_a_pair_outside_its_authority() -> None:
+    source = _direct_cash_flows(1.0)
+    source.loc[0, RISK_GREEK] = "Delta"
+
+    with pytest.raises(ValueError, match="requires Risk Type='Cash Flow'.*New"):
+        build_direct_pl_rows(source)
+
+
+def test_fixture_selects_only_cashflow_for_direct_pl() -> None:
+    result = get_new_position_cash_flows(MARKET_DATE)
+
+    assert result.columns.tolist() == list(DIRECT_PL_INPUT_COLUMNS)
+    assert len(result) == 1
+    assert result.iloc[0][PL] == 50_000.0
+    assert result.iloc[0][RISK_TYPE] == "Cash Flow"
+    assert result.iloc[0][RISK_GREEK] == "New"
+
+
+def test_production_fixture_releases_searchable_cashflow_but_no_market_quote() -> None:
+    manager = build_production_refresh_manager()
+    snapshot = manager.refresh(force_risk=True, force_pl=True)
+    rows = snapshot.dashboard_frame.loc[
+        snapshot.dashboard_frame[SOURCE_TYPE].eq("new-position/cash-flow")
+    ]
+
+    assert len(rows) == 1
+    assert rows.iloc[0][PL] == 50_000.0
+    assert rows.iloc[0][RISK] == 50_000.0
+    identity = "Cash Flow | New | Cash Flow"
+    assert manager.search_combine_udl_options("cAsH fLoW") == (identity,)
+    assert identity not in manager.market_udl_options()
+    assert manager.search_market_udl_options("cash flow") == ()
+    pivot = manager.pivot_combined(
+        identity,
+        index_columns=(RISK_TYPE, RISK_GREEK, UNDERLYING),
+    ).frame
+    assert pivot.iloc[0][PL] == 50_000.0
+    assert pivot.iloc[0][RISK] == 50_000.0
+    assert pivot[[OPEN, CURRENT, MARKET_MOVE]].isna().all().all()
+    pl_send = build_pl_send_base(
+        snapshot.combined_pl,
+        Path("data/s08_concerto.csv"),
+        get_portfolio_config(snapshot.checker_date),
+    )
+    cash_flow_send = pl_send.loc[pl_send[CONCERTO_FIELD].eq("cashfloweffect")]
+    assert len(cash_flow_send) == 1
+    assert cash_flow_send.iloc[0][PL] == 50_000.0
+
+
+def test_direct_pl_failure_retains_cashflow_and_search_catalog_atomically() -> None:
+    calls = 0
+
+    def direct_pl(_market_date: pd.Timestamp) -> pd.DataFrame:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return _direct_cash_flows(50_000.0)
+        raise ValueError("private source detail must not escape")
+
+    manager = RiskRefreshManager(
+        get_portfolio_config,
+        thresholds=get_risk_thresholds,
+        reported_underlyings=get_reported_underlyings,
+        risk_checker_loader=get_risk_checker,
+        market_status_resolver=lambda _date: OFFICIAL,
+        cross_gamma_loader=get_cross_gamma_risk,
+        new_position_loader=get_new_positions,
+        new_position_direct_pl_loader=direct_pl,
+        connector_adapters=get_product_connector_adapters(),
+        clock=lambda: datetime(2026, 7, 20, 12, tzinfo=timezone.utc),
+    )
+    first = manager.refresh(force_risk=True, force_pl=True)
+    identity = "Cash Flow | New | Cash Flow"
+    first_options = manager.search_combine_udl_options("cash flow")
+
+    retained = manager.refresh(force_pl=True, expected_revision=first.revision)
+
+    assert calls == 2
+    assert retained.revision == first.revision
+    assert retained.errors
+    assert "private source detail" not in retained.errors[0]
+    pd.testing.assert_frame_equal(retained.dashboard_frame, first.dashboard_frame)
+    assert first_options == (identity,)
+    assert manager.search_combine_udl_options("CASH FLOW") == first_options
 
 
 def test_refresh_replaces_overlay_rows_and_releases_positive_thresholds() -> None:
@@ -217,7 +346,7 @@ def test_refresh_replaces_overlay_rows_and_releases_positive_thresholds() -> Non
 
     for snapshot in (first, second):
         cross_rows = snapshot.dashboard_frame.loc[
-            snapshot.dashboard_frame[SPLIT].eq("Cross Gamma")
+            snapshot.dashboard_frame[SPLIT].eq("XGAMMA")
         ]
         assert len(cross_rows) == 1
         assert cross_rows.iloc[0][RISK] == 125.0

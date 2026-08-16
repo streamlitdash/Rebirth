@@ -964,7 +964,7 @@ Suggested locations:
 
 | Test area | File |
 |---|---|
-| Adapter shape and scope checking | `tests/s03_adapters.py` or new `tests/s16_bulkfx.py` |
+| Adapter shape and scope checking | `tests/s03_adapters.py` or new `tests/s25_bulkfx.py` |
 | Market validation and P&L | `tests/s04_market.py` |
 | Manager call count and transactional fallback | `tests/s07_integration.py` |
 
@@ -1045,7 +1045,7 @@ assert result.set_index("Underlying")["PL"].round(8).to_dict() == {
 | `core/s02_pipeline.py` | Add explicit bulk protocol/adapter, validation, once-per-refresh dispatch, and exports. |
 | `adapters/s05_fx.py` | New strict FX Delta risk and bulk-market adapter. |
 | `feeds/s01_sources.py` | Add the real one-call source and override only `adapters["fx/delta"]`. |
-| `tests/s03_adapters.py` or `tests/s16_bulkfx.py` | Test tuple forwarding and bulk scope checker. |
+| `tests/s03_adapters.py` or `tests/s25_bulkfx.py` | Test tuple forwarding and bulk scope checker. |
 | `tests/s04_market.py` | Test market merge and percentage P&L. |
 | `tests/s07_integration.py` | Test exactly-once dispatch and last-good-snapshot behavior. |
 

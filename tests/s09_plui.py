@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,16 +12,16 @@ import pytest
 from dash import Dash, dcc, html, no_update
 
 from core.s04_pl import (
-    BOOK,
-    HISTO_TYPE,
+    COLOSSUS_TYPE,
     HISTORY_FILE_COLUMNS,
-    PREDICTED_TYPE,
+    PREDICT_TYPE,
 )
 from core.s05_storage import LocalCsvAdjustmentRepository
 from feeds.s01_sources import build_production_refresh_manager
 from ui import s08_plevents as pl_events
 from ui.s03_aggregate import format_number, prepare_risk_data
 from ui.s06_plview import (
+    DISPLAY_COLUMNS,
     PL_AGGREGATE_TOGGLE_TYPE,
     PL_FILTER_FIELDS,
     PL_FILTER_IDS,
@@ -31,14 +32,19 @@ from ui.s06_plview import (
 )
 from ui.s08_plevents import (
     PLSendConfig,
-    _historical_pl_figure,
-    history_range_bounds,
-    history_selection_from_cell,
     register_pl_aggregate_callbacks,
-    select_pl_history_series,
 )
 from ui.s09_factory import build_app
 from ui.s11_saved_views import build_saved_filter_view_bar
+from ui.s12_plhistory import (
+    DAILY_P_PERIOD,
+    MTD_PERIOD,
+    PL_HISTORY_METRIC_CELL_TYPE,
+    PL_HISTORY_ROW_TOGGLE_TYPE,
+    YTD_PERIOD,
+    pl_history_comparison_token,
+    pl_history_path_token,
+)
 
 
 def _walk(component: object) -> Iterable[object]:
@@ -86,7 +92,11 @@ def _config(tmp_path: Path) -> PLSendConfig:
     )
 
 
-def _registered_pl_app(tmp_path: Path) -> tuple[Dash, SimpleNamespace]:
+def _registered_pl_app(
+    tmp_path: Path,
+    *,
+    config: PLSendConfig | None = None,
+) -> tuple[Dash, SimpleNamespace]:
     snapshot = SimpleNamespace(revision=7, market_date=pd.Timestamp("2026-07-20"))
     manager = SimpleNamespace(pl_snapshot=snapshot)
     app = Dash(__name__)
@@ -97,7 +107,7 @@ def _registered_pl_app(tmp_path: Path) -> tuple[Dash, SimpleNamespace]:
             *build_pl_send_sections(),
         ]
     )
-    pl_events.register_pl_send_callbacks(app, manager, _config(tmp_path))
+    pl_events.register_pl_send_callbacks(app, manager, config or _config(tmp_path))
     return app, manager
 
 
@@ -238,6 +248,22 @@ def test_pl_sections_are_independent_top_level_disclosures() -> None:
     details = [section for section in sections if isinstance(section, html.Details)]
 
     assert getattr(sections[0], "id", None) == "pl-workflow-state"
+    assert getattr(sections[1], "id", None) == "pl-send-all-panel"
+    assert (
+        next(
+            item
+            for item in _walk(sections[1])
+            if getattr(item, "id", None) == "send-all-pl-button"
+        ).children
+        == "Send All P&L"
+    )
+    assert getattr(sections[2], "id", None) is None
+    assert (
+        next(
+            item for item in _walk(sections[2]) if isinstance(item, html.Summary)
+        ).children
+        == "SOG P&L"
+    )
     assert [
         next(item for item in _walk(detail) if isinstance(item, html.Summary)).children
         for detail in details
@@ -253,6 +279,13 @@ def test_pl_sections_are_independent_top_level_disclosures() -> None:
         for detail in details
     )
     assert "pl-workflow-summary" not in _string_ids(html.Div(sections))
+    preview = next(
+        item
+        for item in _walk(html.Div(sections))
+        if getattr(item, "id", None) == "pl-send-preview-grid"
+    )
+    assert preview.filter_action == "native"
+    assert preview.filter_options == {"case": "insensitive"}
 
 
 def test_native_pl_page_owns_workflow_and_adjustment_state() -> None:
@@ -269,6 +302,9 @@ def test_native_pl_page_owns_workflow_and_adjustment_state() -> None:
         "pnl-filter-exclude-selected",
         "pl-adjustment-revision-store",
         "pl-workflow-state",
+        "pl-send-all-panel",
+        "send-all-pl-button",
+        "pl-send-all-status",
         "pl-preview-summary",
         "pl-sog-summary",
         "pl-portfolio-summary",
@@ -295,21 +331,143 @@ def test_native_pl_page_owns_workflow_and_adjustment_state() -> None:
     history_grid = next(
         item for item in _walk(page) if getattr(item, "id", None) == "pl-history-grid"
     )
-    assert [column["id"] for column in history_grid.columns] == [
-        "Risk Type",
-        "Risk Greek",
-        "Underlying",
-        "Product",
-        "Book",
-        HISTO_TYPE,
-        PREDICTED_TYPE,
+    assert isinstance(history_grid, html.Div)
+    assert "expandable hierarchy" in str(history_grid.children)
+    assert {
+        "pl-history-range-wtd",
+        "pl-history-range-mtd",
+        "pl-history-range-ytd",
+        "pl-history-range-all",
+        "pl-history-series-selector",
+        "pl-history-date-range",
+        "pl-history-open-paths",
+        "pl-history-open-comparisons",
+        "pl-history-selection-store",
+    } <= ids
+    assert "pl-history-range-1w" not in ids
+    series_selector = next(
+        item
+        for item in _walk(page)
+        if isinstance(item, dcc.RadioItems) and item.id == "pl-history-series-selector"
+    )
+    assert series_selector.value == "both"
+    assert [option["label"] for option in series_selector.options] == [
+        "Both",
+        COLOSSUS_TYPE,
+        PREDICT_TYPE,
     ]
-    assert history_grid.page_action == "none"
-    assert history_grid.sort_action == "none"
-    assert history_grid.virtualization is True
 
     cold_page = build_pl_page(start_initial_load=True)
     assert "pnl-initial-load-trigger" in _string_ids(cold_page)
+
+
+def test_send_all_builds_once_and_sends_independent_defensive_copies(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent: list[tuple[str, pd.DataFrame]] = []
+
+    def send_sog(frame: pd.DataFrame) -> None:
+        sent.append(("SOG", frame))
+        frame.loc[:, "PL"] = 999.0
+
+    def send_portfolio(frame: pd.DataFrame) -> None:
+        sent.append(("Portfolio", frame))
+
+    config = replace(
+        _config(tmp_path),
+        send_sog_pl=send_sog,
+        send_portfolio_pl=send_portfolio,
+    )
+    app, _manager = _registered_pl_app(tmp_path, config=config)
+    effective = _effective_frame()
+    build_calls: list[bool] = []
+    collapse_calls: list[int] = []
+
+    def effective_rows(_snapshot, _config, *, include_adjustments: bool):
+        build_calls.append(include_adjustments)
+        return effective.copy(deep=True), pd.DataFrame(), pd.DataFrame()
+
+    def collapse(rows, _mapping, _governance):
+        collapse_calls.append(len(rows))
+        return rows.copy(deep=True)
+
+    monkeypatch.setattr(pl_events, "_effective_rows", effective_rows)
+    monkeypatch.setattr(pl_events, "collapse_pl_send_rows", collapse)
+
+    send_all = _callback(app, "pl-send-all-status.children")
+    status = send_all(1)
+
+    assert status == "success · sent 2 governed rows to SOG and Portfolio"
+    assert build_calls == [True]
+    assert collapse_calls == [2]
+    assert [label for label, _frame in sent] == ["SOG", "Portfolio"]
+    assert sent[0][1] is not sent[1][1]
+    assert list(sent[0][1].columns) == list(DISPLAY_COLUMNS)
+    assert sent[1][1]["PL"].tolist() == [20.0, -5.0]
+    assert effective["PL"].tolist() == [20.0, -5.0]
+
+    callback_spec = next(
+        item
+        for item in app._callback_list
+        if item["output"] == "pl-send-all-status.children"
+    )
+    assert callback_spec["running"] == {
+        "running": {"send-all-pl-button.disabled": True},
+        "runningOff": {"send-all-pl-button.disabled": False},
+    }
+
+
+def test_send_all_reports_partial_failure_and_attempts_both_boundaries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def send_sog(_frame: pd.DataFrame) -> None:
+        calls.append("SOG")
+        raise RuntimeError("SOG unavailable")
+
+    def send_portfolio(_frame: pd.DataFrame) -> None:
+        calls.append("Portfolio")
+
+    config = replace(
+        _config(tmp_path),
+        send_sog_pl=send_sog,
+        send_portfolio_pl=send_portfolio,
+    )
+    app, _manager = _registered_pl_app(tmp_path, config=config)
+    monkeypatch.setattr(
+        pl_events,
+        "_effective_rows",
+        lambda _snapshot, _config, *, include_adjustments: (
+            _effective_frame(),
+            pd.DataFrame(),
+            pd.DataFrame(),
+        ),
+    )
+    monkeypatch.setattr(
+        pl_events,
+        "collapse_pl_send_rows",
+        lambda rows, _mapping, _governance: rows.copy(deep=True),
+    )
+
+    send_all = _callback(app, "pl-send-all-status.children")
+    status = send_all(1)
+
+    assert calls == ["SOG", "Portfolio"]
+    assert (
+        status == "Partially sent · Portfolio succeeded; SOG failed (SOG unavailable)"
+    )
+
+    def fail_build(*_args, **_kwargs):
+        raise RuntimeError("mapping unavailable")
+
+    monkeypatch.setattr(pl_events, "_effective_rows", fail_build)
+    assert send_all(2) == (
+        "Not sent: could not build governed P&L: mapping unavailable"
+    )
+    assert calls == ["SOG", "Portfolio"]
 
 
 def test_pl_aggregate_table_restores_page_owned_collapsible_chevrons() -> None:
@@ -534,154 +692,274 @@ def test_pl_filter_owner_applies_pending_saved_view_after_coalesced_revision(
     assert acknowledged[-1] == []
 
 
-def test_histo_data_is_lazy_fully_expanded_and_cell_selection_plots_daily_series(
+def test_histo_data_is_lazy_expandable_and_reuses_the_loaded_history(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app, _manager = _registered_pl_app(tmp_path)
-    history_callback = _callback(app, "pl-history-grid.data")
+    history_callback = _callback(app, "pl-history-grid.children")
     real_loader = pl_events.load_pl_history
 
     def forbidden(*_args, **_kwargs):
         raise AssertionError("closed Histo Data performed file work")
 
     monkeypatch.setattr(pl_events, "load_pl_history", forbidden)
-    closed = history_callback(0)
-    assert closed[0] == []
-    assert closed[1] == "Open Histo P&L to load its validated hierarchy."
+    monkeypatch.setattr(
+        pl_events,
+        "ctx",
+        SimpleNamespace(triggered_id="pl-history-summary"),
+    )
+    closed = history_callback(0, [], [], [], [], {})
+    assert all(value is no_update for value in closed)
 
     monkeypatch.setattr(pl_events, "load_pl_history", real_loader)
-    rows, status, minimum, maximum = history_callback(1)
-    assert len(rows) == 11
-    assert "fully expanded hierarchy rows" in status
+    table, status, minimum, maximum, open_paths, comparisons, selection = (
+        history_callback(1, [], [], [], [], {})
+    )
+    assert isinstance(table, html.Div)
+    assert "Expand only the branches you need" in status
     assert (minimum, maximum) == (
         "2026-07-18",
         "2026-07-19",
     )
-    assert rows[0]["Risk Type"] == "IR"
-    assert rows[0][HISTO_TYPE] == 19.0
-    assert rows[0][PREDICTED_TYPE] == pytest.approx(17.1)
-    assert {row[BOOK] for row in rows if row[BOOK]} == {"BOOK-A", "BOOK-B"}
-
-    selection = history_selection_from_cell(
-        {"row": 0, "column_id": HISTO_TYPE},
-        rows,
-    )
-    assert selection == {"history_type": HISTO_TYPE, "path": ["IR"]}
-    history = real_loader(tmp_path / "histo")
-    series = select_pl_history_series(history, selection)
-    assert series[["Market Date", "PL"]].values.tolist() == [
-        ["2026-07-18", 10.0],
-        ["2026-07-19", 19.0],
+    assert open_paths == []
+    assert comparisons == []
+    assert selection == {"path": []}
+    headers = [
+        item.children
+        for item in _walk(table)
+        if isinstance(item, html.Th) and "header" in str(item.className or "")
     ]
-    assert history_range_bounds(series, "1w") == (
-        "2026-07-18",
-        "2026-07-19",
-    )
-    assert history_range_bounds(series, "mtd") == (
-        "2026-07-18",
-        "2026-07-19",
-    )
-    assert history_range_bounds(series, "ytd") == (
-        "2026-07-18",
-        "2026-07-19",
-    )
-    assert history_range_bounds(series, "all") == (
-        "2026-07-18",
-        "2026-07-19",
-    )
-    assert history_range_bounds(
-        series,
-        "custom",
-        start_date="2026-07-19",
-        end_date="2026-07-18",
-    ) == ("2026-07-18", "2026-07-19")
-    assert history_range_bounds(
-        series,
-        "custom",
-        start_date="2026-08-01",
-        end_date="2026-08-02",
-    ) == ("2026-07-19", "2026-07-19")
-    assert history_range_bounds(
-        series,
-        "custom",
-        start_date="2026-01-01",
-        end_date="2026-01-02",
-    ) == ("2026-07-18", "2026-07-18")
-    figure = _historical_pl_figure(series, selection)
-    assert len(figure.data) == 1
-    assert figure.data[0].name == HISTO_TYPE
-    assert list(figure.data[0].y) == [10.0, 19.0]
+    assert headers == ["P&L hierarchy", DAILY_P_PERIOD, MTD_PERIOD, YTD_PERIOD]
+    closed_toggle_ids = [
+        item.id
+        for item in _walk(table)
+        if isinstance(getattr(item, "id", None), dict)
+        and item.id.get("type") == PL_HISTORY_ROW_TOGGLE_TYPE
+    ]
+    assert {item["path"] for item in closed_toggle_ids} == {
+        pl_history_path_token(("IR",)),
+        pl_history_path_token(("FX",)),
+    }
+    assert all(len(item["path"].split(",")) == 1 for item in closed_toggle_ids)
 
-    # The disclosure owns disk refresh. Subsequent cell/range interactions
-    # reuse that validated frame and synchronize the visible picker bounds.
-    chart_callback = _callback(app, "pl-history-chart.figure")
+    # The disclosure owns disk refresh. Branch and comparison interactions
+    # use its cached validated frame instead of touching the CSV source again.
     monkeypatch.setattr(pl_events, "load_pl_history", forbidden)
+    ir_token = pl_history_path_token(("IR",))
     monkeypatch.setattr(
         pl_events,
         "ctx",
-        SimpleNamespace(triggered_id="pl-history-range-1w"),
+        SimpleNamespace(
+            triggered_id={
+                "type": PL_HISTORY_ROW_TOGGLE_TYPE,
+                "path": ir_token,
+            }
+        ),
     )
-    chart_result = chart_callback(
-        rows,
-        {"row": 0, "column_id": HISTO_TYPE},
+    expanded = history_callback(
+        1,
+        [1],
+        [],
+        open_paths,
+        comparisons,
+        selection,
+    )
+    assert expanded[4] == [ir_token]
+    expanded_toggle_ids = [
+        item.id
+        for item in _walk(expanded[0])
+        if isinstance(getattr(item, "id", None), dict)
+        and item.id.get("type") == PL_HISTORY_ROW_TOGGLE_TYPE
+    ]
+    assert pl_history_path_token(("IR", "Delta")) in {
+        item["path"] for item in expanded_toggle_ids
+    }
+    comparison_token = pl_history_comparison_token(("IR",), MTD_PERIOD)
+    monkeypatch.setattr(
+        pl_events,
+        "ctx",
+        SimpleNamespace(
+            triggered_id={
+                "type": PL_HISTORY_METRIC_CELL_TYPE,
+                "path": ir_token,
+                "period": MTD_PERIOD,
+                "comparison": comparison_token,
+            }
+        ),
+    )
+    compared = history_callback(
+        1,
+        [],
+        [1],
+        expanded[4],
+        expanded[5],
+        expanded[6],
+    )
+    assert compared[5] == [comparison_token]
+    assert compared[6] == {"path": ["IR"], "period": MTD_PERIOD}
+    compared_button = next(
+        item
+        for item in _walk(compared[0])
+        if isinstance(getattr(item, "id", None), dict)
+        and item.id.get("type") == PL_HISTORY_METRIC_CELL_TYPE
+        and item.id.get("path") == ir_token
+        and item.id.get("period") == MTD_PERIOD
+    )
+    assert "is-expanded" in compared_button.className
+    assert {
+        item.children for item in _walk(compared_button) if isinstance(item, html.Small)
+    } == {"C", "P"}
+
+    collapsed_comparison = history_callback(
+        1,
+        [],
+        [2],
+        compared[4],
+        compared[5],
+        compared[6],
+    )
+    assert collapsed_comparison[5] == []
+    assert collapsed_comparison[6] == {"path": ["IR"], "period": MTD_PERIOD}
+
+
+def test_histo_chart_supports_wtd_type_selection_and_observed_rows_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, _manager = _registered_pl_app(tmp_path)
+    hierarchy_callback = _callback(app, "pl-history-grid.children")
+    monkeypatch.setattr(
+        pl_events,
+        "ctx",
+        SimpleNamespace(triggered_id="pl-history-summary"),
+    )
+    hierarchy_callback(1, [], [], [], [], {})
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("chart interaction reloaded P&L history")
+
+    monkeypatch.setattr(pl_events, "load_pl_history", forbidden)
+    chart_callback = _callback(app, "pl-history-chart.figure")
+    monkeypatch.setattr(
+        pl_events,
+        "ctx",
+        SimpleNamespace(triggered_id="pl-history-range-wtd"),
+    )
+    both = chart_callback(
+        {"path": ["IR"]},
+        "both",
         1,
         0,
         0,
         0,
-        minimum,
-        maximum,
-        {"preset": "all", "start_date": minimum, "end_date": maximum},
-        {},
+        None,
+        None,
+        {"preset": "all"},
     )
-    assert chart_result[1] == {
-        "preset": "1w",
-        "start_date": minimum,
-        "end_date": maximum,
+    assert both[1] == {
+        "preset": "wtd",
+        "start_date": "2026-07-13",
+        "end_date": "2026-07-19",
     }
-    assert chart_result[-2:] == (minimum, maximum)
-    assert "is-active" in chart_result[4]
+    assert both[-2:] == ("2026-07-13", "2026-07-19")
+    assert "is-active" in both[3]
+    assert all("is-active" not in class_name for class_name in both[4:7])
+    assert "4 observed daily points" in both[2]
+    assert [trace.name for trace in both[0].data] == [
+        COLOSSUS_TYPE,
+        PREDICT_TYPE,
+    ]
+    assert [list(trace.x) for trace in both[0].data] == [
+        ["2026-07-18", "2026-07-19"],
+        ["2026-07-18", "2026-07-19"],
+    ]
+    assert [list(trace.y) for trace in both[0].data] == [
+        [10.0, 19.0],
+        [9.0, pytest.approx(17.1)],
+    ]
+    assert all(value != 0 for trace in both[0].data for value in trace.y)
+
+    monkeypatch.setattr(
+        pl_events,
+        "ctx",
+        SimpleNamespace(triggered_id="pl-history-series-selector"),
+    )
+    colossus = chart_callback(
+        {"path": ["IR"]},
+        "colossus",
+        1,
+        0,
+        0,
+        0,
+        both[-2],
+        both[-1],
+        both[1],
+    )
+    predict = chart_callback(
+        {"path": ["IR"]},
+        "predict",
+        1,
+        0,
+        0,
+        0,
+        both[-2],
+        both[-1],
+        both[1],
+    )
+    assert [trace.name for trace in colossus[0].data] == [COLOSSUS_TYPE]
+    assert [trace.name for trace in predict[0].data] == [PREDICT_TYPE]
 
 
-def test_histo_hierarchy_keeps_identities_absent_from_the_latest_day() -> None:
-    history = pd.DataFrame(
-        [
-            ["2026-08-14", HISTO_TYPE, "IR", "Delta", "EUR", "XVA", "BOOK-A", 10.0],
-            ["2026-08-14", PREDICTED_TYPE, "IR", "Delta", "EUR", "XVA", "BOOK-A", 9.0],
-            ["2026-08-15", HISTO_TYPE, "FX", "Delta", "EUR/USD", "XVA", "BOOK-B", 3.0],
-            [
-                "2026-08-15",
-                PREDICTED_TYPE,
-                "FX",
-                "Delta",
-                "EUR/USD",
-                "XVA",
-                "BOOK-B",
-                2.0,
-            ],
-        ],
-        columns=["Market Date", "P&L Type", *HISTORY_FILE_COLUMNS],
+def test_histo_callback_metadata_owns_tree_range_and_series_state(
+    tmp_path: Path,
+) -> None:
+    app, _manager = _registered_pl_app(tmp_path)
+    hierarchy = next(
+        metadata
+        for metadata in app.callback_map.values()
+        if "pl-history-grid.children" in str(metadata["output"])
     )
+    assert [str(output) for output in hierarchy["output"]] == [
+        "pl-history-grid.children",
+        "pl-history-status.children",
+        "pl-history-date-range.min_date_allowed",
+        "pl-history-date-range.max_date_allowed",
+        "pl-history-open-paths.data",
+        "pl-history-open-comparisons.data",
+        "pl-history-selection-store.data",
+    ]
+    assert {item["property"] for item in hierarchy["inputs"]} == {"n_clicks"}
+    assert PL_HISTORY_ROW_TOGGLE_TYPE in hierarchy["inputs"][1]["id"]
+    assert PL_HISTORY_METRIC_CELL_TYPE in hierarchy["inputs"][2]["id"]
 
-    rows = pl_events.build_pl_history_hierarchy(history)
-    ir_index = next(
-        index
-        for index, row in enumerate(rows)
-        if row["Risk Type"] == "IR" and not row["Risk Greek"]
+    chart = next(
+        metadata
+        for metadata in app.callback_map.values()
+        if "pl-history-chart.figure" in str(metadata["output"])
     )
-    fx_row = next(
-        row for row in rows if row["Risk Type"] == "FX" and not row["Risk Greek"]
-    )
-
-    assert rows[ir_index][HISTO_TYPE] is None
-    assert rows[ir_index][PREDICTED_TYPE] is None
-    assert fx_row[HISTO_TYPE] == 3.0
-    selection = history_selection_from_cell(
-        {"row": ir_index, "column_id": HISTO_TYPE},
-        rows,
-    )
-    series = select_pl_history_series(history, selection)
-    assert series[["Market Date", "PL"]].values.tolist() == [["2026-08-14", 10.0]]
+    chart_inputs = {(item["id"], item["property"]) for item in chart["inputs"]}
+    assert {
+        ("pl-history-selection-store", "data"),
+        ("pl-history-series-selector", "value"),
+        ("pl-history-range-wtd", "n_clicks"),
+        ("pl-history-range-mtd", "n_clicks"),
+        ("pl-history-range-ytd", "n_clicks"),
+        ("pl-history-range-all", "n_clicks"),
+        ("pl-history-date-range", "start_date"),
+        ("pl-history-date-range", "end_date"),
+    } == chart_inputs
+    assert [str(output) for output in chart["output"]] == [
+        "pl-history-chart.figure",
+        "pl-history-range-store.data",
+        "pl-history-plot-status.children",
+        "pl-history-range-wtd.className",
+        "pl-history-range-mtd.className",
+        "pl-history-range-ytd.className",
+        "pl-history-range-all.className",
+        "pl-history-date-range.start_date",
+        "pl-history-date-range.end_date",
+    ]
 
 
 def test_manager_app_without_pl_config_omits_inert_workflow(tmp_path: Path) -> None:

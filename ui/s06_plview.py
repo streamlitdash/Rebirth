@@ -6,15 +6,6 @@ from collections.abc import Iterable, Sequence
 
 import pandas as pd
 from dash import dash_table, dcc, html
-from core.s04_pl import (
-    BOOK,
-    HISTO_TYPE,
-    PREDICTED_TYPE,
-    PRODUCT,
-    RISK_GREEK,
-    RISK_TYPE,
-    UNDERLYING,
-)
 
 from .s02_constants import (
     DEFAULT_VIEW_DIMENSION,
@@ -24,6 +15,7 @@ from .s02_constants import (
 )
 from .s04_components import build_aggregate_pl_table, build_cube_loader
 from .s11_saved_views import SavedFilterViewControls
+from .s12_plhistory import build_pl_history_series_selector
 
 
 DISPLAY_COLUMNS = (
@@ -48,14 +40,6 @@ PL_SAVED_VIEW_CONTROLS = SavedFilterViewControls(
     filter_ids=PL_FILTER_IDS,
     exclude_id="pnl-filter-exclude-selected",
 )
-HISTORY_HIERARCHY_COLUMNS = (
-    RISK_TYPE,
-    RISK_GREEK,
-    UNDERLYING,
-    PRODUCT,
-    BOOK,
-)
-HISTORY_VALUE_COLUMNS = (HISTO_TYPE, PREDICTED_TYPE)
 
 
 def pl_filter_map(
@@ -199,14 +183,21 @@ def _pl_filter_bar(initial_frame: pd.DataFrame | None = None) -> html.Div:
     return html.Div(
         [
             html.Div(
-                "Leave blank to include all values. P&L filters are independent "
-                "from Risk and Stock filters.",
+                "Include mode uses OR within one filter (for example B or D) and "
+                "AND across filters. Exclude mode removes a row if it matches any "
+                "selected value in any populated filter. Leave blank for all values; "
+                "live P&L selections remain independent from Risk and Stock.",
                 className="filter-note",
             ),
             html.Div(controls, className="controls pnl-filter-controls"),
             dcc.Checklist(
                 id="pnl-filter-exclude-selected",
-                options=[{"label": "Exclude selected values", "value": "exclude"}],
+                options=[
+                    {
+                        "label": "Exclude rows matching any selected value",
+                        "value": "exclude",
+                    }
+                ],
                 value=[],
                 className="risk-filter-mode",
             ),
@@ -237,6 +228,7 @@ def _preview_table() -> dash_table.DataTable:
         editable=False,
         sort_action="native",
         filter_action="native",
+        filter_options={"case": "insensitive"},
         page_action="native",
         page_size=20,
         markdown_options={"html": True},
@@ -300,85 +292,6 @@ def _preview_table() -> dash_table.DataTable:
         ],
         style_data_conditional=[
             {"if": {"filter_query": "{PL} < 0", "column_id": "PL"}, "color": "#B42318"},
-        ],
-    )
-
-
-def _historical_table() -> dash_table.DataTable:
-    """Build the fully expanded, cell-selectable P&L history hierarchy."""
-    return dash_table.DataTable(
-        id="pl-history-grid",
-        columns=[
-            {
-                "name": column,
-                "id": column,
-                **({"type": "numeric"} if column in HISTORY_VALUE_COLUMNS else {}),
-            }
-            for column in (*HISTORY_HIERARCHY_COLUMNS, *HISTORY_VALUE_COLUMNS)
-        ],
-        data=[],
-        editable=False,
-        filter_action="none",
-        sort_action="none",
-        page_action="none",
-        virtualization=True,
-        cell_selectable=True,
-        fixed_rows={"headers": True},
-        style_table={"overflowX": "auto", "maxHeight": "560px"},
-        style_header={
-            "backgroundColor": "#F7F8FA",
-            "color": "#111111",
-            "fontWeight": "850",
-            "border": "1px solid #D9DEE5",
-        },
-        style_cell={
-            "backgroundColor": "#FFFFFF",
-            "color": "#111111",
-            "border": "1px solid #E2E6EA",
-            "fontFamily": '"Segoe UI Variable Text", "Segoe UI", Arial, sans-serif',
-            "fontSize": "13px",
-            "padding": "8px 10px",
-            "textAlign": "left",
-            "width": "160px",
-            "minWidth": "140px",
-            "maxWidth": "220px",
-            "whiteSpace": "nowrap",
-        },
-        style_cell_conditional=[
-            {
-                "if": {"column_id": list(HISTORY_VALUE_COLUMNS)},
-                "fontWeight": "850",
-                "fontVariantNumeric": "tabular-nums",
-                "textAlign": "right",
-                "backgroundColor": "#FFFFE0",
-                "cursor": "pointer",
-            },
-            {
-                "if": {"column_id": RISK_TYPE},
-                "fontWeight": "850",
-                "backgroundColor": "#C4DEF5",
-            },
-        ],
-        style_data_conditional=[
-            *[
-                {
-                    "if": {
-                        "filter_query": f"{{{column}}} < 0",
-                        "column_id": column,
-                    },
-                    "color": "#B42318",
-                }
-                for column in HISTORY_VALUE_COLUMNS
-            ],
-            {
-                "if": {"state": "active"},
-                "boxShadow": "inset 0 0 0 2px #111111",
-            },
-            {
-                "if": {"state": "selected"},
-                "backgroundColor": "#EAF2FA",
-                "boxShadow": "inset 0 0 0 1px #111111",
-            },
         ],
     )
 
@@ -599,6 +512,44 @@ def build_pl_send_sections() -> list[html.Div | html.Details]:
                 className="pl-send-panel",
             ),
         ],
+        className="aux-details",
+    )
+    send_all = html.Div(
+        html.Div(
+            [
+                html.Div(
+                    [
+                        html.H2("Send All P&L", className="section-title"),
+                        html.P(
+                            "Send the complete governed effective P&L, including "
+                            "saved adjustments, to both the SOG and Portfolio "
+                            "destinations in one action.",
+                            className="unmapped-note",
+                        ),
+                    ]
+                ),
+                html.Div(
+                    [
+                        html.Button(
+                            "Send All P&L",
+                            id="send-all-pl-button",
+                            n_clicks=0,
+                            className="pl-action-send",
+                            type="button",
+                        ),
+                        html.Div(
+                            id="pl-send-all-status",
+                            className="pl-send-status",
+                            role="status",
+                            **{"aria-live": "polite"},
+                        ),
+                    ],
+                    className="pl-send-actions",
+                ),
+            ],
+            className="pl-send-panel pl-editor-toolbar",
+        ),
+        id="pl-send-all-panel",
         className="aux-details",
     )
     by_sog = html.Details(
@@ -861,15 +812,19 @@ def build_pl_send_sections() -> list[html.Div | html.Details]:
             html.Div(
                 [
                     html.P(
-                        "Every hierarchy level is already visible: Risk Type → Risk "
-                        "Greek → Underlying → Product → Book. Select a Histo or "
-                        "Predicted number to plot that exact daily series. Files are "
-                        "read from histo/YYYY/MM-DD/{histo,predicted}.csv.",
+                        "Expand Risk Type → Risk Greek → Underlying → Product "
+                        "→ Book. Daily (P) is today's Predict P&L. MTD and YTD "
+                        "show Colossus by default; click either cell to reveal its "
+                        "Colossus/Predict comparison and plot that exact scope.",
                         className="pl-editor-guide",
                     ),
                     html.Div(
-                        _historical_table(),
-                        className="pl-send-table pl-history-hierarchy-table",
+                        html.Div(
+                            "Open Histo P&L to load its expandable hierarchy.",
+                            className="static-data-empty",
+                        ),
+                        id="pl-history-grid",
+                        className="pl-history-hierarchy-table",
                     ),
                     html.Div(
                         "Open Histo P&L to load its validated hierarchy.",
@@ -882,8 +837,8 @@ def build_pl_send_sections() -> list[html.Div | html.Details]:
                             html.Div(
                                 [
                                     html.Button(
-                                        "1W",
-                                        id="pl-history-range-1w",
+                                        "WTD",
+                                        id="pl-history-range-wtd",
                                         n_clicks=0,
                                         className="pl-history-range-button",
                                     ),
@@ -908,6 +863,16 @@ def build_pl_send_sections() -> list[html.Div | html.Details]:
                                 ],
                                 className="pl-history-range-presets",
                             ),
+                            html.Div(
+                                [
+                                    html.Span(
+                                        "Plot",
+                                        className="pl-history-toolbar-label",
+                                    ),
+                                    build_pl_history_series_selector(),
+                                ],
+                                className="pl-history-series-control",
+                            ),
                             dcc.DatePickerRange(
                                 id="pl-history-date-range",
                                 minimum_nights=0,
@@ -925,7 +890,7 @@ def build_pl_send_sections() -> list[html.Div | html.Details]:
                             figure={
                                 "data": [],
                                 "layout": {
-                                    "title": "Select a Histo or Predicted table cell",
+                                    "title": "Select a P&L hierarchy cell",
                                     "xaxis": {"title": "Market Date"},
                                     "yaxis": {"title": "P&L"},
                                 },
@@ -937,13 +902,16 @@ def build_pl_send_sections() -> list[html.Div | html.Details]:
                         delay_show=120,
                     ),
                     html.Div(
-                        "Select a numeric hierarchy cell to plot its daily series.",
+                        "Select a hierarchy cell to plot observed daily Colossus, "
+                        "Predict, or both.",
                         id="pl-history-plot-status",
                         className="pl-send-status",
                         role="status",
                     ),
                     dcc.Store(id="pl-history-range-store", data={"preset": "all"}),
                     dcc.Store(id="pl-history-selection-store", data={}),
+                    dcc.Store(id="pl-history-open-paths", data=[]),
+                    dcc.Store(id="pl-history-open-comparisons", data=[]),
                 ],
                 className="pl-send-panel",
             ),
@@ -964,7 +932,7 @@ def build_pl_send_sections() -> list[html.Div | html.Details]:
         id="pl-workflow-state",
         hidden=True,
     )
-    return [state, by_sog, by_portfolio, save, preview, history]
+    return [state, send_all, by_sog, by_portfolio, save, preview, history]
 
 
 def build_pl_page(
@@ -1032,8 +1000,6 @@ def build_pl_page(
 __all__ = [
     "DISPLAY_COLUMNS",
     "GRID_ROW_ID",
-    "HISTORY_HIERARCHY_COLUMNS",
-    "HISTORY_VALUE_COLUMNS",
     "PL_AGGREGATE_TOGGLE_TYPE",
     "PL_FILTER_FIELDS",
     "PL_FILTER_IDS",
