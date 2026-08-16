@@ -12,12 +12,19 @@ import pytest
 
 import core.s11_risk_archive as archive_module
 from core.s04_pl import (
+    ACTIVITY,
+    CATEGORY,
     COLOSSUS_TYPE,
     HISTORY_FILE_COLUMNS,
+    HISTORY_MAPPING_STATUS,
     HISTORY_TYPE,
     PL_HISTORY_COLUMNS,
+    PORTFOLIO,
     PREDICT_TYPE,
+    SIGNOFF_GROUP,
+    SUB_CATEGORY,
 )
+from core.s01_schema import UNMAPPED_VALUE
 from core.s11_risk_archive import (
     ARCHIVE_FILE_NAMES,
     ARCHIVE_SCHEMA_VERSION,
@@ -53,6 +60,10 @@ def _risk() -> pd.DataFrame:
                 "Risk Type": "IR",
                 "Risk Greek": "Delta",
                 "Product": "XVA",
+                "Activity": "Rates",
+                "SignoffGroup": "SOG-A",
+                "Category": "Core",
+                "Sub Category": "IR",
                 "Tenor Swap": "1Y",
                 "PL": 10.0,
                 "Risk": 100.0,
@@ -64,6 +75,10 @@ def _risk() -> pd.DataFrame:
                 "Risk Type": "IR",
                 "Risk Greek": "Delta",
                 "Product": "XVA",
+                "Activity": "Rates",
+                "SignoffGroup": "SOG-A",
+                "Category": "Core",
+                "Sub Category": "IR",
                 "Tenor Swap": "5Y",
                 "PL": 15.0,
                 "Risk": 200.0,
@@ -75,6 +90,10 @@ def _risk() -> pd.DataFrame:
                 "Risk Type": "FX",
                 "Risk Greek": "Delta",
                 "Product": "Hedges",
+                "Activity": "FX",
+                "SignoffGroup": "SOG-B",
+                "Category": "Core",
+                "Sub Category": "FX",
                 "Tenor Swap": "Spot",
                 "PL": -4.0,
                 "Risk": -40.0,
@@ -212,6 +231,19 @@ def test_official_archive_is_atomic_complete_and_idempotent(tmp_path: Path) -> N
     assert second.colossus_rows == 2
     assert second.market_rows == 3
     assert calls == [pd.Timestamp("2026-08-14")]
+
+
+def test_sunday_system_date_accepts_its_resolved_friday_market_date(
+    tmp_path: Path,
+) -> None:
+    result = archive_official_snapshot(
+        _snapshot(market_date="2026-08-14", system_date="2026-08-16"),
+        lambda _date: _colossus(),
+        tmp_path,
+    )
+
+    assert result.status == "archived"
+    assert result.market_date == "2026-08-14"
 
 
 def test_new_official_archive_manifest_covers_market_csv(tmp_path: Path) -> None:
@@ -517,11 +549,13 @@ def test_projection_sums_predict_once_and_attaches_product_to_colossus() -> None
     assert list(history.columns) == list(PL_HISTORY_COLUMNS)
     assert len(history) == 4
     ir = history.loc[
-        history["Risk Type"].eq("IR") & history["Book"].eq("BOOK-A")
+        history["Risk Type"].eq("IR") & history[PORTFOLIO].eq("BOOK-A")
     ].set_index(HISTORY_TYPE)["PL"]
     assert ir.to_dict() == {COLOSSUS_TYPE: 24.0, PREDICT_TYPE: 25.0}
-    fx = history.loc[history["Risk Type"].eq("FX") & history["Book"].eq("BOOK-B")]
+    fx = history.loc[history["Risk Type"].eq("FX") & history[PORTFOLIO].eq("BOOK-B")]
     assert fx["Product"].unique().tolist() == ["Hedges"]
+    assert set(history[HISTORY_MAPPING_STATUS]) == {"Mapped"}
+    assert set(history["SignoffGroup"]) == {"SOG-A", "SOG-B"}
 
 
 def test_projection_omits_incomplete_predict_group_without_zero_or_partial_sum() -> (
@@ -543,7 +577,22 @@ def test_projection_omits_incomplete_predict_group_without_zero_or_partial_sum()
     ].tolist() == [24.0]
 
 
-def test_projection_rejects_ambiguous_or_missing_product_authority() -> None:
+def test_projection_reports_missing_explorer_authority_columns_clearly() -> None:
+    with pytest.raises(
+        RiskArchiveValidationError,
+        match="missing historical P&L authority columns.*Activity",
+    ):
+        project_archive_to_pl_history(
+            RiskArchive(
+                "2026-08-14",
+                Path("unused"),
+                _risk().drop(columns="Activity"),
+                _colossus(),
+            )
+        )
+
+
+def test_projection_retains_ambiguous_or_missing_authority_once_as_unmapped() -> None:
     ambiguous = pd.concat(
         [
             _risk(),
@@ -551,10 +600,17 @@ def test_projection_rejects_ambiguous_or_missing_product_authority() -> None:
         ],
         ignore_index=True,
     )
-    with pytest.raises(RiskArchiveValidationError, match="exactly one Product"):
-        project_archive_to_pl_history(
-            RiskArchive("2026-08-14", Path("unused"), ambiguous, _colossus())
-        )
+    ambiguous_history = project_archive_to_pl_history(
+        RiskArchive("2026-08-14", Path("unused"), ambiguous, _colossus())
+    )
+    ambiguous_colossus = ambiguous_history.loc[
+        ambiguous_history[HISTORY_TYPE].eq(COLOSSUS_TYPE)
+        & ambiguous_history[PORTFOLIO].eq("BOOK-A")
+    ]
+    assert len(ambiguous_colossus) == 1
+    assert ambiguous_colossus.iloc[0][HISTORY_MAPPING_STATUS] == UNMAPPED_VALUE
+    assert ambiguous_colossus.iloc[0]["SignoffGroup"] == UNMAPPED_VALUE
+    assert ambiguous_colossus.iloc[0]["Product"] == UNMAPPED_VALUE
 
     unknown = pd.concat(
         [
@@ -566,16 +622,22 @@ def test_projection_rejects_ambiguous_or_missing_product_authority() -> None:
         ],
         ignore_index=True,
     )
-    with pytest.raises(RiskArchiveValidationError, match="BOOK-Z"):
-        project_archive_to_pl_history(
-            RiskArchive("2026-08-14", Path("unused"), _risk(), unknown)
-        )
+    unknown_history = project_archive_to_pl_history(
+        RiskArchive("2026-08-14", Path("unused"), _risk(), unknown)
+    )
+    unknown_row = unknown_history.loc[
+        unknown_history[HISTORY_TYPE].eq(COLOSSUS_TYPE)
+        & unknown_history[PORTFOLIO].eq("BOOK-Z")
+    ]
+    assert len(unknown_row) == 1
+    assert unknown_row.iloc[0][HISTORY_MAPPING_STATUS] == UNMAPPED_VALUE
+    assert unknown_row.iloc[0]["PL"] == 1.0
 
 
 def test_all_completed_dates_project_to_one_canonical_history(tmp_path: Path) -> None:
     archive_official_snapshot(_snapshot(), lambda _date: _colossus(), tmp_path)
     archive_official_snapshot(
-        _snapshot(market_date="2026-08-15", system_date="2026-08-15"),
+        _snapshot(market_date="2026-08-17", system_date="2026-08-17"),
         lambda _date: _colossus(),
         tmp_path,
     )
@@ -585,7 +647,7 @@ def test_all_completed_dates_project_to_one_canonical_history(tmp_path: Path) ->
     assert list(history.columns) == list(PL_HISTORY_COLUMNS)
     assert history["Market Date"].drop_duplicates().tolist() == [
         "2026-08-14",
-        "2026-08-15",
+        "2026-08-17",
     ]
     assert len(history) == 8
 
@@ -614,6 +676,12 @@ def test_one_history_root_combines_legacy_demo_and_official_archive_dates(
         7.0,
         8.0,
     ]
+    assert set(
+        history.loc[history["Market Date"].eq("2026-08-13"), HISTORY_MAPPING_STATUS]
+    ) == {UNMAPPED_VALUE}
+    legacy_rows = history.loc[history["Market Date"].eq("2026-08-13")]
+    for column in (ACTIVITY, SIGNOFF_GROUP, CATEGORY, SUB_CATEGORY):
+        assert set(legacy_rows[column]) == {UNMAPPED_VALUE}
     assert len(history.loc[history["Market Date"].eq("2026-08-14")]) == 4
 
 

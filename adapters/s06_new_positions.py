@@ -475,8 +475,8 @@ def get_new_positions(market_date: pd.Timestamp) -> pd.DataFrame:
     return _DEFAULT_ADAPTER(market_date)
 
 
-# Compatibility with the business connector name supplied by the user.  It is
-# module-scoped and intentionally does not replace feeds.s01_sources.get_new_positions.
+# Compatibility with the business connector name supplied by the user. The feed
+# exposes this adapter through its unified ``get_new_trades`` boundary.
 GetNewPositions = get_new_positions
 
 

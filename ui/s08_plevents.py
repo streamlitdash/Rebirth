@@ -13,10 +13,15 @@ from typing import Callable
 import pandas as pd
 from dash import ALL, Dash, Input, Output, Patch, State, ctx, dcc, html, no_update
 from dash.exceptions import PreventUpdate
-from core.s01_schema import PORTFOLIO_MAPPED_COLUMN, PORTFOLIO_METADATA_COLUMNS
+from core.s01_schema import (
+    PORTFOLIO_MAPPED_COLUMN,
+    PORTFOLIO_METADATA_COLUMNS,
+    UNMAPPED_VALUE,
+)
 from core.s04_pl import (
     ADJUSTMENT,
     COLOSSUS_TYPE,
+    HISTORY_MAPPING_STATUS,
     HISTORY_TYPE,
     MARKET_DATE,
     PL,
@@ -67,6 +72,14 @@ from .s12_plhistory import (
     pl_history_path_from_token,
     toggle_pl_history_expanded_periods,
     toggle_pl_history_open_tokens,
+)
+from .s14_pl_explorer import (
+    PL_EXPLORER_EXCLUDE_ID,
+    PL_EXPLORER_FILTER_COLUMNS,
+    PL_EXPLORER_FILTER_IDS,
+    apply_pl_explorer_filters,
+    pl_explorer_filter_map,
+    pl_explorer_filter_options,
 )
 
 
@@ -861,36 +874,74 @@ def register_pl_send_callbacks(
                 return None
             raise
 
+    explorer_filter_outputs = [
+        output
+        for field in PL_FILTER_FIELDS
+        for output in (
+            Output(PL_EXPLORER_FILTER_IDS[field.key], "options"),
+            Output(PL_EXPLORER_FILTER_IDS[field.key], "value"),
+        )
+    ]
+
     @app.callback(
-        Output("pl-send-preview-grid", "data"),
-        Output("pl-send-preview-status", "children"),
-        Input("pl-preview-summary", "n_clicks"),
+        *explorer_filter_outputs,
+        Output(PL_EXPLORER_EXCLUDE_ID, "value"),
         Input("data-revision-store", "data"),
-        Input("pl-include-adjustments", "value"),
-        Input("pl-adjustment-revision-store", "data"),
-        prevent_initial_call=True,
+        Input("pl-validate-summary", "n_clicks"),
+        Input("pl-history-summary", "n_clicks"),
+        *[
+            State(PL_EXPLORER_FILTER_IDS[field.key], "value")
+            for field in PL_FILTER_FIELDS
+        ],
+        State(PL_EXPLORER_EXCLUDE_ID, "value"),
     )
-    def refresh_pl_send(
-        summary_clicks,
+    def update_pl_explorer_filter_controls(
         _revision,
-        include_values,
-        _adjustment_revision,
+        validate_clicks,
+        history_clicks,
+        *current_values,
     ):
-        if not int(summary_clicks or 0) % 2:
-            return [], "Open P&L Preview to load its current rows."
+        """Sole owner for Explorer filter options and current selections."""
+
+        selections = current_values[: len(PL_FILTER_FIELDS)]
+        exclude_value = list(current_values[len(PL_FILTER_FIELDS)] or [])
+        frames: list[pd.DataFrame] = []
         snapshot = current_pl_snapshot()
-        if snapshot is None:
-            return [], "P&L data is still loading. This preview will update shortly."
-        include_adjustments = "include" in (include_values or [])
-        effective, _mapping, _governance_frame = _effective_rows(
-            snapshot,
-            config,
-            include_adjustments=include_adjustments,
-        )
-        return (
-            _display_records(effective),
-            f"{len(effective):,} unique Portfolio + ConcertoField rows.",
-        )
+        combined_pl = getattr(snapshot, "combined_pl", None)
+        if isinstance(combined_pl, pd.DataFrame):
+            frames.append(combined_pl)
+        with history_cache_lock:
+            cached_history = history_cache
+        if cached_history is not None:
+            frames.append(cached_history)
+        if int(validate_clicks or 0) % 2 or int(history_clicks or 0) % 2:
+            try:
+                loaded_history = current_pl_history()
+                if cached_history is None:
+                    frames.append(loaded_history)
+            except (PLSendValidationError, TypeError):
+                # A disclosure callback owns the visible load error. The filter
+                # reducer keeps any current-snapshot catalogue available.
+                pass
+        options = pl_explorer_filter_options(*frames)
+        result: list[object] = []
+        for column, selected in zip(
+            PL_EXPLORER_FILTER_COLUMNS,
+            selections,
+            strict=True,
+        ):
+            field_options = options[column]
+            canonical = {
+                str(option["value"]).casefold(): str(option["value"])
+                for option in field_options
+            }
+            retained = []
+            for raw in selected or []:
+                value = canonical.get(str(raw).strip().casefold())
+                if value is not None and value not in retained:
+                    retained.append(value)
+            result.extend((field_options, retained))
+        return (*result, exclude_value)
 
     def register_effective_store(
         *,
@@ -986,6 +1037,11 @@ def register_pl_send_callbacks(
             },
             "n_clicks",
         ),
+        *[
+            Input(PL_EXPLORER_FILTER_IDS[field.key], "value")
+            for field in PL_FILTER_FIELDS
+        ],
+        Input(PL_EXPLORER_EXCLUDE_ID, "value"),
         State("pl-history-open-paths", "data"),
         State("pl-history-open-comparisons", "data"),
         State("pl-history-selection-store", "data"),
@@ -996,6 +1052,12 @@ def register_pl_send_callbacks(
         _row_clicks,
         _period_header_clicks,
         _metric_clicks,
+        activity_filter,
+        signoff_filter,
+        portfolio_filter,
+        category_filter,
+        subcategory_filter,
+        exclude_filter,
         open_path_tokens,
         open_comparison_tokens,
         selection_state,
@@ -1041,10 +1103,32 @@ def register_pl_send_callbacks(
                 {},
             )
 
+        explorer_filters = pl_explorer_filter_map(
+            [
+                activity_filter,
+                signoff_filter,
+                portfolio_filter,
+                category_filter,
+                subcategory_filter,
+            ]
+        )
+        history = apply_pl_explorer_filters(
+            history,
+            explorer_filters,
+            exclude_selected="exclude" in (exclude_filter or []),
+        )
+
         next_open = open_path_tokens
         next_comparisons = open_comparison_tokens
         next_selection = dict(selection_state or {})
-        if (
+        if isinstance(trigger, str) and trigger in {
+            *PL_EXPLORER_FILTER_IDS.values(),
+            PL_EXPLORER_EXCLUDE_ID,
+        }:
+            next_open = []
+            next_comparisons = []
+            next_selection = {"path": []}
+        elif (
             has_click(_row_clicks)
             and isinstance(trigger, dict)
             and trigger.get("type") == PL_HISTORY_ROW_TOGGLE_TYPE
@@ -1087,7 +1171,7 @@ def register_pl_send_callbacks(
         if history.empty:
             return (
                 table,
-                "No validated Colossus/Predict P&L history is available.",
+                "No Colossus/Predict P&L history matches the Explorer filters.",
                 None,
                 None,
                 effective_open,
@@ -1096,9 +1180,14 @@ def register_pl_send_callbacks(
             )
         dates = sorted(history[MARKET_DATE].astype(str).unique())
         status = (
-            f"Colossus / Predict · {len(dates):,} daily partitions · "
-            f"{dates[0]} to {dates[-1]}. Expand only the branches you need."
+            f"Colossus / Predict · {len(history):,} filtered rows across "
+            f"{len(dates):,} daily partitions · {dates[0]} to {dates[-1]}. "
+            "Expand only the branches you need"
         )
+        unmapped = int(history[HISTORY_MAPPING_STATUS].eq(UNMAPPED_VALUE).sum())
+        if unmapped:
+            status += f" · {unmapped:,} explicit Unmapped rows"
+        status += "."
         return (
             table,
             status,
@@ -1121,6 +1210,11 @@ def register_pl_send_callbacks(
         Output("pl-history-date-range", "end_date"),
         Input("pl-history-selection-store", "data"),
         Input("pl-history-series-selector", "value"),
+        *[
+            Input(PL_EXPLORER_FILTER_IDS[field.key], "value")
+            for field in PL_FILTER_FIELDS
+        ],
+        Input(PL_EXPLORER_EXCLUDE_ID, "value"),
         Input("pl-history-range-wtd", "n_clicks"),
         Input("pl-history-range-mtd", "n_clicks"),
         Input("pl-history-range-ytd", "n_clicks"),
@@ -1133,6 +1227,12 @@ def register_pl_send_callbacks(
     def render_historical_pl_chart(
         selection_state,
         series_choice,
+        activity_filter,
+        signoff_filter,
+        portfolio_filter,
+        category_filter,
+        subcategory_filter,
+        exclude_filter,
         _wtd_clicks,
         _mtd_clicks,
         _ytd_clicks,
@@ -1170,13 +1270,26 @@ def register_pl_send_callbacks(
                 explicit_start,
                 explicit_end,
             )
+        history = apply_pl_explorer_filters(
+            history,
+            pl_explorer_filter_map(
+                [
+                    activity_filter,
+                    signoff_filter,
+                    portfolio_filter,
+                    category_filter,
+                    subcategory_filter,
+                ]
+            ),
+            exclude_selected="exclude" in (exclude_filter or []),
+        )
         if history.empty:
             classes = ["pl-history-range-button"] * 4
             classes[-1] += " is-active"
             return (
                 empty_figure,
                 {"preset": "all"},
-                "No validated Colossus/Predict P&L history is available.",
+                "No Colossus/Predict P&L history matches the Explorer filters.",
                 *classes,
                 None,
                 None,

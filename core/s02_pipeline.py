@@ -49,7 +49,6 @@ from core.s06_reporting import (
 )
 from core.s09_cross_gamma import (
     XGAMMA_SOURCE_RISK_GREEKS,
-    XGAMMA_SPLIT,
     build_cross_gamma_rows,
     cross_gamma_market_scope,
 )
@@ -150,46 +149,7 @@ PortfolioConfigSource = DataFrameSource | Callable[[pd.Timestamp], pd.DataFrame]
 ProductSources = Mapping[str, Mapping[str, FrameSource]]
 RiskCheckerResult = tuple[pd.DataFrame, pd.DataFrame]
 MarketStatusResolver = Callable[[pd.Timestamp], str]
-RiskOverlayLoader = Callable[[pd.Timestamp], pd.DataFrame]
-DirectPLLoader = Callable[[pd.Timestamp], pd.DataFrame]
 DatedFrameLoader = Callable[[pd.Timestamp], pd.DataFrame]
-RISK_OVERLAY_COLUMNS = (
-    SOURCE_TYPE,
-    UNDERLYING,
-    TENOR_SWAP,
-    TENOR_OPTION,
-    PORTFOLIO,
-    GROUP,
-    RISK,
-)
-DIRECT_PL_INPUT_COLUMNS = (
-    SOURCE_TYPE,
-    RISK_TYPE,
-    RISK_GREEK,
-    PORTFOLIO,
-    PL,
-)
-DIRECT_PL_RELEASE_COLUMNS = (
-    SOURCE_TYPE,
-    RISK_TYPE,
-    RISK_GREEK,
-    SPLIT,
-    GROUP,
-    UNDERLYING,
-    TENOR_SWAP,
-    TENOR_OPTION,
-    TENOR_SWAP_ORDER,
-    TENOR_OPTION_ORDER,
-    PORTFOLIO,
-    RISK,
-    DRISK,
-    OPEN,
-    CURRENT,
-    PL,
-    MARKET_MOVE,
-    MARKET_AVAILABLE,
-    MARKET_DATA_STATUS,
-)
 FrameName = Literal[
     "risk_status",
     "risk_checker",
@@ -205,7 +165,7 @@ class ProductMarketConnector(Protocol):
 
     def __call__(
         self,
-        market_date: pd.Timestamp,
+        source_date: pd.Timestamp,
         underlying: str,
         *,
         market_status: str,
@@ -218,7 +178,7 @@ class GenericMarketConnector(Protocol):
     def __call__(
         self,
         source_type: str,
-        market_date: pd.Timestamp,
+        source_date: pd.Timestamp,
         underlying: str,
         *,
         market_status: str,
@@ -559,12 +519,14 @@ class ProductConnectorAdapter:
         optional ``Risk/ dRisk`` measure columns listed in
         ``CREDIT_MEASURE_COLUMNS``.
 
-    ``market_open(market_date, underlying, *, market_status)``
-        ``market_date`` is independent of the risk date. Return unique market
-        keys plus numeric ``Open`` and the applicable market-owned tenor-order
-        columns. ``underlying`` is one member of the ordered, unique scope from
-        validated Risk. The framework calls once per Underlying and concatenates
-        only after every call succeeds. An empty
+    ``market_open(open_date, underlying, *, market_status)``
+        ``open_date`` is exactly one pandas business day before the resolved
+        Market Date. It is independent of any older source Risk date produced
+        by readiness Age or a force override. Return unique market keys plus
+        numeric ``Open`` and the applicable market-owned tenor-order columns.
+        ``underlying`` is one member of the ordered, unique scope from validated
+        Risk. The framework calls once per Underlying and concatenates only
+        after every call succeeds. An empty
         DataFrame with the correct columns is allowed and means that the opening
         leg is unavailable. ``market_status`` is supplied by the manager and is
         exactly ``Live`` or ``OFFICIAL``; connectors must not infer it again.
@@ -582,8 +544,8 @@ class ProductConnectorAdapter:
     """
 
     risk: Callable[[pd.Timestamp], pd.DataFrame]
-    # Market connectors receive the independently selected market/view date,
-    # not the product's (potentially aged) risk date.
+    # Open receives T-1; Current receives the resolved Market Date. Neither
+    # receives a product's potentially older readiness/forced Risk date.
     market_open: ProductMarketConnector
     market_status: ProductMarketConnector
 
@@ -762,12 +724,30 @@ def _as_timestamp(value: date | datetime | str | pd.Timestamp) -> pd.Timestamp:
     return timestamp.normalize()
 
 
+def market_date_for(
+    calendar_date: date | datetime | str | pd.Timestamp,
+) -> pd.Timestamp:
+    """Return the latest weekday on or before the supplied calendar date.
+
+    Cube deliberately uses pandas' Monday-to-Friday business-day convention
+    only; no site-specific holiday calendar is inferred. Weekdays are returned
+    unchanged, while Saturday and Sunday both resolve to the preceding Friday.
+    Explicit user-selected dates are validated separately and are never rolled
+    silently by this helper in the force-date path.
+    """
+
+    selected_date = _as_timestamp(calendar_date)
+    if selected_date.weekday() >= 5:
+        return selected_date - pd.offsets.BDay(1)
+    return selected_date
+
+
 def checker_date_for(
     market_date: date | datetime | str | pd.Timestamp,
 ) -> pd.Timestamp:
-    """Return the one authoritative prior-business-day checker date."""
+    """Return T-1 from the centralized weekday Market Date."""
 
-    return _as_timestamp(market_date) - pd.offsets.BDay(1)
+    return market_date_for(market_date) - pd.offsets.BDay(1)
 
 
 def risk_date_for(
@@ -835,27 +815,28 @@ def get_risk(
 
 def get_market_open(
     source_type: str,
-    market_date: date | datetime | str | pd.Timestamp,
+    open_date: date | datetime | str | pd.Timestamp,
     underlying: str,
     *,
     market_status: str,
 ) -> pd.DataFrame:
     """Fail-closed generic opening-market connector boundary.
 
-    Return one row per source-specific market key for ``market_date`` with a
-    finite numeric ``Open``. Required keys are ``Underlying`` plus the tenor
-    columns declared by the source's ``ProductSpec``. ``Risk Type`` and
-    ``Risk Greek`` may be supplied and will be checked. A genuinely unavailable
-    market leg may be represented by an empty DataFrame with the correct schema;
-    it must never be replaced with zero-valued quotes. ``market_status`` is the
-    manager-selected ``Live`` or ``OFFICIAL`` source and must be used rather than
-    independently inferred by the connector.
+    Return one row per source-specific market key for the authoritative T-1
+    ``open_date`` with a finite numeric ``Open``. Required keys are
+    ``Underlying`` plus the tenor columns declared by the source's
+    ``ProductSpec``. ``Risk Type`` and ``Risk Greek`` may be supplied and will
+    be checked. A genuinely unavailable market leg may be represented by an
+    empty DataFrame with the correct schema; it must never be replaced with
+    zero-valued quotes. ``market_status`` is the manager-selected ``Live`` or
+    ``OFFICIAL`` source and must be used rather than independently inferred by
+    the connector.
     """
     try:
         spec = PRODUCT_SPECS_BY_SOURCE_TYPE[source_type]
     except KeyError as exc:
         raise ValueError(f"Unknown Source Type {source_type!r}") from exc
-    selected_date = _as_timestamp(market_date)
+    selected_date = _as_timestamp(open_date)
     if not isinstance(underlying, str) or not underlying.strip():
         raise ValueError("underlying must be nonblank text")
     selected_status = _require_market_status(market_status)
@@ -998,7 +979,7 @@ def get_product_risk(
 
 def get_product_market_open(
     spec: ProductSpec,
-    market_date: date | datetime | str | pd.Timestamp,
+    open_date: date | datetime | str | pd.Timestamp,
     source: FrameSource,
 ) -> pd.DataFrame:
     """Validate one product's opening-market connector result.
@@ -1011,7 +992,7 @@ def get_product_market_open(
             f"{spec.key} market open requires a real connector source; provide "
             "source=... or configure ProductConnectorAdapter.market_open"
         )
-    _as_timestamp(market_date)
+    _as_timestamp(open_date)
     columns = [*spec.market_keys, *spec.tenor_order_columns, OPEN]
     raw_frame = _load_frame(
         source,
@@ -1358,160 +1339,6 @@ def _with_dashboard_tenors(frame: pd.DataFrame, spec: ProductSpec) -> pd.DataFra
                 result[order_column], errors="raise"
             ).astype("Int64")
     return result
-
-
-def build_direct_pl_rows(source: pd.DataFrame) -> pd.DataFrame:
-    """Release auxiliary identity products without fabricating market data."""
-
-    if not isinstance(source, pd.DataFrame):
-        raise TypeError("direct P&L loader must return a pandas DataFrame")
-    actual_columns = tuple(source.columns)
-    if actual_columns != DIRECT_PL_INPUT_COLUMNS:
-        raise ValueError(
-            "direct P&L columns must be exactly "
-            f"{list(DIRECT_PL_INPUT_COLUMNS)} in that order; "
-            f"found {list(actual_columns)}"
-        )
-    if source.empty:
-        return pd.DataFrame(columns=list(DIRECT_PL_RELEASE_COLUMNS))
-
-    validated = _require_nonblank(
-        source,
-        [SOURCE_TYPE, RISK_TYPE, RISK_GREEK, PORTFOLIO],
-        "direct P&L",
-    )
-    validated = _coerce_numeric(validated, [PL], "direct P&L")
-    frames: list[pd.DataFrame] = []
-    for source_type, source_rows in validated.groupby(SOURCE_TYPE, sort=False):
-        try:
-            classification = DIRECT_PL_CLASSIFICATIONS_BY_SOURCE_TYPE[source_type]
-        except KeyError as exc:
-            raise ValueError(
-                f"Unknown Source Type {source_type!r} in direct P&L"
-            ) from exc
-        invalid_identity = source_rows[RISK_TYPE].ne(
-            classification.risk_type
-        ) | source_rows[RISK_GREEK].ne(classification.risk_greek)
-        if invalid_identity.any():
-            rows = source_rows.index[invalid_identity].tolist()[:5]
-            raise ValueError(
-                f"direct P&L Source Type {source_type!r} requires Risk Type="
-                f"{classification.risk_type!r} and Risk Greek="
-                f"{classification.risk_greek!r} at rows {rows}"
-            )
-
-        result = source_rows.loc[:, list(DIRECT_PL_INPUT_COLUMNS)].copy()
-        result[SPLIT] = classification.split
-        result[GROUP] = classification.group
-        result[UNDERLYING] = classification.underlying
-        result[TENOR_SWAP] = "N/A"
-        result[TENOR_OPTION] = "N/A"
-        result[TENOR_SWAP_ORDER] = pd.Series(pd.NA, index=result.index, dtype="Int64")
-        result[TENOR_OPTION_ORDER] = pd.Series(pd.NA, index=result.index, dtype="Int64")
-        # Identity products deliberately expose their signed amount as both
-        # Risk and P&L.  The effective factor is one; Open/Current remain absent
-        # because there is no real market quote behind a cash-flow event.
-        result[RISK] = result[PL]
-        result[DRISK] = np.nan
-        result[OPEN] = np.nan
-        result[CURRENT] = np.nan
-        result[MARKET_MOVE] = np.nan
-        result[MARKET_AVAILABLE] = False
-        result[MARKET_DATA_STATUS] = classification.market_data_status
-        frames.append(result.loc[:, list(DIRECT_PL_RELEASE_COLUMNS)])
-
-    return pd.concat(frames, ignore_index=True, sort=False)
-
-
-def build_risk_overlay(
-    source: pd.DataFrame,
-    *,
-    split: str,
-    market_frames: Mapping[str, pd.DataFrame],
-) -> pd.DataFrame:
-    """Convert already-calculated target risks into normal Cube rows.
-
-    ``Source Type`` selects an existing product contract, so overlays reuse the
-    validated target product's identity and market shape.  Version one keeps
-    P&L at zero: Cross Gamma/New Trades are supplied target exposures, not a
-    second independent P&L engine.
-    """
-
-    if not isinstance(source, pd.DataFrame):
-        raise TypeError("risk overlay loader must return a pandas DataFrame")
-    if not isinstance(split, str) or not split.strip():
-        raise ValueError("risk overlay split must be nonblank text")
-    _require_columns(source, list(RISK_OVERLAY_COLUMNS), f"{split} risk overlay")
-    if source.empty:
-        return pd.DataFrame()
-
-    frames: list[pd.DataFrame] = []
-    for raw_source_type, source_rows in source.groupby(
-        SOURCE_TYPE, sort=False, dropna=False
-    ):
-        source_type = str(raw_source_type)
-        try:
-            spec = PRODUCT_SPECS_BY_SOURCE_TYPE[source_type]
-        except KeyError as exc:
-            raise ValueError(
-                f"Unknown Source Type {source_type!r} in {split} risk overlay"
-            ) from exc
-
-        overlay = source_rows[
-            [UNDERLYING, *spec.tenor_columns, PORTFOLIO, GROUP, RISK]
-        ].copy()
-        overlay = _require_nonblank(
-            overlay,
-            [UNDERLYING, *spec.tenor_columns, PORTFOLIO],
-            f"{split} risk overlay",
-        )
-        overlay = _coerce_numeric(overlay, [RISK], f"{split} risk overlay")
-        overlay[RISK_TYPE] = spec.risk_type
-        overlay[RISK_GREEK] = spec.risk_greek
-        overlay[SPLIT] = split.strip()
-        overlay[DRISK] = np.nan
-
-        market_columns = [
-            *spec.market_keys,
-            *spec.tenor_order_columns,
-            OPEN,
-            CURRENT,
-            MARKET_STATUS,
-            MARKET_MOVE,
-            MARKET_AVAILABLE,
-            MARKET_DATA_STATUS,
-        ]
-        market = market_frames.get(source_type)
-        if market is None:
-            market = pd.DataFrame(columns=market_columns)
-        else:
-            market = market[market_columns].copy()
-
-        result = overlay.merge(
-            market,
-            on=spec.market_keys,
-            how="left",
-            validate="many_to_one",
-            indicator="_market_merge",
-        )
-        no_market_row = result["_market_merge"].ne("both")
-        result[MARKET_AVAILABLE] = result[MARKET_AVAILABLE].fillna(False).astype(bool)
-        result.loc[no_market_row, MARKET_DATA_STATUS] = "No matching market row"
-        result[MARKET_DATA_STATUS] = result[MARKET_DATA_STATUS].fillna(
-            "No matching market row"
-        )
-        result = result.drop(columns="_market_merge")
-        result[PL] = 0.0
-        result[SOURCE_TYPE] = source_type
-        result = _with_dashboard_tenors(result, spec)
-        result = result.sort_values(
-            [UNDERLYING, *spec.tenor_order_columns, PORTFOLIO],
-            kind="stable",
-            na_position="last",
-        ).reset_index(drop=True)
-        frames.append(result)
-
-    return pd.concat(frames, ignore_index=True, sort=False)
 
 
 def _with_supplemental_credit_sp01(frame: pd.DataFrame) -> pd.DataFrame:
@@ -2339,12 +2166,6 @@ class RiskRefreshManager:
         risk_loader: Callable[[pd.Timestamp, str], pd.DataFrame] | None = None,
         cross_gamma_matrix_loader: DatedFrameLoader | None = None,
         new_trades_loader: DatedFrameLoader | None = None,
-        # Legacy already-developed overlay boundaries remain supported for
-        # existing integrations. New composition should prefer the two raw
-        # loaders above so market scope and calculations stay governed here.
-        cross_gamma_loader: RiskOverlayLoader | None = None,
-        new_position_loader: RiskOverlayLoader | None = None,
-        new_position_direct_pl_loader: DirectPLLoader | None = None,
         market_open_loader: GenericMarketConnector | None = None,
         market_status_loader: GenericMarketConnector | None = None,
         # PRODUCTION INTEGRATION POINT: preferred per-source connector mapping.
@@ -2412,18 +2233,6 @@ class RiskRefreshManager:
             raise TypeError(
                 f"generic connector loaders must be callable: {invalid_generic}"
             )
-        invalid_overlay_loaders = [
-            name
-            for name, loader in (
-                ("cross_gamma_loader", cross_gamma_loader),
-                ("new_position_loader", new_position_loader),
-            )
-            if loader is not None and not callable(loader)
-        ]
-        if invalid_overlay_loaders:
-            raise TypeError(
-                f"risk overlay loaders must be callable: {invalid_overlay_loaders}"
-            )
         invalid_raw_loaders = [
             name
             for name, loader in (
@@ -2436,22 +2245,6 @@ class RiskRefreshManager:
             raise TypeError(
                 f"supplemental raw loaders must be callable: {invalid_raw_loaders}"
             )
-        if cross_gamma_matrix_loader is not None and cross_gamma_loader is not None:
-            raise ValueError(
-                "configure either raw Cross Gamma matrix loading or the legacy "
-                "developed-risk overlay, not both"
-            )
-        if new_trades_loader is not None and (
-            new_position_loader is not None or new_position_direct_pl_loader is not None
-        ):
-            raise ValueError(
-                "configure either the unified New Trades loader or legacy New "
-                "Position overlay/direct-P&L loaders, not both"
-            )
-        if new_position_direct_pl_loader is not None and not callable(
-            new_position_direct_pl_loader
-        ):
-            raise TypeError("new_position_direct_pl_loader must be callable")
         self._config_source = config
         self._threshold_source = thresholds
         self._reported_underlying_source = reported_underlyings
@@ -2471,9 +2264,6 @@ class RiskRefreshManager:
         self._risk_loader = risk_loader or get_risk
         self._cross_gamma_matrix_loader = cross_gamma_matrix_loader
         self._new_trades_loader = new_trades_loader
-        self._cross_gamma_loader = cross_gamma_loader
-        self._new_position_loader = new_position_loader
-        self._new_position_direct_pl_loader = new_position_direct_pl_loader
         self._market_open_loader = market_open_loader or get_market_open
         self._market_status_loader = market_status_loader or get_market_status
         self._connector_adapters = adapters
@@ -3126,13 +2916,14 @@ class RiskRefreshManager:
     def _load_product_market_open(
         self,
         spec: ProductSpec,
-        market_date: pd.Timestamp,
+        open_date: pd.Timestamp,
         underlyings: tuple[str, ...],
         *,
         market_status: str,
     ) -> pd.DataFrame:
-        # PRODUCTION INTEGRATION POINT: adapter and generic loader receive the
-        # market/view date, never the possibly aged product risk date.
+        # PRODUCTION INTEGRATION POINT: every Open adapter receives the one
+        # authoritative T-1 business date. It is independent of any older
+        # per-product Risk date produced by readiness Age or a force override.
         adapter = self._connector_adapters.get(spec.source_type)
         connector = (
             adapter.market_open if adapter is not None else self._market_open_loader
@@ -3152,12 +2943,12 @@ class RiskRefreshManager:
             try:
                 frame = (
                     adapter.market_open(
-                        market_date, underlying, market_status=selected_status
+                        open_date, underlying, market_status=selected_status
                     )
                     if adapter is not None
                     else self._market_open_loader(
                         spec.source_type,
-                        market_date,
+                        open_date,
                         underlying,
                         market_status=selected_status,
                     )
@@ -3660,15 +3451,17 @@ class RiskRefreshManager:
                 if not isinstance(checker_enabled, bool):
                     raise TypeError("risk_checker_enabled must be boolean")
                 system_date = self._system_date(attempted_at)
+                natural_market_date = market_date_for(system_date)
                 forced_view_date = (
                     None if view_date in (None, "") else _as_timestamp(view_date)
                 )
-                market_date = forced_view_date or system_date
-                if market_date > system_date:
-                    raise ValueError("view date must not be in the future")
-                if forced_view_date is not None and market_date.weekday() >= 5:
-                    raise ValueError("view date must be a business day")
-                if (system_date - market_date).days > self._max_history_days:
+                if forced_view_date is not None:
+                    if forced_view_date > system_date:
+                        raise ValueError("view date must not be in the future")
+                    if forced_view_date.weekday() >= 5:
+                        raise ValueError("view date must be a business day")
+                market_date = forced_view_date or natural_market_date
+                if (natural_market_date - market_date).days > self._max_history_days:
                     raise ValueError(
                         f"view date exceeds the {self._max_history_days}-day retention window"
                     )
@@ -3717,7 +3510,9 @@ class RiskRefreshManager:
                             f"checker date {checker_date.date()} for market date "
                             f"{market_date.date()}"
                         )
-                    if (system_date - forced_date).days > self._max_history_days:
+                    if (
+                        natural_market_date - forced_date
+                    ).days > self._max_history_days:
                         raise ValueError(
                             f"forced date for {source_type} exceeds the {self._max_history_days}-day retention window"
                         )
@@ -3879,9 +3674,6 @@ class RiskRefreshManager:
                     + int(bool(open_source_types))
                     + int(bool(market_status_source_types))
                     + int(bool(recalculate_source_types))
-                    + int(self._cross_gamma_loader is not None)
-                    + int(self._new_position_loader is not None)
-                    + int(self._new_position_direct_pl_loader is not None)
                     + int(self._cross_gamma_matrix_loader is not None)
                     + int(self._new_trades_loader is not None)
                 )
@@ -4010,9 +3802,6 @@ class RiskRefreshManager:
                     + int(bool(open_source_types))
                     + int(bool(market_status_source_types))
                     + int(bool(recalculate_source_types))
-                    + int(self._cross_gamma_loader is not None)
-                    + int(self._new_position_loader is not None)
-                    + int(self._new_position_direct_pl_loader is not None)
                     + int(self._cross_gamma_matrix_loader is not None)
                     + int(self._new_trades_loader is not None)
                 )
@@ -4047,13 +3836,13 @@ class RiskRefreshManager:
                     else:
                         raw_open = self._load_product_market_open(
                             spec,
-                            market_date,
+                            checker_date,
                             requested_underlyings,
                             market_status=expected_market_status,
                         )
                     try:
                         validated_open = get_product_market_open(
-                            spec, market_date, raw_open
+                            spec, checker_date, raw_open
                         )
                         self._reject_unrequested_market_underlyings(
                             validated_open,
@@ -4198,29 +3987,6 @@ class RiskRefreshManager:
                     next_pl[source_type] = _with_dashboard_tenors(pl_frame, spec)
 
                 next_overlay_frames = dict(base_overlay_frames)
-                for overlay_key, split, loader in (
-                    ("cross_gamma", XGAMMA_SPLIT, self._cross_gamma_loader),
-                    ("new_position", NEW_TRADES_SPLIT, self._new_position_loader),
-                ):
-                    if loader is None:
-                        continue
-                    self._progress_step(
-                        _callable_name(loader),
-                        "pl",
-                        message=f"Loading developed risk for {split}.",
-                    )
-                    overlay = _with_supplemental_credit_sp01(
-                        build_risk_overlay(
-                            loader(market_date),
-                            split=split,
-                            market_frames=next_market,
-                        )
-                    )
-                    if not overlay.empty:
-                        overlay[RISK_DATE] = market_date
-                        overlay[MARKET_DATE] = market_date
-                    next_overlay_frames[overlay_key] = overlay
-
                 if raw_cross_gamma is not None:
                     self._progress_activity(
                         "build_cross_gamma_rows",
@@ -4258,19 +4024,6 @@ class RiskRefreshManager:
                         new_trades[RISK_DATE] = market_date
                         new_trades[MARKET_DATE] = market_date
                     next_overlay_frames["new_trades"] = new_trades
-
-                if self._new_position_direct_pl_loader is not None:
-                    loader = self._new_position_direct_pl_loader
-                    self._progress_step(
-                        _callable_name(loader),
-                        "pl",
-                        message="Loading direct P&L for New Trades cash flows.",
-                    )
-                    direct_pl = build_direct_pl_rows(loader(market_date))
-                    if not direct_pl.empty:
-                        direct_pl[RISK_DATE] = market_date
-                        direct_pl[MARKET_DATE] = market_date
-                    next_overlay_frames["new_position_cash_flow"] = direct_pl
 
                 self._progress_step(
                     "_commit_full_snapshot",
@@ -4437,11 +4190,8 @@ __all__ = [
     "CURRENT",
     "DIRECT_PL_CLASSIFICATIONS",
     "DIRECT_PL_CLASSIFICATIONS_BY_SOURCE_TYPE",
-    "DIRECT_PL_INPUT_COLUMNS",
-    "DIRECT_PL_RELEASE_COLUMNS",
     "DIRECT_PL_RISK_PAIRS",
     "DirectPLClassification",
-    "DirectPLLoader",
     "EFFECTIVE_RISK_DATE",
     "FORCE_RISK",
     "FrameName",
@@ -4470,8 +4220,6 @@ __all__ = [
     "RELEASE_RISK_PAIRS",
     "REPORTED_UNDERLYING",
     "REGION",
-    "RISK_OVERLAY_COLUMNS",
-    "RiskOverlayLoader",
     "RiskRefreshManager",
     "SearchResult",
     "StaleRefreshError",
@@ -4485,8 +4233,6 @@ __all__ = [
     "TENOR_SWAP_ORDER",
     "apply_thresholds",
     "build_all_pl",
-    "build_direct_pl_rows",
-    "build_risk_overlay",
     "build_dashboard_dataframe",
     "checker_date_for",
     "evaluate_promotions",
@@ -4501,6 +4247,7 @@ __all__ = [
     "load_config",
     "load_reported_underlyings",
     "load_thresholds",
+    "market_date_for",
     "merge_config",
     "risk_date_for",
     "to_dashboard_frame",

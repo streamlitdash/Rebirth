@@ -12,10 +12,27 @@ import pandas as pd
 from dash import ALL, Input, Output, State, ctx, dcc, html
 from dash.exceptions import PreventUpdate
 
+from core.s01_schema import UNMAPPED_VALUE
+from core.s04_pl import (
+    ACTIVITY,
+    CATEGORY,
+    HISTORY_MAPPING_STATUS,
+    PL,
+    PORTFOLIO,
+    PRODUCT,
+    RISK_GREEK,
+    RISK_TYPE,
+    SIGNOFF_GROUP,
+    SUB_CATEGORY,
+    UNDERLYING,
+)
 from core.s11_risk_archive import (
     COLOSSUS_COLUMNS,
+    COLOSSUS_KEY,
     DRISK,
+    MAPPED_HISTORY_VALUE,
     RISK,
+    build_history_portfolio_authority,
     list_completed_market_dates,
     load_risk_archive,
     validate_risk_archive_frame,
@@ -27,19 +44,42 @@ from .s02_constants import (
     ROW_TOGGLE_OPEN_GLYPH,
 )
 from .s03_aggregate import format_number, number_sign_class
+from .s14_pl_explorer import (
+    PL_EXPLORER_EXCLUDE_ID,
+    PL_EXPLORER_FILTER_IDS,
+    apply_pl_explorer_filters,
+    pl_explorer_filter_map,
+)
 
 
 VALIDATE_PL_ROW_TOGGLE_TYPE = "validate-pl-row-toggle"
-VALIDATE_PL_JOIN_KEYS = ("risk type", "risk greek", "underlying", "portfolio")
+VALIDATE_PL_JOIN_KEYS = (
+    SIGNOFF_GROUP,
+    RISK_TYPE,
+    RISK_GREEK,
+    UNDERLYING,
+    PRODUCT,
+    PORTFOLIO,
+)
 VALIDATE_PL_GROUPS = VALIDATE_PL_JOIN_KEYS
 VALIDATE_PL_METRICS = ("risk", "drisk", "pl", "colossus")
-_COLOSSUS_RENAME = {
-    "Portfolio": "portfolio",
-    "Underlying": "underlying",
-    "Risk Type": "risk type",
-    "Risk Greek": "risk greek",
-    "PL": "colossus",
-}
+VALIDATE_PL_DIMENSION_COLUMNS = (
+    ACTIVITY,
+    SIGNOFF_GROUP,
+    CATEGORY,
+    SUB_CATEGORY,
+    RISK_TYPE,
+    RISK_GREEK,
+    UNDERLYING,
+    PRODUCT,
+    PORTFOLIO,
+)
+VALIDATE_PL_COMPARISON_COLUMNS = (
+    *VALIDATE_PL_DIMENSION_COLUMNS,
+    HISTORY_MAPPING_STATUS,
+    *VALIDATE_PL_METRICS,
+    "comparison status",
+)
 _METRIC_LABELS = {
     "risk": "Risk",
     "drisk": "dRisk",
@@ -134,8 +174,7 @@ def _normalize_colossus(frame: pd.DataFrame) -> pd.DataFrame:
         )
     normalized = frame.copy(deep=True)
     normalized.columns = list(COLOSSUS_COLUMNS)
-    normalized = normalized.rename(columns=_COLOSSUS_RENAME)
-    for column in VALIDATE_PL_JOIN_KEYS:
+    for column in COLOSSUS_KEY:
         values = normalized[column]
         invalid = values.isna() | values.astype("string").str.strip().eq("")
         if invalid.any():
@@ -144,7 +183,7 @@ def _normalize_colossus(frame: pd.DataFrame) -> pd.DataFrame:
                 f"Colossus history column {column!r} contains blank keys at rows {rows}"
             )
         normalized[column] = values.astype(str).str.strip()
-    values = normalized["colossus"]
+    values = normalized[PL]
     boolean = values.map(lambda value: isinstance(value, (bool, np.bool_)))
     numeric = pd.to_numeric(values, errors="coerce")
     invalid = boolean | numeric.isna() | ~np.isfinite(numeric)
@@ -154,10 +193,11 @@ def _normalize_colossus(frame: pd.DataFrame) -> pd.DataFrame:
             f"Colossus history PL must contain finite numbers; invalid rows {rows}"
         )
     normalized["colossus"] = numeric.astype(float)
-    duplicate = normalized.duplicated(list(VALIDATE_PL_JOIN_KEYS), keep=False)
+    normalized = normalized.drop(columns=PL)
+    duplicate = normalized.duplicated(list(COLOSSUS_KEY), keep=False)
     if duplicate.any():
         keys = (
-            normalized.loc[duplicate, list(VALIDATE_PL_JOIN_KEYS)]
+            normalized.loc[duplicate, list(COLOSSUS_KEY)]
             .drop_duplicates()
             .to_dict("records")
         )
@@ -169,39 +209,76 @@ def build_validate_pl_comparison(
     risk: pd.DataFrame,
     colossus: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Aggregate Predict once, then one-to-one join Colossus at its true grain.
+    """Join Predict and Colossus once at a nonduplicating governed hierarchy.
 
-    The comparison intentionally stops at Risk Type + Risk Greek + Underlying +
-    Portfolio. A Portfolio-level Colossus value is therefore never copied onto
-    several tenor or product rows and cannot be multiplied in parent totals.
+    Colossus remains a four-key input. Signoff Group and Product are attached
+    only through the archived snapshot's exact one-row Portfolio authority.
+    Missing or ambiguous authority is retained once in the explicit Unmapped
+    result; it is never guessed, copied across Products, or silently dropped.
     """
 
-    prepared = validate_risk_archive_frame(risk).rename(
-        columns={
-            "Portfolio": "portfolio",
-            "Underlying": "underlying",
-            "Risk Type": "risk type",
-            "Risk Greek": "risk greek",
-            RISK: "risk",
-            DRISK: "drisk",
-            "PL": "pl",
-        }
+    prepared = validate_risk_archive_frame(risk)
+    required_dimensions = (
+        ACTIVITY,
+        SIGNOFF_GROUP,
+        CATEGORY,
+        SUB_CATEGORY,
+        PRODUCT,
     )
+    missing = [column for column in required_dimensions if column not in prepared]
+    if missing:
+        raise ValueError(
+            "official Risk Explorer snapshot is missing P&L Explorer columns: "
+            f"{missing}"
+        )
+    prepared = prepared.copy(deep=True)
+    for column in required_dimensions:
+        values = prepared[column]
+        invalid = values.isna() | values.astype("string").str.strip().eq("")
+        if invalid.any():
+            rows = prepared.index[invalid].tolist()[:5]
+            raise ValueError(
+                f"official Risk Explorer snapshot column {column!r} contains "
+                f"blank values at rows {rows}"
+            )
+        prepared[column] = values.astype(str).str.strip()
+
+    authority = build_history_portfolio_authority(prepared)
     predicted = prepared.groupby(
         list(VALIDATE_PL_JOIN_KEYS),
         as_index=False,
         dropna=False,
         sort=False,
     ).agg(
-        risk=("risk", lambda values: values.sum(min_count=1)),
-        drisk=("drisk", lambda values: values.sum(min_count=1)),
-        # One unavailable archived tenor makes this four-key Predict value
+        risk=(RISK, lambda values: values.sum(min_count=1)),
+        drisk=(DRISK, lambda values: values.sum(min_count=1)),
+        # One unavailable archived tenor makes this hierarchy-level Predict value
         # unavailable. Never present a partial P as the complete comparison.
-        pl=("pl", lambda values: values.sum(min_count=len(values))),
+        pl=(PL, lambda values: values.sum(min_count=len(values))),
     )
     actual = _normalize_colossus(colossus)
+    actual = actual.merge(
+        authority,
+        on=PORTFOLIO,
+        how="left",
+        validate="many_to_one",
+    )
+    for column in (
+        SIGNOFF_GROUP,
+        PRODUCT,
+        ACTIVITY,
+        CATEGORY,
+        SUB_CATEGORY,
+        HISTORY_MAPPING_STATUS,
+    ):
+        actual[column] = actual[column].fillna(UNMAPPED_VALUE)
+
+    mapped_actual = actual.loc[
+        actual[HISTORY_MAPPING_STATUS].eq(MAPPED_HISTORY_VALUE),
+        [*VALIDATE_PL_JOIN_KEYS, "colossus"],
+    ]
     comparison = predicted.merge(
-        actual,
+        mapped_actual,
         on=list(VALIDATE_PL_JOIN_KEYS),
         how="outer",
         validate="one_to_one",
@@ -215,8 +292,51 @@ def build_validate_pl_comparison(
     comparison["comparison status"] = (
         comparison["comparison status"].astype("object").map(status_labels)
     )
-    return comparison.sort_values(
-        list(VALIDATE_PL_JOIN_KEYS), kind="stable"
+    comparison = comparison.merge(
+        authority[[PORTFOLIO, ACTIVITY, CATEGORY, SUB_CATEGORY]],
+        on=PORTFOLIO,
+        how="left",
+        validate="many_to_one",
+    )
+    for column in (ACTIVITY, CATEGORY, SUB_CATEGORY):
+        comparison[column] = comparison[column].fillna(UNMAPPED_VALUE)
+    comparison[HISTORY_MAPPING_STATUS] = MAPPED_HISTORY_VALUE
+
+    unmapped = actual.loc[
+        actual[HISTORY_MAPPING_STATUS].eq(UNMAPPED_VALUE),
+        [
+            *VALIDATE_PL_DIMENSION_COLUMNS,
+            HISTORY_MAPPING_STATUS,
+            "colossus",
+        ],
+    ].copy()
+    for metric in ("risk", "drisk", "pl"):
+        unmapped[metric] = np.nan
+    unmapped["comparison status"] = "Colossus unmapped"
+
+    result = pd.concat(
+        [
+            comparison.loc[:, list(VALIDATE_PL_COMPARISON_COLUMNS)],
+            unmapped.loc[:, list(VALIDATE_PL_COMPARISON_COLUMNS)],
+        ],
+        ignore_index=True,
+        sort=False,
+    )
+    duplicate = result.duplicated(
+        [HISTORY_MAPPING_STATUS, *VALIDATE_PL_JOIN_KEYS], keep=False
+    )
+    if duplicate.any():
+        keys = (
+            result.loc[
+                duplicate,
+                [HISTORY_MAPPING_STATUS, *VALIDATE_PL_JOIN_KEYS],
+            ]
+            .drop_duplicates()
+            .to_dict("records")
+        )
+        raise ValueError(f"historical Risk comparison contains duplicate rows: {keys}")
+    return result.sort_values(
+        [HISTORY_MAPPING_STATUS, *VALIDATE_PL_JOIN_KEYS], kind="stable"
     ).reset_index(drop=True)
 
 
@@ -229,9 +349,9 @@ def _scope(frame: pd.DataFrame, context: Mapping[str, str]) -> pd.DataFrame:
 
 def _ordered_values(frame: pd.DataFrame, column: str) -> list[str]:
     values = frame[column].dropna().astype(str).unique().tolist()
-    if column == "risk type":
+    if column == RISK_TYPE:
         return sorted(values, key=lambda value: (RISK_TYPE_ORDER.get(value, 99), value))
-    if column == "underlying":
+    if column == UNDERLYING:
         ranking = frame.groupby(column, as_index=False, dropna=False)["pl"].sum(
             min_count=1
         )
@@ -340,7 +460,7 @@ def _tree_rows(
                     f"group-row group-level-{level} group-kind-{column.replace(' ', '-')}"
                     + (
                         " hierarchy-total-row"
-                        if column in {"risk type", "risk greek"}
+                        if column in {RISK_TYPE, RISK_GREEK}
                         else ""
                     )
                 ),
@@ -359,29 +479,12 @@ def _tree_rows(
     return rows
 
 
-def build_validate_pl_table(
+def _validate_tree_table(
     comparison: pd.DataFrame,
-    *,
-    open_paths: object = None,
+    open_paths: set[str],
 ) -> html.Div:
-    """Render a Risk-Explorer-style tree at the exact P/C comparison grain."""
+    """Render only mapped rows in the governed six-level hierarchy."""
 
-    if not isinstance(comparison, pd.DataFrame):
-        raise TypeError("comparison must be a pandas DataFrame")
-    required = [*VALIDATE_PL_JOIN_KEYS, *VALIDATE_PL_METRICS]
-    missing = [column for column in required if column not in comparison]
-    if missing and not comparison.empty:
-        raise ValueError(f"historical Risk comparison is missing columns: {missing}")
-    if comparison.empty:
-        return html.Div(
-            [
-                html.Strong("No historical Risk rows"),
-                html.Span("The selected official snapshot has no comparison rows."),
-            ],
-            className="empty-state",
-            role="status",
-        )
-    normalized_open = set(normalize_validate_pl_open_paths(open_paths))
     total_cells: list[object] = [
         html.Th(
             html.Span("TOTAL", className="row-label-text"),
@@ -417,7 +520,7 @@ def build_validate_pl_table(
         ),
     ]
     rows = [html.Tr(total_cells, className="total-row")]
-    rows.extend(_tree_rows(comparison, normalized_open))
+    rows.extend(_tree_rows(comparison, open_paths))
     return html.Div(
         html.Table(
             [
@@ -434,6 +537,117 @@ def build_validate_pl_table(
         ),
         className="risk-table-wrap validate-pl-table-wrap",
     )
+
+
+def _validate_unmapped_table(unmapped: pd.DataFrame) -> html.Details:
+    """Expose Colossus identities that cannot receive governed hierarchy data."""
+
+    headers = [PORTFOLIO, RISK_TYPE, RISK_GREEK, UNDERLYING, "P", "C", "Reason"]
+    rows: list[html.Tr] = []
+    for record in unmapped.to_dict("records"):
+        rows.append(
+            html.Tr(
+                [
+                    *(
+                        html.Td(
+                            str(record[column]),
+                            **{
+                                "data-metric": "index",
+                                "data-copy-value": str(record[column]),
+                            },
+                        )
+                        for column in (PORTFOLIO, RISK_TYPE, RISK_GREEK, UNDERLYING)
+                    ),
+                    _metric_cell("pl", float("nan")),
+                    _metric_cell("colossus", float(record["colossus"])),
+                    html.Td(
+                        "Portfolio is absent from, or has ambiguous Signoff Group / "
+                        "Product authority in, the archived Predict snapshot."
+                    ),
+                ]
+            )
+        )
+    return html.Details(
+        [
+            html.Summary(
+                f"Unmapped Colossus ({len(unmapped):,})",
+                className="aux-summary",
+            ),
+            html.P(
+                "These Colossus rows are retained exactly once and are excluded "
+                "from mapped totals because their hierarchy cannot be inferred "
+                "without guessing.",
+                className="pl-editor-guide",
+            ),
+            html.Div(
+                html.Table(
+                    [
+                        html.Caption(
+                            "Colossus rows without unique archived Portfolio authority",
+                            className="sr-only",
+                        ),
+                        html.Thead(
+                            html.Tr([html.Th(label, scope="col") for label in headers])
+                        ),
+                        html.Tbody(rows),
+                    ],
+                    className="risk-table validate-pl-unmapped-table",
+                ),
+                className="risk-table-wrap validate-pl-unmapped-table-wrap",
+            ),
+        ],
+        className="aux-details validate-pl-unmapped",
+    )
+
+
+def build_validate_pl_table(
+    comparison: pd.DataFrame,
+    *,
+    open_paths: object = None,
+) -> html.Div:
+    """Render mapped P/C hierarchy plus an explicit nonduplicating audit section."""
+
+    if not isinstance(comparison, pd.DataFrame):
+        raise TypeError("comparison must be a pandas DataFrame")
+    required = [
+        *VALIDATE_PL_JOIN_KEYS,
+        HISTORY_MAPPING_STATUS,
+        *VALIDATE_PL_METRICS,
+    ]
+    missing = [column for column in required if column not in comparison]
+    if missing and not comparison.empty:
+        raise ValueError(f"historical Risk comparison is missing columns: {missing}")
+    if comparison.empty:
+        return html.Div(
+            [
+                html.Strong("No historical Risk rows"),
+                html.Span("The selected official snapshot has no comparison rows."),
+            ],
+            className="empty-state",
+            role="status",
+        )
+
+    mapped = comparison.loc[comparison[HISTORY_MAPPING_STATUS].eq(MAPPED_HISTORY_VALUE)]
+    unmapped = comparison.loc[comparison[HISTORY_MAPPING_STATUS].eq(UNMAPPED_VALUE)]
+    children: list[object] = []
+    if mapped.empty:
+        children.append(
+            html.Div(
+                "No mapped comparison rows match the Explorer filters.",
+                className="empty-state",
+                role="status",
+            )
+        )
+    else:
+        children.append(
+            _validate_tree_table(
+                mapped,
+                set(normalize_validate_pl_open_paths(open_paths)),
+            )
+        )
+    if not unmapped.empty:
+        children.append(_validate_unmapped_table(unmapped))
+    return html.Div(children, className="validate-pl-results")
 
 
 def _available_dates(root: str | Path) -> tuple[str, ...]:
@@ -456,8 +670,10 @@ def build_validate_pl_section() -> html.Details:
                     html.P(
                         "Choose one completed official date and compare the P&L "
                         "predicted by Risk Explorer (P) with Colossus P&L (C). "
-                        "The expandable hierarchy is Risk Type → Risk Greek → "
-                        "Underlying → Portfolio.",
+                        "The expandable hierarchy is Signoff Group → Risk Type → "
+                        "Risk Greek → Underlying → Product → Portfolio. Colossus "
+                        "rows without unique archived Portfolio authority remain "
+                        "visible in Unmapped.",
                         className="pl-editor-guide",
                     ),
                     html.Div(
@@ -567,6 +783,11 @@ def register_validate_pl_callbacks(app, root: str | Path) -> None:
         Output("pl-validate-status", "children"),
         Output("pl-validate-open-paths", "data"),
         Input("pl-validate-date", "value"),
+        *[
+            Input(component_id, "value")
+            for component_id in PL_EXPLORER_FILTER_IDS.values()
+        ],
+        Input(PL_EXPLORER_EXCLUDE_ID, "value"),
         Input({"type": VALIDATE_PL_ROW_TOGGLE_TYPE, "path": ALL}, "n_clicks"),
         State({"type": VALIDATE_PL_ROW_TOGGLE_TYPE, "path": ALL}, "id"),
         State("pl-validate-open-paths", "data"),
@@ -574,6 +795,12 @@ def register_validate_pl_callbacks(app, root: str | Path) -> None:
     )
     def render_validate_pl(
         market_date,
+        activity_filter,
+        signoff_filter,
+        portfolio_filter,
+        category_filter,
+        subcategory_filter,
+        exclude_filter,
         toggle_clicks,
         toggle_ids,
         open_paths,
@@ -590,7 +817,13 @@ def register_validate_pl_callbacks(app, root: str | Path) -> None:
         triggered_id = ctx.triggered_id
         effective_open = (
             []
-            if triggered_id == "pl-validate-date"
+            if isinstance(triggered_id, str)
+            and triggered_id
+            in {
+                "pl-validate-date",
+                *PL_EXPLORER_FILTER_IDS.values(),
+                PL_EXPLORER_EXCLUDE_ID,
+            }
             else normalize_validate_pl_open_paths(open_paths)
         )
         requested = _clicked_path(toggle_ids, toggle_clicks, triggered_id)
@@ -602,18 +835,36 @@ def register_validate_pl_callbacks(app, root: str | Path) -> None:
             message = f"Official Risk snapshot {market_date} could not be loaded: {exc}"
             return html.Div(message, className="empty-state"), message, []
 
+        comparison = apply_pl_explorer_filters(
+            comparison,
+            pl_explorer_filter_map(
+                [
+                    activity_filter,
+                    signoff_filter,
+                    portfolio_filter,
+                    category_filter,
+                    subcategory_filter,
+                ]
+            ),
+            exclude_selected="exclude" in (exclude_filter or []),
+        )
+
         counts = comparison["comparison status"].value_counts()
         matched = int(counts.get("Matched", 0))
         predict_only = int(counts.get("Predict only", 0))
         colossus_only = int(counts.get("Colossus only", 0))
+        unmapped = int(counts.get("Colossus unmapped", 0))
+        mapped = int(comparison[HISTORY_MAPPING_STATUS].eq(MAPPED_HISTORY_VALUE).sum())
         status = (
-            f"Official {market_date} · {len(comparison):,} comparison rows · "
-            f"{matched:,} matched"
+            f"Official {market_date} · {len(comparison):,} filtered rows · "
+            f"{mapped:,} mapped · {matched:,} matched"
         )
         if predict_only or colossus_only:
             status += (
                 f" · {predict_only:,} Predict-only · {colossus_only:,} Colossus-only"
             )
+        if unmapped:
+            status += f" · {unmapped:,} Unmapped Colossus"
         return (
             build_validate_pl_table(comparison, open_paths=effective_open),
             status,

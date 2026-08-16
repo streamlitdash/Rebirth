@@ -2694,6 +2694,10 @@ def register_callbacks(
             Output("quick-market-history-status", "children"),
             Input("quick-market-combine-udl", "value"),
             Input("quick-market-history-cell", "value"),
+            Input("quick-market-history-summary", "n_clicks"),
+            Input("quick-market-history-period", "value"),
+            Input("quick-market-history-date-range", "start_date"),
+            Input("quick-market-history-date-range", "end_date"),
             Input("quick-market-summary", "n_clicks"),
             Input("data-revision-store", "data"),
             prevent_initial_call=True,
@@ -2701,11 +2705,18 @@ def register_callbacks(
         def render_market_history(
             combine_udl,
             requested_history_cell,
+            history_summary_clicks,
+            history_period,
+            history_start_date,
+            history_end_date,
             summary_clicks,
             _revision,
         ):
-            if not int(summary_clicks or 0) % 2:
-                return None, no_update
+            if (
+                not int(summary_clicks or 0) % 2
+                or not int(history_summary_clicks or 0) % 2
+            ):
+                return no_update, no_update
             selected = str(combine_udl or "").strip()
             if not selected:
                 return (
@@ -2784,6 +2795,9 @@ def register_callbacks(
                     selected_cell=history_cell,
                     market_date=result.market_date,
                     market_status=str(statuses[0]),
+                    period=str(history_period or "all"),
+                    start_date=history_start_date,
+                    end_date=history_end_date,
                 )
                 return chart, (history_error or status)
             except (

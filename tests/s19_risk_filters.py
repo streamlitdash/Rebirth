@@ -460,6 +460,10 @@ def test_quick_market_history_targets_are_mounted_and_have_single_owners() -> No
     assert history_inputs == {
         ("quick-market-combine-udl", "value"),
         ("quick-market-history-cell", "value"),
+        ("quick-market-history-summary", "n_clicks"),
+        ("quick-market-history-period", "value"),
+        ("quick-market-history-date-range", "start_date"),
+        ("quick-market-history-date-range", "end_date"),
         ("quick-market-summary", "n_clicks"),
         ("data-revision-store", "data"),
     }

@@ -26,11 +26,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from adapters.s06_new_positions import (
-    CASHFLOW as NEW_POSITION_CASHFLOW,
-    ROW_TYPE as NEW_POSITION_ROW_TYPE,
-    get_new_positions as get_new_position_blotter,
-)
+from adapters.s06_new_positions import get_new_positions as get_new_position_blotter
 from adapters.s07_cross_gamma import get_cross_gamma as get_cross_gamma_matrix
 from core.s01_schema import (
     PORTFOLIO_CONFIG_REQUIRED_COLUMNS,
@@ -41,21 +37,15 @@ from core.s01_schema import (
 from core.s02_pipeline import (
     CREDIT_MEASURE_COLUMNS,
     CURRENT,
-    DIRECT_PL_INPUT_COLUMNS,
     LIVE,
     MARKET_STATUS,
     OFFICIAL,
-    NEW_POSITION_CASH_FLOW_CLASSIFICATION,
-    PL,
     PORTFOLIO,
     PRODUCT_SPECS_BY_SOURCE_TYPE,
     REGION,
-    RISK_GREEK,
-    RISK_OVERLAY_COLUMNS,
-    RISK_TYPE,
-    SOURCE_TYPE,
     ProductConnectorAdapter,
     RiskRefreshManager,
+    market_date_for,
 )
 from core.s11_risk_archive import COLOSSUS_COLUMNS
 
@@ -279,6 +269,15 @@ def _normalized_date(value: pd.Timestamp, *, parameter: str) -> pd.Timestamp:
     return timestamp.normalize()
 
 
+def _business_date(value: pd.Timestamp, *, parameter: str) -> pd.Timestamp:
+    """Require a weekday using the pipeline's centralized date authority."""
+
+    selected_date = _normalized_date(value, parameter=parameter)
+    if market_date_for(selected_date) != selected_date:
+        raise ValueError(f"{parameter} must be a business day")
+    return selected_date
+
+
 def _market_status(value: object) -> str:
     """Reject ambiguous status routing before a connector reads any source."""
     if value not in {LIVE, OFFICIAL}:
@@ -299,11 +298,15 @@ def get_market_state(
     passes that same value to every per-Underlying Open and Current connector.
     The checked-in fake implementation follows the desk's 22:00 trading-time
     cutoff: an earlier date is OFFICIAL, while today's date becomes OFFICIAL at
-    22:00 in the configured timezone. ``now`` exists only for deterministic
-    fixture tests; production callers leave it unset.
+    22:00 in the configured timezone. Weekend inputs use the same centralized
+    rollback as the manager and therefore resolve to the preceding Friday.
+    ``now`` exists only for deterministic fixture tests; production callers
+    leave it unset.
     """
 
-    selected_date = _normalized_date(market_date, parameter="market_date")
+    selected_date = market_date_for(
+        _normalized_date(market_date, parameter="market_date")
+    )
     zone = ZoneInfo(trading_timezone)
     trading_now = pd.Timestamp(datetime.now(zone) if now is None else now)
     if trading_now.tzinfo is None:
@@ -396,7 +399,7 @@ def get_risk_checker(
     # === REAL RISK CHECKER (COMMENTED OUT) ===================================
     # SWITCH (1/2): uncomment this REAL block.
     # SWITCH (2/2): comment the adjacent ACTIVE CSV FALLBACK block below.
-    # _normalized_date(checker_date, parameter="checker_date")
+    # _business_date(checker_date, parameter="checker_date")
     # try:
     #     view = mrx.MRXView(r"mrx/static/age.tsv")
     #     view += ("Current Date", checker_date.strftime("%Y/%m/%d"))
@@ -482,7 +485,7 @@ def get_risk_checker(
     # === END REAL RISK CHECKER ===============================================
 
     # === ACTIVE CSV FALLBACK (COMMENT OUT WHEN REAL IS ENABLED) =============
-    _normalized_date(checker_date, parameter="checker_date")
+    _business_date(checker_date, parameter="checker_date")
     readiness = _read_fake_csv("risk_readiness")
     checker = _read_fake_csv("risk_checker")
     return readiness.copy(), checker.copy()
@@ -499,7 +502,7 @@ def get_risk(risk_date: pd.Timestamp, source_type: str) -> pd.DataFrame:
     # REAL risk bodies are comment-preserved in adapters/s02_ir.py,
     # adapters/s03_fx.py, and adapters/s04_credit.py. Switch them only in
     # get_product_connector_adapters below. ACTIVE CSV FALLBACK follows.
-    _normalized_date(risk_date, parameter="risk_date")
+    _business_date(risk_date, parameter="risk_date")
     spec = _source_spec(source_type)
     output_columns = [
         "Underlying",
@@ -527,36 +530,11 @@ def get_risk(risk_date: pd.Timestamp, source_type: str) -> pd.DataFrame:
     return frame
 
 
-def get_cross_gamma_risk(market_date: pd.Timestamp) -> pd.DataFrame:
-    """Return fixture Cross Gamma target-risk rows.
-
-    The supplied real implementation is intentionally not imported here because
-    it depends on private credentials and libraries.  Replace this body with the
-    site's function only in a production integration module; its exact output
-    contract is ``RISK_OVERLAY_COLUMNS``.
-    """
-
-    _normalized_date(market_date, parameter="market_date")
-    return pd.DataFrame(columns=list(RISK_OVERLAY_COLUMNS))
-
-
 def get_cross_gamma_sensitivities(market_date: pd.Timestamp) -> pd.DataFrame:
     """Return validated portfolio-level XGAMMA sensitivity matrix rows."""
 
     selected_date = _normalized_date(market_date, parameter="market_date")
     return get_cross_gamma_matrix(selected_date)
-
-
-def get_new_positions(market_date: pd.Timestamp) -> pd.DataFrame:
-    """Return fixture intraday new-position target-risk rows.
-
-    The deterministic demo has no invented positions, so an exact header-only
-    frame is the truthful fixture.  A production replacement returns the same
-    seven canonical fields and the pipeline supplies ``Split = New Trades``.
-    """
-
-    _normalized_date(market_date, parameter="market_date")
-    return pd.DataFrame(columns=list(RISK_OVERLAY_COLUMNS))
 
 
 def get_new_trades(market_date: pd.Timestamp) -> pd.DataFrame:
@@ -566,45 +544,24 @@ def get_new_trades(market_date: pd.Timestamp) -> pd.DataFrame:
     return get_new_position_blotter(selected_date)
 
 
-def get_new_position_cash_flows(market_date: pd.Timestamp) -> pd.DataFrame:
-    """Return only validated CASHFLOW rows for the direct-P&L release path.
-
-    The raw adapter's illustrative MARKET rows remain deliberately isolated
-    until their traded-level and MarketBook calculation is implemented.  This
-    explicit selection cannot reinterpret them as zero-risk P&L rows.
-    """
-
-    selected_date = _normalized_date(market_date, parameter="market_date")
-    blotter = get_new_position_blotter(selected_date)
-    cash_flows = blotter.loc[
-        blotter[NEW_POSITION_ROW_TYPE].eq(NEW_POSITION_CASHFLOW),
-        [RISK_TYPE, RISK_GREEK, PORTFOLIO, PL],
-    ].copy()
-    cash_flows.insert(
-        0,
-        SOURCE_TYPE,
-        NEW_POSITION_CASH_FLOW_CLASSIFICATION.source_type,
-    )
-    return cash_flows.loc[:, list(DIRECT_PL_INPUT_COLUMNS)].reset_index(drop=True)
-
-
 def get_market_open(
     source_type: str,
-    market_date: pd.Timestamp,
+    open_date: pd.Timestamp,
     underlying: str,
     *,
     market_status: str,
 ) -> pd.DataFrame:
-    """Return fake opening quotes for one source and requested market date.
+    """Return fake opening quotes for one source and requested T-1 date.
 
-    Real replacement contract: use the date and requested Underlying, returning
-    numeric ``Open``, the source's tenor fields, and its applicable tenor-order
-    authority. The manager supplies one Risk-derived ``underlying`` per call.
-    Use the explicit ``market_status`` to select the Live or OFFICIAL dataset.
+    Real replacement contract: use the T-1 business date and requested
+    Underlying, returning numeric ``Open``, the source's tenor fields, and its
+    applicable tenor-order authority. The manager supplies one Risk-derived
+    ``underlying`` per call. Use the explicit ``market_status`` to select the
+    Live or OFFICIAL dataset.
     """
     # REAL Open bodies live beside their adapter contracts. The ACTIVE CSV
     # FALLBACK below remains selected by get_product_connector_adapters.
-    _normalized_date(market_date, parameter="market_date")
+    _business_date(open_date, parameter="open_date")
     _market_status(market_status)
     if not isinstance(underlying, str) or not underlying.strip():
         raise ValueError("underlying must be nonblank text")
@@ -650,7 +607,7 @@ def get_market_status(
     """
     # REAL Current bodies live beside their adapter contracts. The ACTIVE CSV
     # FALLBACK below remains selected by get_product_connector_adapters.
-    _normalized_date(market_date, parameter="market_date")
+    _business_date(market_date, parameter="market_date")
     selected_status = _market_status(market_status)
     if not isinstance(underlying, str) or not underlying.strip():
         raise ValueError("underlying must be nonblank text")
@@ -689,7 +646,7 @@ def get_portfolio_config(portfolio_date: pd.Timestamp) -> pd.DataFrame:
     # === REAL PORTFOLIO MAPPING (COMMENTED OUT) ==============================
     # SWITCH (1/2): uncomment this REAL block and the REAL imports above.
     # SWITCH (2/2): comment the adjacent ACTIVE CSV FALLBACK block below.
-    # _normalized_date(portfolio_date, parameter="portfolio_date")
+    # _business_date(portfolio_date, parameter="portfolio_date")
     # try:
     #     try:
     #         body = {
@@ -837,7 +794,7 @@ def get_portfolio_config(portfolio_date: pd.Timestamp) -> pd.DataFrame:
     # === END REAL PORTFOLIO MAPPING ==========================================
 
     # === ACTIVE CSV FALLBACK (COMMENT OUT WHEN REAL IS ENABLED) =============
-    _normalized_date(portfolio_date, parameter="portfolio_date")
+    _business_date(portfolio_date, parameter="portfolio_date")
     frame = _read_fake_csv("portfolio_config")
     _require_fake_notice(
         frame,
@@ -981,14 +938,14 @@ def _get_csv_product_connector_adapters() -> Mapping[str, ProductConnectorAdapte
             return get_risk(risk_date, _source)
 
         def market_open(
-            market_date: pd.Timestamp,
+            open_date: pd.Timestamp,
             underlying: str,
             *,
             market_status: str,
             _source: str = source_type,
         ) -> pd.DataFrame:
             return get_market_open(
-                _source, market_date, underlying, market_status=market_status
+                _source, open_date, underlying, market_status=market_status
             )
 
         def market_status_connector(
@@ -1095,14 +1052,11 @@ __all__ = [
     "FAKE_DATA_DIRECTORY",
     "FakeCsvConnectorError",
     "build_production_refresh_manager",
-    "get_cross_gamma_risk",
     "get_cross_gamma_sensitivities",
     "get_colossus_pl",
     "get_market_open",
     "get_market_state",
     "get_market_status",
-    "get_new_positions",
-    "get_new_position_cash_flows",
     "get_new_trades",
     "get_portfolio_config",
     "get_product_connector_adapters",

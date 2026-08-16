@@ -27,6 +27,7 @@ from ui.s04_components import (
     detail_tenor_view_state,
     metric_header,
     quick_market_history_cell_state,
+    quick_market_history_date_window,
     quick_market_history_identity,
 )
 from ui.s03_aggregate import ordered_unique, row_key
@@ -119,6 +120,39 @@ def test_quick_risk_and_market_search_use_native_collapsible_chevrons() -> None:
         and getattr(item, "id", None) == "quick-market-surface-metric-control"
     )
     assert surface_control.hidden is True
+    history = next(
+        item
+        for item in _walk(market)
+        if isinstance(item, html.Details)
+        and getattr(item, "id", None) == "quick-market-history-details"
+    )
+    assert history.open is False
+    assert history.children[0].id == "quick-market-history-summary"
+    assert history.children[0].n_clicks == 0
+    assert "Historical data" in str(history.children[0].children)
+    history_components = list(_walk(history))
+    period = next(
+        item
+        for item in history_components
+        if isinstance(item, dcc.RadioItems) and item.id == "quick-market-history-period"
+    )
+    assert period.value == "all"
+    assert [option["value"] for option in period.options] == [
+        "wtd",
+        "mtd",
+        "ytd",
+        "all",
+        "custom",
+    ]
+    assert any(
+        isinstance(item, dcc.DatePickerRange)
+        and item.id == "quick-market-history-date-range"
+        for item in history_components
+    )
+    assert any(
+        isinstance(item, dcc.Dropdown) and item.id == "quick-market-history-cell"
+        for item in history_components
+    )
 
 
 def test_quick_search_keeps_identity_authority_separate_from_pivot_levels() -> None:
@@ -251,6 +285,124 @@ def test_market_history_selects_one_connector_ranked_cell_without_averaging() ->
     assert list(graph.figure.data[1].y) == [1.3]
     assert "2 archived daily observations" in status
     assert "today's OFFICIAL point included" in status
+
+
+@pytest.mark.parametrize(
+    ("period", "expected_start", "expected_end", "label"),
+    [
+        ("wtd", "2026-08-10", "2026-08-14", "WTD"),
+        ("mtd", "2026-08-01", "2026-08-14", "MTD"),
+        ("ytd", "2026-01-01", "2026-08-14", "YTD"),
+        ("all", None, "2026-08-14", "All"),
+    ],
+)
+def test_market_history_presets_resolve_from_current_market_date(
+    period: str,
+    expected_start: str | None,
+    expected_end: str,
+    label: str,
+) -> None:
+    start, end, resolved_label = quick_market_history_date_window(
+        period,
+        "2026-08-14",
+    )
+
+    actual_start = None if start is None else start.date().isoformat()
+    assert actual_start == expected_start
+    assert end is not None and end.date().isoformat() == expected_end
+    assert resolved_label == label
+
+
+def test_market_history_custom_range_is_inclusive_and_never_uses_future_dates() -> None:
+    start, end, label = quick_market_history_date_window(
+        "custom",
+        "2026-08-14",
+        start_date="2026-08-11",
+        end_date="2026-08-20",
+    )
+
+    assert start == pd.Timestamp("2026-08-11")
+    assert end == pd.Timestamp("2026-08-14")
+    assert label == "Custom"
+    with pytest.raises(ValueError, match="on or before"):
+        quick_market_history_date_window(
+            "custom",
+            "2026-08-14",
+            start_date="2026-08-13",
+            end_date="2026-08-12",
+        )
+    with pytest.raises(ValueError, match="current Market Date"):
+        quick_market_history_date_window(
+            "custom",
+            "2026-08-14",
+            start_date="2026-08-18",
+            end_date="2026-08-20",
+        )
+
+
+def test_market_history_chart_applies_exact_custom_range_before_plotting() -> None:
+    current = pd.DataFrame(
+        {
+            "Risk Type": ["IR"],
+            "Risk Greek": ["Delta"],
+            "Underlying": ["EUR"],
+            "Tenor Swap": ["1Y"],
+            "Tenor Option": ["N/A"],
+            "Current": [1.3],
+        }
+    )
+    _options, selected, _disabled = quick_market_history_cell_state(current, None)
+    history = pd.DataFrame(
+        {
+            "Market Date": ["2026-08-10", "2026-08-11", "2026-08-12"],
+            "Tenor Swap": ["1Y", "1Y", "1Y"],
+            "Tenor Option": ["N/A", "N/A", "N/A"],
+            "Current": [1.0, 1.1, 1.2],
+        }
+    )
+
+    graph, status = build_quick_market_history_result(
+        history,
+        current,
+        selected_cell=str(selected),
+        market_date="2026-08-14",
+        market_status="OFFICIAL",
+        period="custom",
+        start_date="2026-08-11",
+        end_date="2026-08-12",
+    )
+
+    assert isinstance(graph, dcc.Graph)
+    assert list(graph.figure.data[0].y) == [1.1, 1.2]
+    assert len(graph.figure.data) == 1
+    assert status.startswith("Custom · Tenor Swap 1Y")
+    assert "today's OFFICIAL point is outside the date range" in status
+
+
+def test_market_history_custom_range_waits_for_both_dates() -> None:
+    current = pd.DataFrame(
+        {
+            "Risk Type": ["FX"],
+            "Risk Greek": ["Delta"],
+            "Underlying": ["EUR/USD"],
+            "Tenor Swap": ["Spot"],
+            "Tenor Option": ["N/A"],
+            "Current": [1.1],
+        }
+    )
+    _options, selected, _disabled = quick_market_history_cell_state(current, None)
+
+    result, status = build_quick_market_history_result(
+        pd.DataFrame(),
+        current,
+        selected_cell=str(selected),
+        market_date="2026-08-14",
+        market_status="OFFICIAL",
+        period="custom",
+    )
+
+    assert isinstance(result, html.Div)
+    assert "Choose both custom dates" in status
 
 
 def test_market_history_rejects_duplicate_daily_values_for_one_exact_cell() -> None:

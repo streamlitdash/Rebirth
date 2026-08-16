@@ -24,6 +24,8 @@ from ui.s03_aggregate import format_number, prepare_risk_data
 from ui.s06_plview import (
     DISPLAY_COLUMNS,
     PL_AGGREGATE_TOGGLE_TYPE,
+    PL_EXPLORER_EXCLUDE_ID,
+    PL_EXPLORER_FILTER_IDS,
     PL_FILTER_FIELDS,
     PL_FILTER_IDS,
     PL_FILTER_NOTE,
@@ -188,15 +190,9 @@ def test_closed_pl_sections_never_build_or_serialize_effective_rows(
     monkeypatch.setattr(pl_events, "_effective_store", forbidden)
     monkeypatch.setattr(pl_events, "_display_records", forbidden)
 
-    preview = _callback(app, "pl-send-preview-grid.data")
     sog = _callback(app, "pl-send-sog-effective-store.data")
     portfolio = _callback(app, "pl-send-portfolio-effective-store.data")
 
-    assert preview(0, 7, [], 0) == (
-        [],
-        "Open P&L Preview to load its current rows.",
-    )
-    assert preview(2, 8, ["include"], 1)[0] == []
     for callback in (sog, portfolio):
         store, options, selected = callback(0, 7, [], 0, None)
         assert store == {}
@@ -221,13 +217,8 @@ def test_open_pl_sections_load_on_odd_parity_and_initialize_filters(
         return effective.copy(deep=True), pd.DataFrame(), pd.DataFrame()
 
     monkeypatch.setattr(pl_events, "_effective_rows", effective_rows)
-    preview = _callback(app, "pl-send-preview-grid.data")
     sog = _callback(app, "pl-send-sog-effective-store.data")
     portfolio = _callback(app, "pl-send-portfolio-effective-store.data")
-
-    preview_rows, preview_status = preview(3, 7, ["include"], 0)
-    assert len(preview_rows) == 2
-    assert preview_status == "2 unique Portfolio + ConcertoField rows."
 
     sog_store, sog_options, selected_sog = sog(1, 7, [], 4, None)
     assert [option["value"] for option in sog_options] == ["SOG-A", "SOG-B"]
@@ -251,7 +242,7 @@ def test_open_pl_sections_load_on_odd_parity_and_initialize_filters(
     assert len(portfolio_store["rows"]) == 2
     assert portfolio_store["include_adjustments"] is True
     assert portfolio_store["editor_epoch"] == 5
-    assert calls == [True, False, True]
+    assert calls == [False, True]
 
 
 def test_pl_sections_are_independent_top_level_disclosures() -> None:
@@ -282,22 +273,24 @@ def test_pl_sections_are_independent_top_level_disclosures() -> None:
         "SOG P&L",
         "Portfolio P&L",
         "Write PL to S3",
-        "P&L Preview",
-        "Validate P&L",
-        "Histo P&L",
     ]
     assert all(
         [item for item in _walk(detail) if isinstance(item, html.Details)] == [detail]
         for detail in details
     )
     assert "pl-workflow-summary" not in _string_ids(html.Div(sections))
-    preview = next(
+    explorer = next(
         item
         for item in _walk(html.Div(sections))
-        if getattr(item, "id", None) == "pl-send-preview-grid"
+        if getattr(item, "id", None) == "pnl-explorer"
     )
-    assert preview.filter_action == "native"
-    assert preview.filter_options == {"case": "insensitive"}
+    assert [
+        item.children for item in _walk(explorer) if isinstance(item, html.Summary)
+    ] == ["Validate P&L", "Histo P&L"]
+    explorer_ids = _string_ids(explorer)
+    assert set(PL_EXPLORER_FILTER_IDS.values()) <= explorer_ids
+    assert PL_EXPLORER_EXCLUDE_ID in explorer_ids
+    assert not any("preview" in component_id for component_id in explorer_ids)
 
 
 def test_native_pl_page_owns_workflow_and_adjustment_state() -> None:
@@ -322,12 +315,17 @@ def test_native_pl_page_owns_workflow_and_adjustment_state() -> None:
         "pl-send-all-panel",
         "send-all-pl-button",
         "pl-send-all-status",
-        "pl-preview-summary",
+        "pnl-explorer",
+        "pnl-explorer-filter-bar",
         "pl-sog-summary",
         "pl-portfolio-summary",
         "pl-validate-summary",
         "pl-history-summary",
     } <= ids
+    assert set(PL_EXPLORER_FILTER_IDS.values()) <= ids
+    assert PL_EXPLORER_EXCLUDE_ID in ids
+    assert "pl-preview-summary" not in ids
+
     filters = [
         item.id
         for item in _walk(page)
@@ -399,6 +397,39 @@ def test_native_pl_page_owns_workflow_and_adjustment_state() -> None:
 
     cold_page = build_pl_page(start_initial_load=True)
     assert "pnl-initial-load-trigger" in _string_ids(cold_page)
+
+
+def test_explorer_filter_reducer_is_the_sole_owner_and_retains_canonical_values(
+    tmp_path: Path,
+) -> None:
+    app, _manager = _registered_pl_app(tmp_path)
+    owner = _callback(
+        app,
+        f"{PL_EXPLORER_FILTER_IDS['activity']}.options",
+    )
+
+    loaded = owner(7, 1, 0, [], [], [], [], [], [])
+    assert loaded[0] == [{"label": "Unmapped", "value": "Unmapped"}]
+    assert {option["value"] for option in loaded[4]} == {"BOOK-A", "BOOK-B"}
+
+    retained = owner(8, 0, 0, [], [], ["book-a"], [], [], ["exclude"])
+    assert retained[5] == ["BOOK-A"]
+    assert retained[-1] == ["exclude"]
+
+    output_owners = {
+        (component_id, prop): 0
+        for component_id in PL_EXPLORER_FILTER_IDS.values()
+        for prop in ("options", "value")
+    }
+    output_owners[(PL_EXPLORER_EXCLUDE_ID, "value")] = 0
+    for metadata in app.callback_map.values():
+        outputs = metadata["output"]
+        outputs = outputs if isinstance(outputs, list) else [outputs]
+        for output in outputs:
+            component_id, prop = str(output).split(".", 1)
+            if (component_id, prop) in output_owners:
+                output_owners[(component_id, prop)] += 1
+    assert set(output_owners.values()) == {1}
 
 
 def test_send_all_builds_once_and_sends_independent_defensive_copies(
@@ -749,12 +780,12 @@ def test_histo_data_is_lazy_expandable_and_reuses_the_loaded_history(
         "ctx",
         SimpleNamespace(triggered_id="pl-history-summary"),
     )
-    closed = history_callback(0, [], [], [], [], [], {})
+    closed = history_callback(0, [], [], [], [], [], [], [], [], [], [], [], {})
     assert all(value is no_update for value in closed)
 
     monkeypatch.setattr(pl_events, "load_pl_history", real_loader)
     table, status, minimum, maximum, open_paths, comparisons, selection = (
-        history_callback(1, [], [], [], [], [], {})
+        history_callback(1, [], [], [], [], [], [], [], [], [], [], [], {})
     )
     assert isinstance(table, html.Div)
     assert "Expand only the branches you need" in status
@@ -780,22 +811,21 @@ def test_histo_data_is_lazy_expandable_and_reuses_the_loaded_history(
         and item.id.get("type") == PL_HISTORY_ROW_TOGGLE_TYPE
     ]
     assert {item["path"] for item in closed_toggle_ids} == {
-        pl_history_path_token(("IR",)),
-        pl_history_path_token(("FX",)),
+        pl_history_path_token(("Unmapped",)),
     }
     assert all(len(item["path"].split(",")) == 1 for item in closed_toggle_ids)
 
     # The disclosure owns disk refresh. Branch and comparison interactions
     # use its cached validated frame instead of touching the CSV source again.
     monkeypatch.setattr(pl_events, "load_pl_history", forbidden)
-    ir_token = pl_history_path_token(("IR",))
+    unmapped_token = pl_history_path_token(("Unmapped",))
     monkeypatch.setattr(
         pl_events,
         "ctx",
         SimpleNamespace(
             triggered_id={
                 "type": PL_HISTORY_ROW_TOGGLE_TYPE,
-                "path": ir_token,
+                "path": unmapped_token,
             }
         ),
     )
@@ -804,20 +834,25 @@ def test_histo_data_is_lazy_expandable_and_reuses_the_loaded_history(
         [1],
         [],
         [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
         open_paths,
         comparisons,
         selection,
     )
-    assert expanded[4] == [ir_token]
+    assert expanded[4] == [unmapped_token]
     expanded_toggle_ids = [
         item.id
         for item in _walk(expanded[0])
         if isinstance(getattr(item, "id", None), dict)
         and item.id.get("type") == PL_HISTORY_ROW_TOGGLE_TYPE
     ]
-    assert pl_history_path_token(("IR", "Delta")) in {
-        item["path"] for item in expanded_toggle_ids
-    }
+    ir_token = pl_history_path_token(("Unmapped", "IR"))
+    assert ir_token in {item["path"] for item in expanded_toggle_ids}
     monkeypatch.setattr(
         pl_events,
         "ctx",
@@ -832,6 +867,12 @@ def test_histo_data_is_lazy_expandable_and_reuses_the_loaded_history(
         1,
         [],
         [1],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
         [],
         expanded[4],
         expanded[5],
@@ -876,11 +917,17 @@ def test_histo_data_is_lazy_expandable_and_reuses_the_loaded_history(
         [],
         [],
         [1],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
         compared[4],
         compared[5],
         compared[6],
     )
-    assert selected[6] == {"path": ["IR"], "period": MTD_PERIOD}
+    assert selected[6] == {"path": ["Unmapped", "IR"], "period": MTD_PERIOD}
 
     monkeypatch.setattr(
         pl_events,
@@ -897,12 +944,21 @@ def test_histo_data_is_lazy_expandable_and_reuses_the_loaded_history(
         [],
         [2],
         [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
         selected[4],
         selected[5],
         selected[6],
     )
     assert collapsed_comparison[5] == []
-    assert collapsed_comparison[6] == {"path": ["IR"], "period": MTD_PERIOD}
+    assert collapsed_comparison[6] == {
+        "path": ["Unmapped", "IR"],
+        "period": MTD_PERIOD,
+    }
 
 
 def test_histo_accepts_a_lazy_canonical_history_function(
@@ -934,7 +990,9 @@ def test_histo_accepts_a_lazy_canonical_history_function(
         ),
     )
 
-    table, status, *_state = history_callback(1, [], [], [], [], [], {})
+    table, status, *_state = history_callback(
+        1, [], [], [], [], [], [], [], [], [], [], [], {}
+    )
 
     assert isinstance(table, html.Div)
     assert "daily partitions" in status
@@ -952,7 +1010,7 @@ def test_histo_chart_supports_wtd_type_selection_and_observed_rows_only(
         "ctx",
         SimpleNamespace(triggered_id="pl-history-summary"),
     )
-    hierarchy_callback(1, [], [], [], [], [], {})
+    hierarchy_callback(1, [], [], [], [], [], [], [], [], [], [], [], {})
 
     def forbidden(*_args, **_kwargs):
         raise AssertionError("chart interaction reloaded P&L history")
@@ -965,8 +1023,14 @@ def test_histo_chart_supports_wtd_type_selection_and_observed_rows_only(
         SimpleNamespace(triggered_id="pl-history-range-wtd"),
     )
     both = chart_callback(
-        {"path": ["IR"]},
+        {"path": ["Unmapped", "IR"]},
         "both",
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
         1,
         0,
         0,
@@ -1004,8 +1068,14 @@ def test_histo_chart_supports_wtd_type_selection_and_observed_rows_only(
         SimpleNamespace(triggered_id="pl-history-series-selector"),
     )
     colossus = chart_callback(
-        {"path": ["IR"]},
+        {"path": ["Unmapped", "IR"]},
         "colossus",
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
         1,
         0,
         0,
@@ -1015,8 +1085,14 @@ def test_histo_chart_supports_wtd_type_selection_and_observed_rows_only(
         both[1],
     )
     predict = chart_callback(
-        {"path": ["IR"]},
+        {"path": ["Unmapped", "IR"]},
         "predict",
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
         1,
         0,
         0,
@@ -1027,6 +1103,98 @@ def test_histo_chart_supports_wtd_type_selection_and_observed_rows_only(
     )
     assert [trace.name for trace in colossus[0].data] == [COLOSSUS_TYPE]
     assert [trace.name for trace in predict[0].data] == [PREDICT_TYPE]
+
+
+def test_explorer_portfolio_filter_governs_histo_table_chart_and_open_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, _manager = _registered_pl_app(tmp_path)
+    hierarchy = _callback(app, "pl-history-grid.children")
+    monkeypatch.setattr(
+        pl_events,
+        "ctx",
+        SimpleNamespace(triggered_id="pl-history-summary"),
+    )
+    rendered = hierarchy(
+        1,
+        [],
+        [],
+        [],
+        [],
+        [],
+        ["book-b"],
+        [],
+        [],
+        [],
+        [],
+        [],
+        {},
+    )
+    assert "2 filtered rows" in rendered[1]
+    total_daily_predict = next(
+        item
+        for item in _walk(rendered[0])
+        if isinstance(getattr(item, "id", None), dict)
+        and item.id.get("type") == PL_HISTORY_METRIC_CELL_TYPE
+        and item.id.get("path") == pl_history_path_token(())
+        and item.id.get("period") == DAILY_P_PERIOD
+        and item.id.get("series") == PREDICT_TYPE
+    )
+    assert _text(total_daily_predict) == "6"
+
+    stale_path = pl_history_path_token(("Unmapped",))
+    monkeypatch.setattr(
+        pl_events,
+        "ctx",
+        SimpleNamespace(triggered_id=PL_EXPLORER_FILTER_IDS["portfolio"]),
+    )
+    reset = hierarchy(
+        1,
+        [],
+        [],
+        [],
+        [],
+        [],
+        ["BOOK-B"],
+        [],
+        [],
+        [],
+        [stale_path],
+        [MTD_PERIOD],
+        {"path": ["Unmapped", "IR"]},
+    )
+    assert reset[4:] == ([], [], {"path": []})
+
+    chart = _callback(app, "pl-history-chart.figure")
+    monkeypatch.setattr(
+        pl_events,
+        "ctx",
+        SimpleNamespace(triggered_id="pl-history-series-selector"),
+    )
+    plotted = chart(
+        {"path": ["Unmapped", "IR"]},
+        "both",
+        [],
+        [],
+        ["BOOK-B"],
+        [],
+        [],
+        [],
+        0,
+        0,
+        0,
+        0,
+        None,
+        None,
+        {"preset": "all"},
+    )
+    assert "2 observed daily points" in plotted[2]
+    assert [list(trace.x) for trace in plotted[0].data] == [
+        ["2026-07-19"],
+        ["2026-07-19"],
+    ]
+    assert [list(trace.y) for trace in plotted[0].data] == [[7.0], [6.3]]
 
 
 def test_histo_callback_metadata_owns_tree_range_and_series_state(
@@ -1047,10 +1215,18 @@ def test_histo_callback_metadata_owns_tree_range_and_series_state(
         "pl-history-open-comparisons.data",
         "pl-history-selection-store.data",
     ]
-    assert {item["property"] for item in hierarchy["inputs"]} == {"n_clicks"}
+    assert {item["property"] for item in hierarchy["inputs"]} == {
+        "n_clicks",
+        "value",
+    }
     assert PL_HISTORY_ROW_TOGGLE_TYPE in hierarchy["inputs"][1]["id"]
     assert PL_HISTORY_PERIOD_HEADER_TYPE in hierarchy["inputs"][2]["id"]
     assert PL_HISTORY_METRIC_CELL_TYPE in hierarchy["inputs"][3]["id"]
+    hierarchy_inputs = {(item["id"], item["property"]) for item in hierarchy["inputs"]}
+    assert {
+        (component_id, "value") for component_id in PL_EXPLORER_FILTER_IDS.values()
+    } <= hierarchy_inputs
+    assert (PL_EXPLORER_EXCLUDE_ID, "value") in hierarchy_inputs
 
     chart = next(
         metadata
@@ -1061,6 +1237,8 @@ def test_histo_callback_metadata_owns_tree_range_and_series_state(
     assert {
         ("pl-history-selection-store", "data"),
         ("pl-history-series-selector", "value"),
+        *{(component_id, "value") for component_id in PL_EXPLORER_FILTER_IDS.values()},
+        (PL_EXPLORER_EXCLUDE_ID, "value"),
         ("pl-history-range-wtd", "n_clicks"),
         ("pl-history-range-mtd", "n_clicks"),
         ("pl-history-range-ytd", "n_clicks"),
@@ -1094,9 +1272,7 @@ def test_manager_app_without_pl_config_omits_inert_workflow(tmp_path: Path) -> N
     assert "pl-validate-summary" not in without_ids
     assert "pl-history-summary" not in without_ids
     assert "pl-adjustment-revision-store" not in without_ids
-    assert not any(
-        "pl-send-preview-grid.data" in key for key in without_pl.callback_map
-    )
+    assert not any("pl-send-preview" in key for key in without_pl.callback_map)
     without_pnl_page = _native_page(without_pl, "/pnl")
     without_pnl_ids = _string_ids(without_pnl_page)
     assert {
@@ -1124,15 +1300,16 @@ def test_manager_app_without_pl_config_omits_inert_workflow(tmp_path: Path) -> N
     with_page = _native_page(with_pl, "/pnl")
     with_ids = _string_ids(with_page)
     assert {
-        "pl-preview-summary",
+        "pnl-explorer",
         "pl-sog-summary",
         "pl-portfolio-summary",
         "pl-validate-summary",
         "pl-history-summary",
         "pl-adjustment-revision-store",
     } <= with_ids
+    assert "pl-preview-summary" not in with_ids
     assert "pl-workflow-summary" not in with_ids
-    assert any("pl-send-preview-grid.data" in key for key in with_pl.callback_map)
+    assert not any("pl-send-preview" in key for key in with_pl.callback_map)
 
 
 def test_cold_native_pnl_is_safe_before_commit_and_recovers_at_revision_one(
@@ -1161,11 +1338,6 @@ def test_cold_native_pnl_is_safe_before_commit_and_recovers_at_revision_one(
         [],
     )
     assert "still loading" in str(aggregate_view.children)
-    preview = _callback(app, "pl-send-preview-grid.data")
-    rows, status = preview(1, 0, [], 0)
-    assert rows == []
-    assert status == "P&L data is still loading. This preview will update shortly."
-
     sog = _callback(app, "pl-send-sog-effective-store.data")
     store, options, selected = sog(1, 0, [], 0, None)
     assert (store, options, selected) == ({}, [], None)
@@ -1183,9 +1355,7 @@ def test_cold_native_pnl_is_safe_before_commit_and_recovers_at_revision_one(
         getattr(item, "className", None) == "aggregate-risk-row"
         for item in _walk(aggregate_view)
     )
-    rows, status = preview(1, manager.health.revision, [], 0)
-    assert rows
-    assert "unique Portfolio + ConcertoField rows" in status
+    assert not any("pl-send-preview" in key for key in app.callback_map)
 
 
 def test_static_app_rejects_inert_pl_configuration(tmp_path: Path) -> None:

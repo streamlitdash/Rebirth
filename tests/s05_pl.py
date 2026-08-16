@@ -6,13 +6,16 @@ import pandas as pd
 import pytest
 
 from core.s04_pl import (
+    ACTIVITY,
     ADJUSTMENT,
     BOOK,
+    CATEGORY,
     COLOSSUS_TYPE,
     CONCERTO_FIELD,
     HISTORICAL_PL_COLUMNS,
     HISTO_TYPE,
     HISTORY_FILE_COLUMNS,
+    HISTORY_MAPPING_STATUS,
     HISTORY_TYPE,
     PL_HISTORY_COLUMNS,
     PL_HISTORY_DAILY_PERIOD,
@@ -24,9 +27,12 @@ from core.s04_pl import (
     PLSendValidationError,
     PREDICT_TYPE,
     PREDICTED_TYPE,
+    PORTFOLIO,
     PRODUCT,
     RISK_GREEK,
     RISK_TYPE,
+    SIGNOFF_GROUP,
+    SUB_CATEGORY,
     UNDERLYING,
     apply_adjustment_overlay,
     build_pl_send_base,
@@ -132,7 +138,7 @@ def _history_leaf(root, market_date: str, *, duplicate: bool = False):
 def _analysis_history() -> pd.DataFrame:
     """History with deliberate missing dates/types and more than one leaf."""
 
-    return pd.DataFrame(
+    history = pd.DataFrame(
         [
             ["2025-12-31", "Histo", "IR", "Delta", "EUR", "XVA", "BOOK_A", 100.0],
             [
@@ -178,8 +184,17 @@ def _analysis_history() -> pd.DataFrame:
                 8.0,
             ],
         ],
-        columns=list(PL_HISTORY_COLUMNS),
+        columns=["Market Date", HISTORY_TYPE, *HISTORY_FILE_COLUMNS],
     )
+    history = history.rename(columns={BOOK: PORTFOLIO})
+    history[ACTIVITY] = "Rates"
+    history[SIGNOFF_GROUP] = history[PORTFOLIO].map(
+        {"BOOK_A": "SOG-A", "BOOK_B": "SOG-A", "BOOK_C": "SOG-B"}
+    )
+    history[CATEGORY] = "Core"
+    history[SUB_CATEGORY] = "Synthetic"
+    history[HISTORY_MAPPING_STATUS] = "Mapped"
+    return history.loc[:, list(PL_HISTORY_COLUMNS)]
 
 
 def test_historical_pl_normalizes_and_sorts_the_exact_daily_grain(tmp_path) -> None:
@@ -234,7 +249,7 @@ def test_pl_history_loads_strict_actual_and_predicted_date_partitions(tmp_path) 
     actual = history.loc[
         history[HISTORY_TYPE].eq(HISTO_TYPE)
         & history["Market Date"].eq("2026-08-15")
-        & history[BOOK].eq("BOOK_A")
+        & history[PORTFOLIO].eq("BOOK_A")
     ]
     assert actual.iloc[0]["PL"] == 10.0
 
@@ -265,7 +280,7 @@ def test_pl_history_series_aggregates_exact_path_once_per_observed_day_and_type(
 
     series = select_pl_history_series(
         history,
-        ("IR", "Delta", "EUR", "XVA"),
+        ("SOG-A", "IR", "Delta", "EUR", "XVA"),
         ("actual", "Predicted"),
     )
 
@@ -284,7 +299,7 @@ def test_pl_history_series_supports_total_and_keeps_missing_identity_empty() -> 
     history = _analysis_history()
 
     total = select_pl_history_series(history, (), PREDICT_TYPE)
-    missing = select_pl_history_series(history, ("Credit",))
+    missing = select_pl_history_series(history, ("SOG-X",))
 
     latest = total.loc[total["Market Date"].eq("2026-08-14")]
     assert latest[[HISTORY_TYPE, "PL"]].values.tolist() == [[PREDICT_TYPE, 8.0]]
@@ -341,13 +356,13 @@ def test_pl_history_period_values_use_global_latest_and_required_type_semantics(
 def test_pl_history_period_values_do_not_fall_back_or_fabricate_missing_daily() -> None:
     history = _analysis_history()
 
-    global_latest = pl_history_period_values(history, ("IR",))
+    global_latest = pl_history_period_values(history, ("SOG-A", "IR"))
     explicit_ir_latest = pl_history_period_values(
         history,
-        ("IR",),
+        ("SOG-A", "IR"),
         as_of="2026-08-13",
     )
-    missing = pl_history_period_values(history, ("Credit",))
+    missing = pl_history_period_values(history, ("SOG-X",))
 
     assert global_latest.loc[global_latest["Period"].eq(PL_HISTORY_DAILY_PERIOD)].empty
     assert explicit_ir_latest.loc[

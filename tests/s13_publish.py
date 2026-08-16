@@ -40,6 +40,7 @@ def test_stage_bundle_uses_conventional_runtime_names(tmp_path: Path) -> None:
         Path("adapters/s05_stock.py"),
         Path("adapters/s06_new_positions.py"),
         Path("adapters/s07_cross_gamma.py"),
+        Path("adapters/s08_commo.py"),
         Path("core/s06_reporting.py"),
         Path("core/s07_stock.py"),
         Path("core/s08_saved_views.py"),

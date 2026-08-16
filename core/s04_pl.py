@@ -23,6 +23,7 @@ from core.s01_schema import (
     PORTFOLIO_COLUMN,
     PORTFOLIO_MAPPED_COLUMN,
     PORTFOLIO_METADATA_COLUMNS,
+    UNMAPPED_VALUE,
 )
 from core.s09_cross_gamma import (
     CROSS_GAMMA_SOURCE_SPLIT,
@@ -40,6 +41,9 @@ PL = "PL"
 ADJUSTMENT = "Adjustment"
 MARKET_DATE = "Market Date"
 RECORD_TYPE = "Record Type"
+ACTIVITY = "Activity"
+CATEGORY = "Category"
+SUB_CATEGORY = "Sub Category"
 
 MAPPING_COLUMNS = (RISK_TYPE, RISK_GREEK, CONCERTO_FIELD)
 PL_SEND_COLUMNS = (
@@ -80,18 +84,46 @@ PL_HISTORY_PERIODS = (
 UNDERLYING = "Underlying"
 PRODUCT = "Product"
 BOOK = "Book"
-HISTORY_IDENTITY_COLUMNS = (
+HISTORY_MAPPING_STATUS = "Mapping Status"
+HISTORY_FILE_IDENTITY_COLUMNS = (
     RISK_TYPE,
     RISK_GREEK,
     UNDERLYING,
     PRODUCT,
     BOOK,
 )
-HISTORY_FILE_COLUMNS = (*HISTORY_IDENTITY_COLUMNS, PL)
+HISTORY_FILE_COLUMNS = (*HISTORY_FILE_IDENTITY_COLUMNS, PL)
+HISTORY_FILTER_COLUMNS = (
+    ACTIVITY,
+    SIGNOFF_GROUP,
+    PORTFOLIO,
+    CATEGORY,
+    SUB_CATEGORY,
+)
+HISTORY_IDENTITY_COLUMNS = (
+    SIGNOFF_GROUP,
+    RISK_TYPE,
+    RISK_GREEK,
+    UNDERLYING,
+    PRODUCT,
+    PORTFOLIO,
+)
+HISTORY_DIMENSION_COLUMNS = (
+    ACTIVITY,
+    SIGNOFF_GROUP,
+    CATEGORY,
+    SUB_CATEGORY,
+    RISK_TYPE,
+    RISK_GREEK,
+    UNDERLYING,
+    PRODUCT,
+    PORTFOLIO,
+)
 PL_HISTORY_COLUMNS = (
     MARKET_DATE,
     HISTORY_TYPE,
-    *HISTORY_IDENTITY_COLUMNS,
+    *HISTORY_DIMENSION_COLUMNS,
+    HISTORY_MAPPING_STATUS,
     PL,
 )
 PL_HISTORY_KEY = (MARKET_DATE, HISTORY_TYPE, *HISTORY_IDENTITY_COLUMNS)
@@ -340,20 +372,24 @@ def _load_history_leaf_file(
     frame.columns = list(HISTORY_FILE_COLUMNS)
     frame = _normalise_text_columns(
         frame,
-        list(HISTORY_IDENTITY_COLUMNS),
+        list(HISTORY_FILE_IDENTITY_COLUMNS),
         label=label,
     )
     frame = _normalise_pl(frame, label=label)
-    duplicate_keys = frame.duplicated(list(HISTORY_IDENTITY_COLUMNS), keep=False)
+    duplicate_keys = frame.duplicated(list(HISTORY_FILE_IDENTITY_COLUMNS), keep=False)
     if duplicate_keys.any():
         keys = (
-            frame.loc[duplicate_keys, list(HISTORY_IDENTITY_COLUMNS)]
+            frame.loc[duplicate_keys, list(HISTORY_FILE_IDENTITY_COLUMNS)]
             .drop_duplicates()
             .to_dict("records")
         )
         raise PLSendValidationError(
             f"{label} contains duplicate history identity keys: {keys}"
         )
+    frame = frame.rename(columns={BOOK: PORTFOLIO})
+    for column in (ACTIVITY, SIGNOFF_GROUP, CATEGORY, SUB_CATEGORY):
+        frame[column] = UNMAPPED_VALUE
+    frame[HISTORY_MAPPING_STATUS] = UNMAPPED_VALUE
     frame.insert(0, HISTORY_TYPE, history_type)
     frame.insert(0, MARKET_DATE, market_date)
     return frame[list(PL_HISTORY_COLUMNS)]
@@ -408,7 +444,9 @@ def _load_pl_history_uncached(source: FrameSource) -> pd.DataFrame:
     the independently validated historical Quick Market ``market.csv``. Their
     exact P&L leaf grain is Risk Type + Risk Greek + Underlying + Product +
     Book; Market Date and P&L Type are authoritative in the partition path and
-    file name.
+    file name. Legacy rows have no archived portfolio-governance authority, so
+    Activity, SignoffGroup, Category, and Sub Category are explicitly labelled
+    ``Unmapped`` and Book is carried forward as Portfolio without guessing.
 
     The former Portfolio + ConcertoField shape cannot be promoted safely: it
     does not contain the requested hierarchy identities. ``load_historical_pl``
@@ -563,9 +601,21 @@ def _normalize_pl_history_for_analysis(history: pd.DataFrame) -> pd.DataFrame:
     normalized = _normalise_market_dates(normalized, label="P&L history")
     normalized = _normalise_text_columns(
         normalized,
-        list(HISTORY_IDENTITY_COLUMNS),
+        [*HISTORY_DIMENSION_COLUMNS, HISTORY_MAPPING_STATUS],
         label="P&L history",
     )
+    invalid_mapping_status = ~normalized[HISTORY_MAPPING_STATUS].isin(
+        ("Mapped", UNMAPPED_VALUE)
+    )
+    if invalid_mapping_status.any():
+        values = sorted(
+            normalized.loc[invalid_mapping_status, HISTORY_MAPPING_STATUS]
+            .drop_duplicates()
+            .tolist()
+        )
+        raise PLSendValidationError(
+            f"P&L history Mapping Status must be 'Mapped' or 'Unmapped'; found {values}"
+        )
     normalized[HISTORY_TYPE] = [
         _canonical_pl_history_type(value, label="P&L history type")
         for value in normalized[HISTORY_TYPE]
@@ -593,14 +643,14 @@ def validate_pl_history_frame(history: pd.DataFrame) -> pd.DataFrame:
 
 
 def _normalize_pl_history_path(path: Sequence[object]) -> tuple[str, ...]:
-    """Validate one ordered Risk Type-to-Book hierarchy prefix."""
+    """Validate one ordered SignoffGroup-to-Portfolio hierarchy prefix."""
 
     if isinstance(path, (str, bytes)) or not isinstance(path, Sequence):
         raise TypeError("P&L history path must be a sequence")
     if len(path) > len(HISTORY_IDENTITY_COLUMNS):
         raise PLSendValidationError(
-            "P&L history path cannot be deeper than Risk Type, Risk Greek, "
-            "Underlying, Product, Book"
+            "P&L history path cannot be deeper than SignoffGroup, Risk Type, "
+            "Risk Greek, Underlying, Product, Portfolio"
         )
     normalized: list[str] = []
     for depth, value in enumerate(path):
@@ -1252,14 +1302,20 @@ def build_saved_pl_frame(
 
 
 __all__ = [
+    "ACTIVITY",
     "ADJUSTMENT",
     "ADJUSTMENT_KEY",
     "BOOK",
+    "CATEGORY",
     "COLOSSUS_TYPE",
     "HISTORICAL_PL_COLUMNS",
     "HISTORICAL_PL_KEY",
     "HISTORY_FILE_COLUMNS",
+    "HISTORY_FILE_IDENTITY_COLUMNS",
+    "HISTORY_FILTER_COLUMNS",
+    "HISTORY_DIMENSION_COLUMNS",
     "HISTORY_IDENTITY_COLUMNS",
+    "HISTORY_MAPPING_STATUS",
     "HISTORY_TYPE",
     "HISTO_TYPE",
     "FrameSource",
@@ -1291,6 +1347,7 @@ __all__ = [
     "RISK_GREEK",
     "RISK_TYPE",
     "SIGNOFF_GROUP",
+    "SUB_CATEGORY",
     "UNDERLYING",
     "apply_adjustment_overlay",
     "build_pl_send_base",

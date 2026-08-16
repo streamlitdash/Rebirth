@@ -63,7 +63,7 @@ from ui.s07_events import (
 )
 
 
-MARKET_DATE = pd.Timestamp("2026-08-15")
+MARKET_DATE = pd.Timestamp("2026-08-14")
 CREDIT_SOURCE = "credit/delta"
 TRADED_CREDIT_ID = "FAKE - CREDIT-001"
 OPEN_CREDIT_ID = "FAKE - CREDIT-002"

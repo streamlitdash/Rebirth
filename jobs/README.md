@@ -2,9 +2,11 @@
 
 `archive_official_risk.ipynb` is the thin Jupyter Scheduler wrapper around the
 tested Python archive API. It refreshes one coherent Risk snapshot, checks that
-today's market source is `OFFICIAL`, reads Colossus P&L, and atomically publishes
-one completed date partition containing Risk, Colossus, and the full Quick
-Market projection.
+the naturally resolved business Market Date is `OFFICIAL`, reads Colossus P&L,
+and atomically publishes one completed date partition containing Risk,
+Colossus, and the full Quick Market projection. `market_date_for(System Date)`
+keeps weekdays unchanged and resolves a natural Saturday or Sunday to the
+preceding Friday; explicit weekend view dates are still rejected.
 
 In JupyterLab, create a recurring job for the notebook with this schedule:
 
@@ -46,7 +48,17 @@ The daily leaf is:
 
 Predict (`P`) is projected from `risk.csv` column `PL`; Colossus (`C`) is read
 from `colossus.csv`. Validate P&L and Histo P&L use these same two official
-P&L files. `market.csv` is independent of P/C and uses the exact ordered
+P&L files. Predict keeps the archived SignoffGroup, Product, Portfolio, and
+filter metadata. Colossus remains an exact Portfolio + Underlying + Risk Type +
+Risk Greek source: SignoffGroup and Product are attached only when `risk.csv`
+proves one unique Portfolio authority. C-only rows with valid authority remain
+mapped with P missing; absent or ambiguous authority is retained exactly once
+as Unmapped and never duplicated across Products.
+
+The P&L Explorer's Activity, Signoff Group, Portfolio, Category, and Sub
+Category filters govern both Validate P&L and Histo P&L after these files are
+loaded. Missing Predict or Colossus observations remain missing rather than
+being zero-filled. `market.csv` is independent of P/C and uses the exact ordered
 `core.s03_search.MARKET_RESULT_COLUMNS` schema:
 
 ```text
@@ -61,7 +73,8 @@ selects an exact Risk Type + Risk Greek + raw Underlying, then an explicit Tenor
 Swap + Tenor Option cell, and plots that cell's `Current` through the completed
 dates. It does not average cells or zero-fill missing dates. The committed
 in-memory quote is authoritative for today and replaces any archived point with
-the same date.
+the same date. Open was loaded from `Market Date - BDay(1)`; Current and market
+status were loaded for Market Date.
 
 Only leaves with a valid `_SUCCESS` manifest are accepted as official. A
 schema-v2 manifest records rows, exact columns, and SHA-256 digests for all

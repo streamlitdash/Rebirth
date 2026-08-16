@@ -1,4 +1,4 @@
-"""Dash components for governed PL preview, adjustment, send, and save flows."""
+"""Dash components for governed P&L adjustment, send, save, and exploration."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from .s04_components import build_aggregate_pl_table, build_cube_loader
 from .s11_saved_views import SavedFilterViewControls
 from .s12_plhistory import build_pl_history_series_selector
 from .s13_validate_pl import build_validate_pl_section
+from .s14_pl_explorer import PL_EXPLORER_EXCLUDE_ID, PL_EXPLORER_FILTER_IDS
 
 
 DISPLAY_COLUMNS = (
@@ -212,92 +213,45 @@ def _pl_filter_bar(initial_frame: pd.DataFrame | None = None) -> html.Div:
     )
 
 
-def _preview_columns() -> list[dict[str, object]]:
-    """Return the read-only Preview PL DataTable columns."""
-    return [
-        {
-            "name": column,
-            "id": column,
-            **({"type": "numeric"} if column == "PL" else {}),
-        }
-        for column in DISPLAY_COLUMNS
+def _pl_explorer_filter_bar() -> html.Div:
+    """Build the namespaced five-field filter authority for both explorers."""
+
+    controls = [
+        html.Div(
+            [
+                html.Label(field.label, htmlFor=PL_EXPLORER_FILTER_IDS[field.key]),
+                dcc.Dropdown(
+                    id=PL_EXPLORER_FILTER_IDS[field.key],
+                    options=[],
+                    value=[],
+                    multi=True,
+                    placeholder=f"All {field.label.casefold()} values",
+                ),
+            ],
+            className="control-field",
+        )
+        for field in PL_FILTER_FIELDS
     ]
-
-
-def _preview_table() -> dash_table.DataTable:
-    """Build the read-only preview with the same typography as Cube."""
-    return dash_table.DataTable(
-        id="pl-send-preview-grid",
-        columns=_preview_columns(),
-        data=[],
-        editable=False,
-        sort_action="native",
-        filter_action="native",
-        filter_options={"case": "insensitive"},
-        page_action="native",
-        page_size=20,
-        markdown_options={"html": True},
-        style_table={"overflowX": "auto", "borderRadius": "8px"},
-        style_header={
-            "backgroundColor": "#FFFFFF",
-            "color": "#111111",
-            "fontWeight": "800",
-            "border": "1px solid #D9DEE5",
-            "height": "40px",
-        },
-        style_cell={
-            "backgroundColor": "#FFFFFF",
-            "color": "#111111",
-            "border": "1px solid #E2E6EA",
-            "fontFamily": '"Segoe UI Variable Text", "Segoe UI", Arial, sans-serif',
-            "fontSize": "13px",
-            "lineHeight": "1.35",
-            "height": "38px",
-            "padding": "8px 10px",
-            "textAlign": "left",
-            "minWidth": "118px",
-            "maxWidth": "240px",
-            "whiteSpace": "nowrap",
-        },
-        style_cell_conditional=[
-            {
-                "if": {"column_id": "Risk Type"},
-                "backgroundColor": "#C4DEF5",
-                "color": "#111111",
-                "fontWeight": "800",
-                "borderLeft": "2px dotted #111111",
-                "borderRight": "2px dotted #111111",
-            },
-            {
-                "if": {"column_id": "PL"},
-                "backgroundColor": "#FFFFE0",
-                "color": "#111111",
-                "fontWeight": "800",
-                "borderLeft": "2px dotted #111111",
-                "borderRight": "2px dotted #111111",
-                "textAlign": "right",
-            },
-            {"if": {"column_id": "Adjustment"}, "textAlign": "center"},
-        ],
-        style_header_conditional=[
-            {
-                "if": {"column_id": "Risk Type"},
-                "backgroundColor": "#C4DEF5",
-                "color": "#111111",
-                "borderLeft": "2px dotted #111111",
-                "borderRight": "2px dotted #111111",
-            },
-            {
-                "if": {"column_id": "PL"},
-                "backgroundColor": "#FFFFE0",
-                "color": "#111111",
-                "borderLeft": "2px dotted #111111",
-                "borderRight": "2px dotted #111111",
-            },
-        ],
-        style_data_conditional=[
-            {"if": {"filter_query": "{PL} < 0", "column_id": "PL"}, "color": "#B42318"},
-        ],
+    return html.Div(
+        html.Div(
+            [
+                *controls,
+                dcc.Checklist(
+                    id=PL_EXPLORER_EXCLUDE_ID,
+                    options=[
+                        {
+                            "label": "Exclude rows matching any selected value",
+                            "value": "exclude",
+                        }
+                    ],
+                    value=[],
+                    className="risk-filter-mode filter-mode-control",
+                ),
+            ],
+            className="controls pnl-filter-controls",
+        ),
+        id="pnl-explorer-filter-bar",
+        className="dimension-filter-bar top-controls",
     )
 
 
@@ -485,40 +439,6 @@ def _editor_table(table_id: str, *, portfolio_editable: bool) -> dash_table.Data
 
 def build_pl_send_sections() -> list[html.Div | html.Details]:
     """Return independently collapsible governed P&L sections and their state."""
-    preview = html.Details(
-        [
-            html.Summary(
-                "P&L Preview",
-                id="pl-preview-summary",
-                n_clicks=0,
-                className="aux-summary",
-            ),
-            html.Div(
-                [
-                    dcc.Checklist(
-                        id="pl-include-adjustments",
-                        options=[{"label": "Show adjustments", "value": "include"}],
-                        value=[],
-                        className="pl-adjustment-toggle",
-                    ),
-                    html.P(
-                        "Off uses the raw aggregate only. On replaces matching "
-                        "Market Date + Portfolio + ConcertoField rows from "
-                        "adjustments/<YYYY-MM-DD>/<safe-portfolio>_<hash>.csv.",
-                        className="unmapped-note",
-                    ),
-                    html.Div(_preview_table(), className="pl-send-table"),
-                    html.Div(
-                        id="pl-send-preview-status",
-                        className="pl-send-status",
-                        role="status",
-                    ),
-                ],
-                className="pl-send-panel",
-            ),
-        ],
-        className="aux-details",
-    )
     send_all = html.Div(
         html.Div(
             [
@@ -818,11 +738,11 @@ def build_pl_send_sections() -> list[html.Div | html.Details]:
             html.Div(
                 [
                     html.P(
-                        "Expand Risk Type → Risk Greek → Underlying → Product "
-                        "→ Book. Daily (P) is today's Predict P&L. MTD and YTD "
-                        "show Colossus by default; click either period header to reveal "
-                        "its Colossus/Predict columns, then click a cell to plot that "
-                        "exact scope.",
+                        "Expand Signoff Group → Risk Type → Risk Greek → Underlying "
+                        "→ Product → Portfolio. Daily (P) is today's Predict P&L. "
+                        "MTD and YTD show Colossus by default; click either period "
+                        "header to reveal its Colossus/Predict columns, then click a "
+                        "cell to plot that exact filtered scope.",
                         className="pl-editor-guide",
                     ),
                     html.Div(
@@ -925,6 +845,23 @@ def build_pl_send_sections() -> list[html.Div | html.Details]:
         ],
         className="aux-details",
     )
+    explorer = html.Section(
+        [
+            html.H2("P&L Explorer", className="static-data-page-title"),
+            html.P(
+                "Use one filter set for both Validate P&L and Histo P&L. Include "
+                "mode uses OR within one selector and AND across selectors; "
+                "exclude mode removes a row matching any selected value. Missing "
+                "Predict or Colossus values remain unavailable rather than zero.",
+                className="static-data-page-note",
+            ),
+            _pl_explorer_filter_bar(),
+            validate_pl,
+            history,
+        ],
+        id="pnl-explorer",
+        className="pnl-explorer",
+    )
     state = html.Div(
         [
             dcc.Store(id="pl-send-sog-effective-store", data={}),
@@ -945,9 +882,7 @@ def build_pl_send_sections() -> list[html.Div | html.Details]:
         by_sog,
         by_portfolio,
         save,
-        preview,
-        validate_pl,
-        history,
+        explorer,
     ]
 
 
@@ -992,9 +927,9 @@ def build_pl_page(
                 html.H1("P&L Sender", className="static-data-page-title"),
                 html.P(
                     (
-                        "Review mapped Aggregate P&L, preview governed P&L, edit "
-                        "and send it by SOG or Portfolio, write the complete file, "
-                        "and compare Histo with Predicted P&L."
+                        "Review mapped Aggregate P&L, edit and send it by SOG or "
+                        "Portfolio, write the complete file, and explore official "
+                        "Predict versus Colossus P&L."
                         if send_workflow_available
                         else "Review mapped Aggregate P&L from the latest committed "
                         "risk refresh."
@@ -1017,6 +952,8 @@ __all__ = [
     "DISPLAY_COLUMNS",
     "GRID_ROW_ID",
     "PL_AGGREGATE_TOGGLE_TYPE",
+    "PL_EXPLORER_EXCLUDE_ID",
+    "PL_EXPLORER_FILTER_IDS",
     "PL_FILTER_FIELDS",
     "PL_FILTER_IDS",
     "PL_FILTER_NOTE",

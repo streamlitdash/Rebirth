@@ -9,7 +9,13 @@ from types import SimpleNamespace
 import pandas as pd
 from dash import html
 
-from core.s02_pipeline import PRODUCT_SPECS_BY_SOURCE_TYPE, RiskRefreshManager
+from core.s02_pipeline import (
+    PRODUCT_SPECS_BY_SOURCE_TYPE,
+    RiskRefreshManager,
+    checker_date_for,
+    market_date_for,
+    risk_date_for,
+)
 from tools.s01_fixtures import build_datasets, validate_datasets
 from ui.s04_components import build_risk_date_editor
 
@@ -111,3 +117,23 @@ def test_fake_readiness_explicitly_reports_fx_gamma_age_zero() -> None:
     fx_gamma = validated.loc[validated["Source Type"].eq("fx/gamma")].iloc[0]
     assert int(fx_gamma["Age"]) == 0
     assert bool(fx_gamma["Age Defaulted"]) is False
+
+
+def test_fake_readiness_age_is_applied_after_the_weekend_aware_t_minus_one_base() -> (
+    None
+):
+    readiness = pd.DataFrame(build_datasets()["s01_readiness.csv"])
+    market_date = market_date_for("2026-08-16")
+    base_risk_date = checker_date_for(market_date)
+
+    assert market_date == pd.Timestamp("2026-08-14")
+    assert base_risk_date == pd.Timestamp("2026-08-13")
+    assert set(readiness["Age"].astype(int)) == {0, 1}
+    calculated = {
+        int(age): risk_date_for(base_risk_date, int(age))
+        for age in readiness["Age"].unique()
+    }
+    assert calculated == {
+        0: pd.Timestamp("2026-08-13"),
+        1: pd.Timestamp("2026-08-12"),
+    }

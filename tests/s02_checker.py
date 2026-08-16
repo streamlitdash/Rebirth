@@ -15,8 +15,37 @@ from core.s02_pipeline import (
     SOURCE_TYPE,
     RiskRefreshManager,
     checker_date_for,
+    market_date_for,
     risk_date_for,
 )
+
+
+@pytest.mark.parametrize(
+    ("calendar_date", "expected_market_date"),
+    [
+        ("2026-08-14", "2026-08-14"),  # Friday
+        ("2026-08-15", "2026-08-14"),  # Saturday
+        ("2026-08-16", "2026-08-14"),  # Sunday
+        ("2026-08-17", "2026-08-17"),  # Monday
+    ],
+)
+def test_market_date_is_always_the_latest_weekday(
+    calendar_date: str,
+    expected_market_date: str,
+) -> None:
+    assert market_date_for(calendar_date) == pd.Timestamp(expected_market_date)
+
+
+def test_sunday_market_and_default_t_minus_one_chain() -> None:
+    market_date = market_date_for("2026-08-16")
+    checker_date = checker_date_for(market_date)
+
+    assert market_date == pd.Timestamp("2026-08-14")
+    assert checker_date == pd.Timestamp("2026-08-13")
+    assert risk_date_for(checker_date, 0) == pd.Timestamp("2026-08-13")
+    assert risk_date_for(checker_date, 1) == pd.Timestamp("2026-08-12")
+    # Direct callers receive the same weekend-aware chain.
+    assert checker_date_for("2026-08-16") == pd.Timestamp("2026-08-13")
 
 
 def test_checker_date_is_prior_business_day_and_age_is_applied_afterward() -> None:

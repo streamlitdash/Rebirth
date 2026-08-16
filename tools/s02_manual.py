@@ -194,7 +194,7 @@ def draw_dates(path: Path) -> None:
         draw,
         (60, 255, 390, 425),
         "Market date",
-        "Trading-today unless Force Market is applied",
+        "Latest weekday; weekend rolls to Friday unless a valid Force Market is applied",
         fill=PASTEL_BLUE,
     )
     _box(
@@ -214,8 +214,8 @@ def draw_dates(path: Path) -> None:
     _box(
         draw,
         (1080, 210, 1515, 370),
-        "Checker + Portfolio",
-        "Both functions receive checker_date",
+        "Checker + Portfolio + Open",
+        "All receive checker_date (T-1)",
         fill=PASTEL_GREEN,
     )
     _box(
@@ -263,14 +263,14 @@ def draw_market(path: Path) -> None:
         draw,
         (365, 335, 665, 475),
         "Open loop",
-        "market_date + status + one Underlying",
+        "checker_date (T-1) + status + one Underlying",
         fill=PASTEL_GREEN,
     )
     _box(
         draw,
         (365, 540, 665, 680),
         "Current loop",
-        "Same date/status + one Underlying",
+        "market_date + status + one Underlying",
         fill=PASTEL_GREEN,
     )
     _box(

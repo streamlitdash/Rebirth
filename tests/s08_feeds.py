@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from feeds.s01_sources import (
     FAKE_CSV_FILES,
@@ -11,6 +12,7 @@ from feeds.s01_sources import (
     get_colossus_pl,
     get_market_open,
     get_market_state,
+    get_risk_checker,
 )
 
 
@@ -95,6 +97,21 @@ def test_fake_market_state_becomes_official_at_london_cutoff() -> None:
         )
         == "OFFICIAL"
     )
+
+
+def test_fake_market_state_rolls_sunday_to_the_previous_official_friday() -> None:
+    assert (
+        get_market_state(
+            pd.Timestamp("2026-08-16"),
+            now=pd.Timestamp("2026-08-16 12:00:00", tz="Europe/London"),
+        )
+        == "OFFICIAL"
+    )
+
+
+def test_fake_readiness_rejects_an_explicit_weekend_checker_date() -> None:
+    with pytest.raises(ValueError, match="checker_date must be a business day"):
+        get_risk_checker(pd.Timestamp("2026-08-16"))
 
 
 def test_fake_colossus_loader_adapts_histo_partition_to_archive_grain() -> None:

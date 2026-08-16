@@ -31,8 +31,9 @@ from core.s01_schema import (
     TENOR_OPTION_ORDER,
     TENOR_SWAP,
     TENOR_SWAP_ORDER,
+    UNMAPPED_VALUE,
 )
-from core.s02_pipeline import PRODUCT_SPECS_BY_SOURCE_TYPE
+from core.s02_pipeline import PRODUCT_SPECS_BY_SOURCE_TYPE, market_date_for
 from core.s03_search import (
     CURRENT,
     MARKET_DATA_STATUS,
@@ -42,8 +43,10 @@ from core.s03_search import (
     SOURCE_TYPE,
 )
 from core.s04_pl import (
-    BOOK,
+    ACTIVITY,
+    CATEGORY,
     COLOSSUS_TYPE,
+    HISTORY_MAPPING_STATUS,
     HISTORY_TYPE,
     MARKET_DATE,
     PL,
@@ -54,6 +57,8 @@ from core.s04_pl import (
     PLSendValidationError,
     RISK_GREEK,
     RISK_TYPE,
+    SIGNOFF_GROUP,
+    SUB_CATEGORY,
     UNDERLYING,
     load_legacy_pl_history_leaf,
     validate_pl_history_frame,
@@ -104,6 +109,16 @@ MARKET_HISTORY_COLUMNS = (
     TENOR_OPTION_ORDER,
     CURRENT,
 )
+PORTFOLIO_AUTHORITY_COLUMNS = (
+    PORTFOLIO,
+    SIGNOFF_GROUP,
+    PRODUCT,
+    ACTIVITY,
+    CATEGORY,
+    SUB_CATEGORY,
+    HISTORY_MAPPING_STATUS,
+)
+MAPPED_HISTORY_VALUE = "Mapped"
 ARCHIVE_SCHEMA_VERSION = 2
 _SUPPORTED_ARCHIVE_SCHEMA_VERSIONS = frozenset((1, ARCHIVE_SCHEMA_VERSION))
 
@@ -827,19 +842,21 @@ def archive_official_snapshot(
     """Atomically write one eligible committed snapshot and its Colossus P&L.
 
     Eligibility is deliberately narrow: the selected Market Date must be the
-    manager's natural System Date, the committed source must be exactly
-    ``OFFICIAL``, and the snapshot must not be a retained last-good revision
-    carrying refresh errors.  Re-running a completed date is a no-op.
+    manager's naturally resolved business Market Date, the committed source
+    must be exactly ``OFFICIAL``, and the snapshot must not be a retained
+    last-good revision carrying refresh errors. Re-running a completed date is
+    a no-op.
     """
 
     market_date = _normalize_date(snapshot.market_date, label="Market Date")
     system_date = _normalize_date(snapshot.system_date, label="System Date")
+    natural_market_date = market_date_for(system_date).date().isoformat()
     leaf = archive_leaf_path(root, market_date)
     status = str(snapshot.market_status).strip()
-    if market_date != system_date:
+    if market_date != natural_market_date:
         return ArchiveResult(
             status="skipped",
-            reason="Selected Market Date is not the current natural System Date.",
+            reason="Selected Market Date is not the current natural Market Date.",
             market_date=market_date,
             path=leaf,
         )
@@ -957,22 +974,116 @@ def archive_from_manager(
     return archive_official_snapshot(snapshot, colossus_loader, root)
 
 
+def build_history_portfolio_authority(risk: pd.DataFrame) -> pd.DataFrame:
+    """Return one nonduplicating Portfolio authority for historical P&L.
+
+    Colossus owns no Product or SignoffGroup.  Those two fields are authoritative
+    only when the archived Predict snapshot has exactly one distinct
+    ``(SignoffGroup, Product)`` pair for the Portfolio.  Ambiguous Portfolios are
+    retained once and labelled ``Unmapped`` so callers can expose them without
+    guessing or duplicating Colossus rows.  The remaining filter metadata is
+    independently retained only when unique for that Portfolio.
+    """
+
+    validated = validate_risk_archive_frame(risk)
+    required = (
+        PORTFOLIO,
+        SIGNOFF_GROUP,
+        PRODUCT,
+        ACTIVITY,
+        CATEGORY,
+        SUB_CATEGORY,
+    )
+    missing = [column for column in required if column not in validated]
+    if missing:
+        raise RiskArchiveValidationError(
+            "official Risk Explorer snapshot is missing historical P&L authority "
+            f"columns: {missing}"
+        )
+    normalized = _validate_text_columns(
+        validated,
+        required,
+        label="official Risk Explorer snapshot",
+    )
+    portfolios = (
+        normalized[[PORTFOLIO]]
+        .drop_duplicates()
+        .sort_values(PORTFOLIO, kind="stable")
+        .reset_index(drop=True)
+    )
+    pairs = normalized[[PORTFOLIO, SIGNOFF_GROUP, PRODUCT]].drop_duplicates()
+    pair_counts = pairs.groupby(PORTFOLIO, sort=False).size()
+    valid_portfolios = set(pair_counts.loc[pair_counts.eq(1)].index.astype(str))
+    unique_pairs = pairs.loc[pairs[PORTFOLIO].isin(valid_portfolios)]
+    authority = portfolios.merge(
+        unique_pairs,
+        on=PORTFOLIO,
+        how="left",
+        validate="one_to_one",
+    )
+    mapped = authority[PORTFOLIO].isin(valid_portfolios)
+    authority[HISTORY_MAPPING_STATUS] = np.where(
+        mapped,
+        MAPPED_HISTORY_VALUE,
+        UNMAPPED_VALUE,
+    )
+    authority.loc[~mapped, [SIGNOFF_GROUP, PRODUCT]] = UNMAPPED_VALUE
+
+    for column in (ACTIVITY, CATEGORY, SUB_CATEGORY):
+        values = normalized[[PORTFOLIO, column]].drop_duplicates()
+        counts = values.groupby(PORTFOLIO, sort=False).size()
+        unique_portfolios = set(counts.loc[counts.eq(1)].index.astype(str))
+        unique_values = values.loc[values[PORTFOLIO].isin(unique_portfolios)]
+        authority = authority.merge(
+            unique_values,
+            on=PORTFOLIO,
+            how="left",
+            validate="one_to_one",
+        )
+        authority[column] = authority[column].fillna(UNMAPPED_VALUE)
+
+    return authority.loc[:, list(PORTFOLIO_AUTHORITY_COLUMNS)].reset_index(drop=True)
+
+
 def project_archive_to_pl_history(archive: RiskArchive) -> pd.DataFrame:
     """Project one archive into the existing canonical Colossus/Predict grain.
 
-    Predict is summed from position rows only after grouping to Risk Type +
-    Risk Greek + Underlying + Product + Portfolio.  A partially missing PL
-    group is omitted rather than treated as a partial or zero total.  Colossus
-    receives Product only from the snapshot's strict Portfolio-to-Product
-    authority; unknown or multi-Product portfolios fail closed.
+    Predict is summed from position rows only after grouping to SignoffGroup +
+    Risk Type + Risk Greek + Underlying + Product + Portfolio. A partially
+    missing PL group is omitted rather than treated as a partial or zero total.
+    Colossus receives SignoffGroup and Product only from the strict archived
+    Portfolio authority. Unknown or ambiguous Portfolios are retained once in
+    the explicit Unmapped hierarchy instead of failing or being duplicated.
     """
 
     market_date = _normalize_date(archive.market_date, label="Market Date")
     risk = validate_risk_archive_frame(archive.risk)
     colossus = validate_colossus_frame(archive.colossus)
+    authority_dimensions = (
+        SIGNOFF_GROUP,
+        ACTIVITY,
+        CATEGORY,
+        SUB_CATEGORY,
+    )
+    missing = [column for column in authority_dimensions if column not in risk]
+    if missing:
+        raise RiskArchiveValidationError(
+            "official Risk Explorer snapshot is missing historical P&L authority "
+            f"columns: {missing}"
+        )
     normalized_risk = _validate_text_columns(
         risk,
-        (PORTFOLIO, UNDERLYING, RISK_TYPE, RISK_GREEK, PRODUCT),
+        (
+            PORTFOLIO,
+            UNDERLYING,
+            RISK_TYPE,
+            RISK_GREEK,
+            PRODUCT,
+            SIGNOFF_GROUP,
+            ACTIVITY,
+            CATEGORY,
+            SUB_CATEGORY,
+        ),
         label="official Risk Explorer snapshot",
     )
     normalized_risk[PL] = _nullable_numeric(
@@ -981,20 +1092,15 @@ def project_archive_to_pl_history(archive: RiskArchive) -> pd.DataFrame:
         allow_missing=True,
     )
 
-    product_authority = normalized_risk[[PORTFOLIO, PRODUCT]].drop_duplicates()
-    ambiguous = product_authority.duplicated(PORTFOLIO, keep=False)
-    if ambiguous.any():
-        keys = (
-            product_authority.loc[ambiguous]
-            .sort_values([PORTFOLIO, PRODUCT], kind="stable")
-            .to_dict("records")
-        )
-        raise RiskArchiveValidationError(
-            "Cannot project Colossus: Portfolio does not map to exactly one "
-            f"Product in risk.csv: {keys}"
-        )
-
-    predict_keys = [RISK_TYPE, RISK_GREEK, UNDERLYING, PRODUCT, PORTFOLIO]
+    portfolio_authority = build_history_portfolio_authority(normalized_risk)
+    predict_keys = [
+        SIGNOFF_GROUP,
+        RISK_TYPE,
+        RISK_GREEK,
+        UNDERLYING,
+        PRODUCT,
+        PORTFOLIO,
+    ]
     predicted = (
         normalized_risk[predict_keys + [PL]]
         .groupby(
@@ -1006,26 +1112,33 @@ def project_archive_to_pl_history(archive: RiskArchive) -> pd.DataFrame:
         )[PL]
         .agg(lambda values: values.sum(min_count=len(values)))
         .dropna(subset=[PL])
-        .rename(columns={PORTFOLIO: BOOK})
     )
+    predicted = predicted.merge(
+        portfolio_authority[[PORTFOLIO, ACTIVITY, CATEGORY, SUB_CATEGORY]],
+        on=PORTFOLIO,
+        how="left",
+        validate="many_to_one",
+    )
+    predicted[HISTORY_MAPPING_STATUS] = MAPPED_HISTORY_VALUE
     predicted.insert(0, HISTORY_TYPE, PREDICT_TYPE)
     predicted.insert(0, MARKET_DATE, market_date)
 
     actual = colossus.merge(
-        product_authority,
+        portfolio_authority,
         on=PORTFOLIO,
         how="left",
         validate="many_to_one",
-        indicator=True,
     )
-    unknown = actual["_merge"].ne("both")
-    if unknown.any():
-        portfolios = sorted(actual.loc[unknown, PORTFOLIO].drop_duplicates().tolist())
-        raise RiskArchiveValidationError(
-            "Cannot project Colossus because these Portfolios have no Product "
-            f"authority in risk.csv: {portfolios}"
-        )
-    actual = actual.drop(columns="_merge").rename(columns={PORTFOLIO: BOOK})
+    authority_columns = (
+        SIGNOFF_GROUP,
+        PRODUCT,
+        ACTIVITY,
+        CATEGORY,
+        SUB_CATEGORY,
+        HISTORY_MAPPING_STATUS,
+    )
+    for column in authority_columns:
+        actual[column] = actual[column].fillna(UNMAPPED_VALUE)
     actual.insert(0, HISTORY_TYPE, COLOSSUS_TYPE)
     actual.insert(0, MARKET_DATE, market_date)
 
@@ -1383,13 +1496,16 @@ __all__ = [
     "MARKET_FILE_NAME",
     "MARKET_HISTORY_COLUMNS",
     "MARKET_IDENTITY_COLUMNS",
+    "MAPPED_HISTORY_VALUE",
     "RISK_FILE_NAME",
+    "PORTFOLIO_AUTHORITY_COLUMNS",
     "RiskArchive",
     "RiskArchiveValidationError",
     "SUCCESS_FILE_NAME",
     "archive_from_manager",
     "archive_leaf_path",
     "archive_official_snapshot",
+    "build_history_portfolio_authority",
     "build_market_history_loader",
     "list_completed_market_dates",
     "load_risk_archive",

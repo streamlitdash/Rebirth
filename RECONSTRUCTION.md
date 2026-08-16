@@ -46,7 +46,7 @@ output file.
 | adapter/feed fragments | `adapters/`, `feeds/` | Retain public adapter shapes; default to fixture-backed implementations. |
 | component fragments | `ui/s04_components.py` | Restore wrappers, indentation, and one complete component tree. |
 | event fragments | `ui/s07_events.py` | Restore one owner per callback Output and complete callback return contracts. |
-| PL fragments | `ui/s06_plview.py`, `ui/s08_plevents.py` | Preserve lazy P&L preview/send behavior with a local fallback. |
+| PL fragments | `ui/s06_plview.py`, `ui/s08_plevents.py` | Preserve lazy P&L send/explorer behavior with a local fallback. |
 | factory fragment | `ui/s09_factory.py` | Preserve one app, one router, and cold-start mounting. |
 | JS/CSS fragments | `assets/` | Remove Markdown fences/duplicate chunks and repair only proven token/ID corruption. |
 

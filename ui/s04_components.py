@@ -151,6 +151,13 @@ _QUICK_SEARCH_IDENTITY_OPTIONS = (
     ("Tenor Option", "Tenor Option"),
     ("Portfolio", "Portfolio"),
 )
+_QUICK_MARKET_HISTORY_PERIOD_LABELS = {
+    "wtd": "WTD",
+    "mtd": "MTD",
+    "ytd": "YTD",
+    "all": "All",
+    "custom": "Custom",
+}
 QUICK_SEARCH_INDEX_OPTIONS = (
     *_QUICK_SEARCH_IDENTITY_OPTIONS,
     *((field.label, field.external_name) for field in PORTFOLIO_FIELDS),
@@ -977,33 +984,6 @@ def build_quick_market_search() -> html.Details:
                         className="quick-search-dimension-control",
                         hidden=True,
                     ),
-                    html.Div(
-                        [
-                            html.Label(
-                                "Historical quote",
-                                htmlFor="quick-market-history-cell",
-                            ),
-                            html.Div(
-                                [
-                                    dcc.Dropdown(
-                                        id="quick-market-history-cell",
-                                        options=[],
-                                        value=None,
-                                        clearable=False,
-                                        searchable=True,
-                                        disabled=True,
-                                        placeholder="Select one tenor cell",
-                                        className="quick-search-metric-dropdown",
-                                    ),
-                                    html.Small(
-                                        "One exact quote cell is plotted through time; curves and surfaces are never averaged across tenors.",
-                                        className="quick-search-dimension-help",
-                                    ),
-                                ]
-                            ),
-                        ],
-                        className="quick-search-dimension-control",
-                    ),
                     dcc.Loading(
                         html.Div(
                             "Open this section to read the current MarketBook.",
@@ -1013,8 +993,98 @@ def build_quick_market_search() -> html.Details:
                         type="dot",
                         delay_show=160,
                     ),
-                    html.Div(
+                    html.Details(
                         [
+                            html.Summary(
+                                [
+                                    html.Span(
+                                        "Historical data",
+                                        className="quick-search-pivot-title",
+                                    ),
+                                    html.Span(
+                                        "One exact quote cell through time",
+                                        className="quick-search-pivot-values",
+                                    ),
+                                ],
+                                id="quick-market-history-summary",
+                                n_clicks=0,
+                                className="quick-search-pivot-summary",
+                            ),
+                            html.Div(
+                                [
+                                    html.Div(
+                                        [
+                                            html.Label(
+                                                "Exact quote cell",
+                                                htmlFor="quick-market-history-cell",
+                                            ),
+                                            dcc.Dropdown(
+                                                id="quick-market-history-cell",
+                                                options=[],
+                                                value=None,
+                                                clearable=False,
+                                                searchable=True,
+                                                disabled=True,
+                                                placeholder="Select one tenor cell",
+                                                className="quick-search-metric-dropdown",
+                                            ),
+                                            html.Small(
+                                                "Connector-ranked tenor cells stay separate; no curve, surface or Portfolio averaging is used.",
+                                                className="quick-search-dimension-help",
+                                            ),
+                                        ],
+                                        className="quick-market-history-control",
+                                    ),
+                                    html.Div(
+                                        [
+                                            html.Label(
+                                                "Period",
+                                                htmlFor="quick-market-history-period",
+                                            ),
+                                            dcc.RadioItems(
+                                                id="quick-market-history-period",
+                                                options=[
+                                                    {"label": "WTD", "value": "wtd"},
+                                                    {"label": "MTD", "value": "mtd"},
+                                                    {"label": "YTD", "value": "ytd"},
+                                                    {"label": "All", "value": "all"},
+                                                    {
+                                                        "label": "Custom",
+                                                        "value": "custom",
+                                                    },
+                                                ],
+                                                value="all",
+                                                inline=True,
+                                                className="detail-tenor-view-radio quick-market-history-period",
+                                            ),
+                                        ],
+                                        className="quick-market-history-control",
+                                    ),
+                                    html.Div(
+                                        [
+                                            html.Label(
+                                                "Custom dates",
+                                                htmlFor="quick-market-history-date-range",
+                                            ),
+                                            dcc.DatePickerRange(
+                                                id="quick-market-history-date-range",
+                                                start_date=None,
+                                                end_date=None,
+                                                display_format="YYYY-MM-DD",
+                                                minimum_nights=0,
+                                                clearable=True,
+                                                className="quick-market-history-date-range",
+                                            ),
+                                            html.Small(
+                                                "Choose Custom to apply this inclusive date range.",
+                                                className="quick-search-dimension-help",
+                                            ),
+                                        ],
+                                        className="quick-market-history-control",
+                                    ),
+                                ],
+                                className="quick-market-history-controls",
+                            ),
                             html.Div(
                                 [
                                     html.H3(
@@ -1022,7 +1092,7 @@ def build_quick_market_search() -> html.Details:
                                         className="detail-chart-title",
                                     ),
                                     html.Small(
-                                        "Select a market identity to compare one exact quote cell through time.",
+                                        "Open Historical data to load one exact raw MarketBook quote cell.",
                                         id="quick-market-history-status",
                                         className="quick-search-dimension-help",
                                     ),
@@ -1039,7 +1109,13 @@ def build_quick_market_search() -> html.Details:
                                 delay_show=160,
                             ),
                         ],
-                        className="detail-chart-card quick-market-history-card",
+                        id="quick-market-history-details",
+                        open=False,
+                        className=(
+                            "quick-search-shell quick-search-pivot-details "
+                            "quick-market-history-details"
+                        ),
+                        **{"aria-label": "Historical data"},
                     ),
                 ],
                 className="quick-search-pivot-body",
@@ -1211,6 +1287,66 @@ def _quick_market_history_cell(frame: pd.DataFrame, selected_cell: str) -> pd.Da
     return frame.loc[keep].copy()
 
 
+def _quick_market_history_date(value: object, *, label: str) -> pd.Timestamp:
+    try:
+        timestamp = pd.Timestamp(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} must be a valid date") from exc
+    if pd.isna(timestamp):
+        raise ValueError(f"{label} must be a valid date")
+    if timestamp.tzinfo is not None:
+        timestamp = timestamp.tz_convert("UTC").tz_localize(None)
+    return timestamp.normalize()
+
+
+def quick_market_history_date_window(
+    period: str | None,
+    market_date: object,
+    *,
+    start_date: object | None = None,
+    end_date: object | None = None,
+) -> tuple[pd.Timestamp | None, pd.Timestamp | None, str]:
+    """Resolve one inclusive historical range against the current Market Date."""
+
+    current_date = _quick_market_history_date(market_date, label="Market Date")
+    selected_period = str(period or "all").strip().casefold()
+    try:
+        label = _QUICK_MARKET_HISTORY_PERIOD_LABELS[selected_period]
+    except KeyError as exc:
+        raise ValueError(
+            "Historical period must be WTD, MTD, YTD, All or Custom"
+        ) from exc
+    if selected_period == "all":
+        return None, current_date, label
+    if selected_period == "wtd":
+        return (
+            current_date - pd.Timedelta(days=current_date.weekday()),
+            current_date,
+            label,
+        )
+    if selected_period == "mtd":
+        return current_date.replace(day=1), current_date, label
+    if selected_period == "ytd":
+        return current_date.replace(month=1, day=1), current_date, label
+    if start_date in (None, "") or end_date in (None, ""):
+        return None, None, label
+    selected_start = _quick_market_history_date(
+        start_date,
+        label="Historical start date",
+    )
+    selected_end = _quick_market_history_date(
+        end_date,
+        label="Historical end date",
+    )
+    if selected_start > selected_end:
+        raise ValueError("Historical start date must be on or before end date")
+    if selected_start > current_date:
+        raise ValueError(
+            "Historical start date must be on or before the current Market Date"
+        )
+    return selected_start, min(selected_end, current_date), label
+
+
 def build_quick_market_history_result(
     history_frame: pd.DataFrame,
     current_frame: pd.DataFrame,
@@ -1218,8 +1354,23 @@ def build_quick_market_history_result(
     selected_cell: str,
     market_date: object,
     market_status: str,
+    period: str = "all",
+    start_date: object | None = None,
+    end_date: object | None = None,
 ) -> tuple[html.Div | dcc.Graph, str]:
     """Plot daily Current values for one quote cell plus the live current point."""
+
+    window_start, window_end, period_label = quick_market_history_date_window(
+        period,
+        market_date,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    if str(period or "all").strip().casefold() == "custom" and (
+        window_start is None or window_end is None
+    ):
+        message = "Choose both custom dates to plot this exact quote cell."
+        return html.Div(message, className="quick-search-hint"), message
 
     required = {"Market Date", "Current"}
     missing = sorted(required - set(history_frame.columns))
@@ -1239,25 +1390,14 @@ def build_quick_market_history_result(
     points["Current"] = pd.to_numeric(points["Current"], errors="coerce")
     points = points.dropna(subset=["Market Date", "Current"])
 
-    current_date = pd.Timestamp(market_date).normalize()
+    current_date = _quick_market_history_date(market_date, label="Market Date")
     current_value = pd.to_numeric(
         pd.Series([current.iloc[0]["Current"]]), errors="coerce"
     ).iloc[0]
-    current_included = bool(pd.notna(current_value))
+    current_available = bool(pd.notna(current_value))
     # The committed in-memory MarketBook owns its date even when that quote is
     # unavailable. Never fall back to an archived value for the current date.
     points = points.loc[points["Market Date"].dt.normalize().ne(current_date)]
-    if current_included:
-        points = pd.concat(
-            [
-                points,
-                pd.DataFrame(
-                    {"Market Date": [current_date], "Current": [current_value]}
-                ),
-            ],
-            ignore_index=True,
-        )
-
     duplicate_dates = points["Market Date"].dt.normalize().duplicated(keep=False)
     if duplicate_dates.any():
         dates = sorted(
@@ -1270,6 +1410,26 @@ def build_quick_market_history_result(
             "Market history contains duplicate quote cells for dates "
             + ", ".join(dates[:5])
         )
+    if window_start is not None:
+        points = points.loc[points["Market Date"].dt.normalize().ge(window_start)]
+    if window_end is not None:
+        points = points.loc[points["Market Date"].dt.normalize().le(window_end)]
+    current_in_window = bool(
+        (window_start is None or current_date >= window_start)
+        and (window_end is None or current_date <= window_end)
+    )
+    current_included = current_available and current_in_window
+    if current_included:
+        points = pd.concat(
+            [
+                points,
+                pd.DataFrame(
+                    {"Market Date": [current_date], "Current": [current_value]}
+                ),
+            ],
+            ignore_index=True,
+        )
+
     points = points.sort_values("Market Date", kind="stable")
     if points.empty:
         return (
@@ -1322,13 +1482,14 @@ def build_quick_market_history_result(
         hovermode="x unified",
     )
     observation_count = len(points) - int(current_included)
-    current_status = (
-        f" · today's {market_status} point included"
-        if current_included
-        else f" · today's {market_status} quote is unavailable"
-    )
+    if current_included:
+        current_status = f" · today's {market_status} point included"
+    elif not current_in_window:
+        current_status = f" · today's {market_status} point is outside the date range"
+    else:
+        current_status = f" · today's {market_status} quote is unavailable"
     status = (
-        f"{_quick_market_history_cell_label(selected_cell)} · "
+        f"{period_label} · {_quick_market_history_cell_label(selected_cell)} · "
         f"{observation_count:,} archived daily observation"
         f"{'s' if observation_count != 1 else ''}{current_status}"
     )
@@ -5687,6 +5848,7 @@ __all__ = [
     "metric_title",
     "new_trade_detail_frame",
     "quick_market_history_cell_state",
+    "quick_market_history_date_window",
     "quick_market_history_identity",
     "selected_context_title",
     "default_top_book_open_rows",

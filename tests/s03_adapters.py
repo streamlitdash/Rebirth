@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -16,7 +17,7 @@ from adapters.s02_ir import (
     IR_DELTAVEGA_RISK,
     build_ir_adapters,
 )
-from adapters.s03_commo import (
+from adapters.s08_commo import (
     COMMO_DELTA_CURRENT,
     COMMO_DELTA_OPEN,
     COMMO_DELTA_RISK,
@@ -37,6 +38,24 @@ from core.s02_pipeline import (
     get_product_market_status,
     get_product_risk,
 )
+
+
+ADAPTERS = Path(__file__).resolve().parents[1] / "adapters"
+
+
+def test_adapter_module_numbers_are_unique_and_sequential() -> None:
+    expected = [
+        "s01_common.py",
+        "s02_ir.py",
+        "s03_fx.py",
+        "s04_credit.py",
+        "s05_stock.py",
+        "s06_new_positions.py",
+        "s07_cross_gamma.py",
+        "s08_commo.py",
+    ]
+
+    assert sorted(path.name for path in ADAPTERS.glob("s[0-9][0-9]_*.py")) == expected
 
 
 def _frame(columns: tuple[str, ...], rows: list[list[object]]) -> pd.DataFrame:

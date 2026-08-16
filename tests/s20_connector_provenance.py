@@ -151,7 +151,7 @@ def test_active_product_registration_still_reads_the_fake_csv_boundary() -> None
     assert adapter.market_open.__module__ == "feeds.s01_sources"
     assert adapter.market_status.__module__ == "feeds.s01_sources"
 
-    risk = adapter.risk(pd.Timestamp("2026-08-15"))
+    risk = adapter.risk(pd.Timestamp("2026-08-14"))
     assert not risk.empty
     assert risk["Underlying"].str.contains("FAKE_REPLACE_ME", regex=False).all()
     assert risk["Portfolio"].str.contains("FAKE_REPLACE_ME", regex=False).all()

@@ -8,10 +8,17 @@ import pandas as pd
 from dash import dcc, html
 
 from core.s04_pl import (
+    ACTIVITY,
+    CATEGORY,
     COLOSSUS_TYPE,
     HISTORY_FILE_COLUMNS,
+    HISTORY_MAPPING_STATUS,
     HISTORY_TYPE,
+    PL_HISTORY_COLUMNS,
+    PORTFOLIO,
     PREDICT_TYPE,
+    SIGNOFF_GROUP,
+    SUB_CATEGORY,
     select_pl_history_series,
 )
 from ui.s12_plhistory import (
@@ -86,10 +93,19 @@ def _history() -> pd.DataFrame:
             8.0,
         ],
     ]
-    return pd.DataFrame(
+    history = pd.DataFrame(
         rows,
         columns=["Market Date", HISTORY_TYPE, *HISTORY_FILE_COLUMNS],
     )
+    history = history.rename(columns={"Book": PORTFOLIO})
+    history[ACTIVITY] = history[PORTFOLIO].map({"BOOK-A": "Rates", "BOOK-B": "FX"})
+    history[SIGNOFF_GROUP] = history[PORTFOLIO].map(
+        {"BOOK-A": "SOG-A", "BOOK-B": "SOG-B"}
+    )
+    history[CATEGORY] = "Core"
+    history[SUB_CATEGORY] = "Synthetic"
+    history[HISTORY_MAPPING_STATUS] = "Mapped"
+    return history.loc[:, list(PL_HISTORY_COLUMNS)]
 
 
 def _metric_button(
@@ -117,7 +133,7 @@ def test_history_tree_is_lazy_and_uses_global_latest_date_for_stale_nodes() -> N
         history
     )
 
-    assert summary["Hierarchy Path"].tolist() == [(), ("IR",), ("FX",)]
+    assert summary["Hierarchy Path"].tolist() == [(), ("SOG-A",), ("SOG-B",)]
     assert isinstance(table, html.Div)
     assert open_paths == []
     assert comparisons == []
@@ -137,8 +153,8 @@ def test_history_tree_is_lazy_and_uses_global_latest_date_for_stale_nodes() -> N
         and item.id.get("type") == PL_HISTORY_ROW_TOGGLE_TYPE
     ]
     assert {item.id["path"] for item in row_toggles} == {
-        pl_history_path_token(("IR",)),
-        pl_history_path_token(("FX",)),
+        pl_history_path_token(("SOG-A",)),
+        pl_history_path_token(("SOG-B",)),
     }
     assert {item.children for item in row_toggles} == {"▸"}
     assert all(
@@ -146,14 +162,14 @@ def test_history_tree_is_lazy_and_uses_global_latest_date_for_stale_nodes() -> N
         for item in row_toggles
     )
     assert all(
-        item.to_plotly_json()["props"]["aria-label"].startswith("Expand Risk Type: ")
+        item.to_plotly_json()["props"]["aria-label"].startswith("Expand SignoffGroup: ")
         for item in row_toggles
     )
 
     # IR remains available even though only FX exists on the global latest day.
-    assert _text(_metric_button(table, ("IR",), DAILY_P_PERIOD, PREDICT_TYPE)) == "—"
-    assert _text(_metric_button(table, ("IR",), MTD_PERIOD, COLOSSUS_TYPE)) == "21"
-    assert _text(_metric_button(table, ("IR",), YTD_PERIOD, COLOSSUS_TYPE)) == "22"
+    assert _text(_metric_button(table, ("SOG-A",), DAILY_P_PERIOD, PREDICT_TYPE)) == "—"
+    assert _text(_metric_button(table, ("SOG-A",), MTD_PERIOD, COLOSSUS_TYPE)) == "21"
+    assert _text(_metric_button(table, ("SOG-A",), YTD_PERIOD, COLOSSUS_TYPE)) == "22"
     assert _text(_metric_button(table, (), DAILY_P_PERIOD, PREDICT_TYPE)) == "8"
     assert not any(isinstance(item, html.Small) for item in _walk(table))
     assert "Risk Type" not in _text(table)
@@ -161,14 +177,14 @@ def test_history_tree_is_lazy_and_uses_global_latest_date_for_stale_nodes() -> N
 
 def test_history_tree_matches_risk_explorer_and_period_headers_toggle() -> None:
     history = _history()
-    ir = pl_history_path_token(("IR",))
-    ir_delta = pl_history_path_token(("IR", "Delta"))
-    open_paths = toggle_pl_history_open_tokens([], ir)
+    sog = pl_history_path_token(("SOG-A",))
+    ir = pl_history_path_token(("SOG-A", "IR"))
+    open_paths = toggle_pl_history_open_tokens([], sog)
     table, effective_open, comparisons, selection = build_pl_history_table_with_state(
         history, open_path_tokens=open_paths
     )
 
-    assert effective_open == [ir]
+    assert effective_open == [sog]
     assert comparisons == []
     assert selection == {"path": []}
     visible_toggles = {
@@ -178,36 +194,36 @@ def test_history_tree_matches_risk_explorer_and_period_headers_toggle() -> None:
         and item.id.get("type") == PL_HISTORY_ROW_TOGGLE_TYPE
     }
     assert visible_toggles == {
+        sog,
         ir,
-        ir_delta,
-        pl_history_path_token(("FX",)),
+        pl_history_path_token(("SOG-B",)),
     }
     ir_toggle = next(
         item
         for item in _walk(table)
         if isinstance(getattr(item, "id", None), dict)
         and item.id.get("type") == PL_HISTORY_ROW_TOGGLE_TYPE
-        and item.id.get("path") == ir
+        and item.id.get("path") == sog
     )
     assert ir_toggle.children == "−"
     assert ir_toggle.to_plotly_json()["props"]["aria-label"] == (
-        "Collapse Risk Type: IR"
+        "Collapse SignoffGroup: SOG-A"
     )
     assert "Risk Greek" not in _text(table)
     assert "Underlying" not in _text(table)
 
-    open_paths = toggle_pl_history_open_tokens(open_paths, ir_delta)
+    open_paths = toggle_pl_history_open_tokens(open_paths, ir)
     expanded, effective_open, _comparisons, _selection = (
         build_pl_history_table_with_state(history, open_path_tokens=open_paths)
     )
-    assert effective_open == [ir, ir_delta]
+    assert effective_open == [sog, ir]
     expanded_toggle_paths = {
         item.id["path"]
         for item in _walk(expanded)
         if isinstance(getattr(item, "id", None), dict)
         and item.id.get("type") == PL_HISTORY_ROW_TOGGLE_TYPE
     }
-    assert pl_history_path_token(("IR", "Delta", "EUR")) in expanded_toggle_paths
+    assert pl_history_path_token(("SOG-A", "IR", "Delta")) in expanded_toggle_paths
 
     comparison_state = toggle_pl_history_expanded_periods([], MTD_PERIOD)
     compared, _open, effective_comparisons, effective_selection = (
@@ -215,11 +231,11 @@ def test_history_tree_matches_risk_explorer_and_period_headers_toggle() -> None:
             history,
             open_path_tokens=open_paths,
             open_comparison_tokens=comparison_state,
-            selection={"path": ["IR"]},
+            selection={"path": ["SOG-A", "IR"]},
         )
     )
     assert effective_comparisons == [MTD_PERIOD]
-    assert effective_selection == {"path": ["IR"]}
+    assert effective_selection == {"path": ["SOG-A", "IR"]}
     headers = [
         _text(item)
         for item in _walk(compared)
@@ -233,8 +249,14 @@ def test_history_tree_matches_risk_explorer_and_period_headers_toggle() -> None:
         and item.id.get("type") == PL_HISTORY_PERIOD_HEADER_TYPE
     ]
     assert {item.id["period"] for item in period_headers} == {MTD_PERIOD, YTD_PERIOD}
-    assert _text(_metric_button(compared, ("IR",), MTD_PERIOD, COLOSSUS_TYPE)) == "21"
-    assert _text(_metric_button(compared, ("IR",), MTD_PERIOD, PREDICT_TYPE)) == "20"
+    assert (
+        _text(_metric_button(compared, ("SOG-A", "IR"), MTD_PERIOD, COLOSSUS_TYPE))
+        == "21"
+    )
+    assert (
+        _text(_metric_button(compared, ("SOG-A", "IR"), MTD_PERIOD, PREDICT_TYPE))
+        == "20"
+    )
     assert not any(isinstance(item, html.Small) for item in _walk(compared))
 
     both_periods = toggle_pl_history_expanded_periods(comparison_state, YTD_PERIOD)
@@ -261,10 +283,11 @@ def test_history_tree_matches_risk_explorer_and_period_headers_toggle() -> None:
 
     leaf_open: list[str] = []
     for path in (
-        ("IR",),
-        ("IR", "Delta"),
-        ("IR", "Delta", "EUR"),
-        ("IR", "Delta", "EUR", "XVA"),
+        ("SOG-A",),
+        ("SOG-A", "IR"),
+        ("SOG-A", "IR", "Delta"),
+        ("SOG-A", "IR", "Delta", "EUR"),
+        ("SOG-A", "IR", "Delta", "EUR", "XVA"),
     ):
         leaf_open = toggle_pl_history_open_tokens(
             leaf_open,
@@ -290,13 +313,13 @@ def test_history_tree_matches_risk_explorer_and_period_headers_toggle() -> None:
 
     closed = toggle_pl_history_expanded_periods(comparison_state, MTD_PERIOD)
     assert closed == []
-    assert toggle_pl_history_open_tokens(open_paths, ir) == []
+    assert toggle_pl_history_open_tokens(open_paths, sog) == []
 
 
 def test_history_figure_plots_only_observed_colossus_and_predict_rows() -> None:
     history = _history()
-    series = select_pl_history_series(history, ("IR",))
-    figure = build_pl_history_figure(series, path=("IR",))
+    series = select_pl_history_series(history, ("SOG-A", "IR"))
+    figure = build_pl_history_figure(series, path=("SOG-A", "IR"))
 
     assert [trace.name for trace in figure.data] == [COLOSSUS_TYPE, PREDICT_TYPE]
     assert list(figure.data[0].x) == [
@@ -320,12 +343,12 @@ def test_history_figure_plots_only_observed_colossus_and_predict_rows() -> None:
     }
     assert all(value != 0 for trace in figure.data for value in trace.y)
 
-    predict = select_pl_history_series(history, ("IR",), PREDICT_TYPE)
-    predict_figure = build_pl_history_figure(predict, path=("IR",))
+    predict = select_pl_history_series(history, ("SOG-A", "IR"), PREDICT_TYPE)
+    predict_figure = build_pl_history_figure(predict, path=("SOG-A", "IR"))
     assert [trace.name for trace in predict_figure.data] == [PREDICT_TYPE]
     assert list(predict_figure.data[0].y) == [1.5, 2.5, 11.0, 6.0]
 
-    empty = build_pl_history_figure(pd.DataFrame(), path=("IR",))
+    empty = build_pl_history_figure(pd.DataFrame(), path=("SOG-A", "IR"))
     assert not empty.data
     assert empty.layout.annotations[0].text.startswith("Select a P&L cell")
 

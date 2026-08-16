@@ -215,6 +215,9 @@ MAPPED_PORTFOLIOS = (
 UNMAPPED_PORTFOLIO = "BOOK_UNMAPPED"
 RISK_PORTFOLIOS = tuple(row[0] for row in MAPPED_PORTFOLIOS) + (UNMAPPED_PORTFOLIO,)
 
+# Deliberate stale-readiness examples. Every other fake source is Age 0 and
+# therefore uses the centralized Market Date - BDay(1) base; these governed
+# Age-1 signals move one additional pandas business day back.
 AGE_ONE_SOURCE_TYPES = frozenset({"ir/inflationvega", "credit/vega", "commo/vega"})
 CREDIT_FACTORS = {
     "SP01": 1.0,
