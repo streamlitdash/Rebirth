@@ -37,6 +37,7 @@ from core.s04_pl import (
     load_portfolio_governance,
     pl_history_period_bounds,
     select_pl_history_series as select_history_series,
+    validate_pl_history_frame,
 )
 from .s06_plview import (
     DISPLAY_COLUMNS,
@@ -71,6 +72,7 @@ from .s12_plhistory import (
 
 SendFunction = Callable[[pd.DataFrame], None]
 WritePLFunction = Callable[[pd.DataFrame, str, int], None]
+PLHistoryFunction = Callable[[], pd.DataFrame]
 _SAVE_LOCK = RLock()
 _CHECKED = "\N{BALLOT BOX WITH CHECK}"
 _UNCHECKED = "\N{BALLOT BOX}"
@@ -137,9 +139,9 @@ class PLSendConfig:
     # Production boundary for writing the complete PL frame to site-owned s3.
     # The market date is ISO formatted and revision is the committed snapshot.
     write_pl: WritePLFunction | None = None
-    # Strict layout: histo/YYYY/MM-DD/{histo,predicted}.csv at the governed
+    # Strict layout: histo/YYYY-MM-DD/{histo,predicted}.csv at the governed
     # Risk Type/Risk Greek/Underlying/Product/Book daily leaf grain.
-    history_source: str | Path | pd.DataFrame | None = None
+    history_source: str | Path | pd.DataFrame | PLHistoryFunction | None = None
 
 
 def _governance(snapshot) -> pd.DataFrame:
@@ -835,7 +837,12 @@ def register_pl_send_callbacks(
                 if history_cache is not None:
                     return history_cache
         try:
-            loaded = load_pl_history(config.history_source)
+            source = config.history_source
+            loaded = (
+                validate_pl_history_frame(source())
+                if callable(source)
+                else load_pl_history(source)
+            )
         except (PLSendValidationError, TypeError):
             if reload:
                 with history_cache_lock:

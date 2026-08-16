@@ -57,6 +57,7 @@ from core.s02_pipeline import (
     ProductConnectorAdapter,
     RiskRefreshManager,
 )
+from core.s11_risk_archive import COLOSSUS_COLUMNS
 
 # === REAL PRODUCT IMPORTS (COMMENTED OUT) ====================================
 # Uncomment these only after uncommenting the recovered builders in the named
@@ -289,20 +290,32 @@ def get_market_state(
     market_date: pd.Timestamp,
     *,
     trading_timezone: str = "Europe/London",
+    now: datetime | pd.Timestamp | None = None,
 ) -> str:
     """Resolve the one authoritative Live/OFFICIAL source for a market date.
 
     Replace this function body with the real market-status service. The refresh
     manager calls it once per refresh, validates the exact returned value, and
     passes that same value to every per-Underlying Open and Current connector.
-    The checked-in fake implementation uses the configured trading calendar day
-    only so the runnable example has deterministic routing semantics.
+    The checked-in fake implementation follows the desk's 22:00 trading-time
+    cutoff: an earlier date is OFFICIAL, while today's date becomes OFFICIAL at
+    22:00 in the configured timezone. ``now`` exists only for deterministic
+    fixture tests; production callers leave it unset.
     """
 
     selected_date = _normalized_date(market_date, parameter="market_date")
     zone = ZoneInfo(trading_timezone)
-    trading_today = pd.Timestamp(datetime.now(zone).date())
-    return LIVE if selected_date == trading_today else OFFICIAL
+    trading_now = pd.Timestamp(datetime.now(zone) if now is None else now)
+    if trading_now.tzinfo is None:
+        trading_now = trading_now.tz_localize(zone)
+    else:
+        trading_now = trading_now.tz_convert(zone)
+    trading_today = pd.Timestamp(trading_now.date())
+    if selected_date < trading_today:
+        return OFFICIAL
+    if selected_date == trading_today and trading_now.hour >= 22:
+        return OFFICIAL
+    return LIVE
 
 
 def _source_spec(source_type: str):
@@ -873,6 +886,44 @@ def get_reported_underlyings() -> pd.DataFrame:
     return frame.copy()
 
 
+def get_colossus_pl(market_date: pd.Timestamp) -> pd.DataFrame:
+    """Return official Colossus P&L at the archive's four-key grain.
+
+    REAL CONNECTOR INTEGRATION POINT: replace this body with the site-owned
+    Colossus function. It must return exactly ``Portfolio``, ``Underlying``,
+    ``Risk Type``, ``Risk Greek``, and ``PL`` with one row per first four
+    columns. The active fixture adapts the checked-in Histo P&L ``histo.csv``
+    for the selected date; its Product field is governed separately by the
+    official Risk Explorer snapshot.
+    """
+
+    selected_date = _normalized_date(market_date, parameter="market_date")
+    source = (
+        FAKE_DATA_DIRECTORY / "histo" / selected_date.date().isoformat() / "histo.csv"
+    )
+    expected = ("Risk Type", "Risk Greek", "Underlying", "Product", "Book", "PL")
+    try:
+        frame = pd.read_csv(
+            source,
+            dtype="string",
+            encoding="utf-8-sig",
+            keep_default_na=False,
+        )
+    except (OSError, UnicodeError, pd.errors.ParserError) as exc:
+        raise FakeCsvConnectorError(
+            f"Could not read fake Colossus P&L file {source}: {exc}"
+        ) from exc
+    actual = tuple(str(column).strip() for column in frame.columns)
+    if actual != expected:
+        raise FakeCsvConnectorError(
+            f"Fake Colossus P&L file {source} must have columns "
+            f"{list(expected)} in that order; found {list(actual)}"
+        )
+    frame.columns = list(expected)
+    result = frame.rename(columns={"Book": PORTFOLIO})
+    return result[list(COLOSSUS_COLUMNS)].copy()
+
+
 def send_sog_pl(frame: pd.DataFrame) -> None:
     """Reject external SOG delivery while the fixture boundary is active."""
     # === RECOVERED ORIGINAL SENDER (COMMENTED OUT) ===========================
@@ -1046,6 +1097,7 @@ __all__ = [
     "build_production_refresh_manager",
     "get_cross_gamma_risk",
     "get_cross_gamma_sensitivities",
+    "get_colossus_pl",
     "get_market_open",
     "get_market_state",
     "get_market_status",

@@ -44,10 +44,12 @@ def test_stage_bundle_uses_conventional_runtime_names(tmp_path: Path) -> None:
         Path("core/s08_saved_views.py"),
         Path("core/s09_cross_gamma.py"),
         Path("core/s10_new_trades.py"),
+        Path("core/s11_risk_archive.py"),
         Path("feeds/s01_sources.py"),
         Path("ui/s10_stock.py"),
         Path("ui/s11_saved_views.py"),
         Path("ui/s12_plhistory.py"),
+        Path("ui/s13_validate_pl.py"),
         Path("data/saved_views/README.md"),
     ):
         assert (staged / relative_path).read_bytes() == (
@@ -71,6 +73,38 @@ def test_stage_bundle_uses_conventional_runtime_names(tmp_path: Path) -> None:
     assert not (staged / "s03_publish.py").exists()
     assert not (staged / "tests").exists()
     assert not (staged / "README.md").exists()
+
+
+def test_stage_bundle_excludes_runtime_official_history_leaves(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project = tmp_path / "project"
+    for source_name in publishing.RUNTIME_FILES:
+        source = project / source_name
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text(f"fixture {source_name}\n", encoding="utf-8")
+    for directory_name in publishing.RUNTIME_DIRECTORIES:
+        (project / directory_name).mkdir(parents=True, exist_ok=True)
+
+    legacy = project / "data" / "histo" / "2026-08-13"
+    legacy.mkdir(parents=True)
+    (legacy / "histo.csv").write_text("legacy-c\n", encoding="utf-8")
+    (legacy / "predicted.csv").write_text("legacy-p\n", encoding="utf-8")
+    official = project / "data" / "histo" / "2026-08-14"
+    official.mkdir()
+    for name in ("risk.csv", "colossus.csv", "_SUCCESS"):
+        (official / name).write_text("runtime\n", encoding="utf-8")
+    pending = project / "data" / "histo" / ".2026-08-15.pending-test"
+    pending.mkdir()
+    (pending / "risk.csv").write_text("runtime\n", encoding="utf-8")
+
+    monkeypatch.setattr(publishing, "PROJECT", project)
+    staged = publishing.stage_bundle(tmp_path / "runtime")
+
+    assert (staged / "data" / "histo" / "2026-08-13").is_dir()
+    assert not (staged / "data" / "histo" / "2026-08-14").exists()
+    assert not (staged / "data" / "histo" / ".2026-08-15.pending-test").exists()
 
 
 def test_publish_uses_plotly_native_entrypoint_discovery(

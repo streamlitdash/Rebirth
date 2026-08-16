@@ -85,7 +85,7 @@ tooling exceptions.
 
 | File | Responsibility |
 |---|---|
-| `s01_app.py` | Composition root. Connects settings, feeds, Stock, storage, PL actions, and the Dash factory. Importing it does not load risk. |
+| `s01_app.py` | Composition root. Connects settings, feeds, Stock, storage, official/legacy PL history, PL actions, and the Dash factory. Importing it does not load risk. |
 | `s02_config.py` | Environment parsing and proxy/path configuration. |
 | `s03_publish.py` | Builds a temporary Plotly runtime bundle and publishes it. The repository itself has no `app.py` forwarding shim. |
 | `s04_server.py` | Gunicorn process/thread settings. |
@@ -104,12 +104,13 @@ tooling exceptions.
 | `s08_saved_views.py` | One validated shared saved-filter catalogue with page-adapted requests, deterministic reads, atomic writes, and cross-worker locking. |
 | `s09_cross_gamma.py` | Pure portfolio-level XGAMMA schema validation, MarketBook scope expansion, input-move development, output aggregation, and release. |
 | `s10_new_trades.py` | Pure New Trades validation, row-local reference selection, ProductSpec MarketBook joins, P&L calculation, cash-flow identity treatment, and audit-detail retention. |
+| `s11_risk_archive.py` | Strict, atomic flat-date official Risk archives, Colossus validation, completed-date discovery, and projection into the P&L-history contract. |
 
 ### `feeds/` and `adapters/`
 
 | File | Responsibility |
 |---|---|
-| `feeds/s01_sources.py` | The site-owned boundary: checker, risk, market, portfolios, thresholds, senders, and manager composition. |
+| `feeds/s01_sources.py` | The site-owned boundary: checker, risk, market, portfolios, thresholds, Colossus P&L, senders, and manager composition. |
 | `adapters/s01_common.py` | Exact-schema/status helpers shared by personal adapters. |
 | `adapters/s02_ir.py` | Working IR Delta curve and IR DeltaVega surface examples. |
 | `adapters/s03_commo.py` | Working Commodity Delta curve example. |
@@ -141,13 +142,14 @@ as an unsafe one-line switch. There are no separate `_disabled` source folders.
 | `s03_aggregate.py` | Canonical-to-display conversion, Risk include/exclude filters, hierarchy aggregation, and tenor detail preparation. |
 | `s04_components.py` | Pure Dash component, table, chart, date-panel, shell, page, and selected New Trades detail builders. |
 | `s05_staticdata.py` | Path-safe selector and table builder for approved fixture/static CSV files. |
-| `s06_plview.py` | The native P&L page, its Aggregate P&L view, Send All action, sender disclosures, and editable DataTables. |
+| `s06_plview.py` | The native P&L page, its Aggregate P&L view, Send All action, sender disclosures, Validate P&L section, and editable DataTables. |
 | `s07_events.py` | Startup coordinator and Risk/search/date callbacks. |
 | `s08_plevents.py` | Adjustment editors, individual/all send and write actions, and Colossus/Predict history callbacks. |
 | `s09_factory.py` | Dash/Flask construction, native Dash Pages registration, shared shell, health, and progress endpoints. |
 | `s10_stock.py` | Dated Stock comparison controls, independent filters, promotion stack, source table, and replaceable source composition. |
 | `s11_saved_views.py` | Reusable collapsed shared-view editor, Base/reset requests, and callback registration without duplicate filter outputs. |
 | `s12_plhistory.py` | Pure expandable P&L-history hierarchy, period-cell comparison, type selector, and observed-series chart builders. |
+| `s13_validate_pl.py` | Archive-backed Validate P&L section with an official-date selector and Risk-Explorer-style Risk/dRisk/Predict/Colossus comparison at the truthful four-key P/C grain. |
 
 ### `pages/`
 
@@ -170,13 +172,18 @@ while tests and hosted workers can construct more than one app factory.
   selection, clipboard copying, selection dismissal, and progress polling.
 - `assets/s03_select.js` keeps native Dash DataTable selections stable.
 - `data/s01_*.csv` through `s09_*.csv` are explicit fake inputs;
-  `data/histo/` contains paired fake Colossus/Predict P&L partitions (backed by
-  `histo.csv` and `predicted.csv`), and `data/saved_views/shared/` is the
+  `data/histo/` is the single default history root for official
+  `risk.csv`/`colossus.csv` archives and the checked-in legacy/demo
+  `histo.csv`/`predicted.csv` partitions; `data/saved_views/shared/` is the
   runtime-local shared saved-filter catalogue.
 - `tools/s01_fixtures.py` deterministically rebuilds and validates fake data.
 - `tools/s02_manual.py` creates the diagrams and this manual's PDF.
+- `tools/s03_archive_official_risk.py` is the zero-argument, idempotent Python
+  entry point used by the scheduled official archive job.
+- `jobs/archive_official_risk.ipynb` is the thin Jupyter Scheduler notebook;
+  `jobs/README.md` documents its recurring-job setup.
 - Tests are uniquely numbered from `s01_schema.py` through
-  `s27_expandable_visuals.py`:
+  `s29_risk_archive.py`:
   schema, checker/dates, adapters, MarketBook, P&L/storage, UI, integration,
   feed cache, lazy P&L/factory behavior, targeted snapshot
   reads, deterministic fixture generation, cold-start ownership/watchdog, then
@@ -187,7 +194,8 @@ while tests and hosted workers can construct more than one app factory.
   contracts, refresh/date lifecycle contracts, shared saved views, and the
   expandable Colossus/Predict history explorer, portfolio-level XGAMMA
   validation/development, integrated New Trades reference/P&L publication, and
-  the shared expandable-table visual contract.
+  the shared expandable-table visual contract, the official Validate P&L
+  section, and atomic official Risk archive/scheduler behavior.
 
 | Test file | Main boundary proved |
 |---|---|
@@ -198,12 +206,12 @@ while tests and hosted workers can construct more than one app factory.
 | `tests/s05_pl.py` | P&L mapping/overlay/export and transactional adjustment storage. |
 | `tests/s06_ui.py` | Lazy chevrons, the two-axis tenor contract, dynamic status/Move axes, selected New Trades detail, semantic total-row styling, and visible market ranks. |
 | `tests/s07_integration.py` | End-to-end fake refresh, trading-timezone dates, one-call status routing/transitions, Portfolio-only preservation, and force validation. |
-| `tests/s08_feeds.py` | Narrow fake Source Type/Underlying partition reuse. |
+| `tests/s08_feeds.py` | Fake Source Type/Underlying partition reuse, official-cutoff handling, and Colossus source coverage. |
 | `tests/s09_plui.py` | P&L page/filter ownership, Send All and individual sender behavior, history callback wiring, and no-config factory behavior. |
 | `tests/s10_reads.py` | Defensive targeted reads copy only the requested committed frame. |
 | `tests/s11_fixtures.py` | ProductSpec-driven fake schemas, axes, and exact deterministic generation. |
 | `tests/s12_startup.py` | Shell-first startup, one writer, pod-restart recovery, public/internal prefix routing, active-call watchdog, and retryable failures. |
-| `tests/s13_publish.py` | Minimal Plotly bundle contents and native Cloud entrypoint discovery. |
+| `tests/s13_publish.py` | Minimal Plotly bundle contents, native Cloud entrypoint discovery, and runtime official-history exclusion. |
 | `tests/s14_reporting.py` | Cross-product Reported Underlying validation, post-P&L aggregation, thresholds, and raw-market separation. |
 | `tests/s15_overlays.py` | XGAMMA/New Trades supplied-risk overlay validation, replacement, atomic publication, and dashboard release. |
 | `tests/s16_refresh_shell.py` | Shared refresh controls remain single-owner and interactive across native navigation. |
@@ -218,6 +226,8 @@ while tests and hosted workers can construct more than one app factory.
 | `tests/s25_cross_gamma.py` | Exact XGAMMA matrix schema, adapter-owned XGamma/XGamma Vega source classification, ProductSpec axes, MarketBook scope, stored-Move development, output summation, and fail-closed input/output-market behavior. |
 | `tests/s26_new_trades.py` | Integrated traded-level/Open-reference P&L, official-market preservation, Cash Flow identity calculation, execution metadata, and manager publication. |
 | `tests/s27_expandable_visuals.py` | Shared hierarchy-toggle glyphs, dimensions, spacing, browser synchronization, and removal of obsolete Stock level captions. |
+| `tests/s28_validate_pl.py` | Completed-date discovery, exact four-key P/C comparison, nonduplicating hierarchy, section-local chevrons, and Validate P&L wiring. |
+| `tests/s29_risk_archive.py` | Official-only eligibility, exact archive schemas, atomic/idempotent publication, manifest validation, P&L-history projection, and scheduled-job configuration. |
 
 ## What happens on startup
 
@@ -303,6 +313,13 @@ One normal refresh calls the resolver once, validates its exact string, stores
 it on `RefreshSnapshot.market_status`, writes it to readiness/MarketBook rows,
 and passes it unchanged to every enabled Open and Current connector. A
 Portfolio-only refresh does not call it and preserves the committed status.
+
+The checked-in fake resolver models the desk cutoff explicitly: an earlier
+market date is `OFFICIAL`; today's market date is `Live` before 22:00 and
+`OFFICIAL` from 22:00 in `CUBE_MARKET_TIMEZONE`. That clock rule belongs only to
+the fixture boundary. Production must replace `get_market_state` with the real
+source-status service; neither the manager nor the archive writer hardcodes a
+second status convention.
 
 While a different Market Date is only a client draft, the date panel says
 **Resolved on apply** instead of predicting a status. Apply invokes the real
@@ -829,36 +846,65 @@ from the shared saved-view catalogue:
 4. **Write PL to S3** — build the full raw output plus separately flagged
    adjustment rows, call a configured `write_pl` function, and download CSV.
 5. **P&L Preview** — aggregated base rows with optional adjustment overlay.
-6. **Histo P&L** — lazily expand Risk Type → Risk Greek → Underlying → Product
+6. **Validate P&L** — select one completed official date and compare the Risk
+   Explorer snapshot's Risk, dRisk, and Predict P&L (`P`) with Colossus P&L
+   (`C`) at their shared four-key grain.
+7. **Histo P&L** — lazily expand Risk Type → Risk Greek → Underlying → Product
    → Book and compare the Colossus and Predict daily series for any selected
    hierarchy scope.
 
 The former user-facing Raw Data disclosure has been removed. **Aggregate P&L**
 and **Unmapped Books** remain on the native Risk page; Send All, SOG, Portfolio,
-Write, Preview, and Histo belong only to `/pnl`.
+Write, Preview, Validate P&L, and Histo belong only to `/pnl`.
 
-The default history root is `data/histo`, overrideable with
-`PL_HISTORICAL_PATH`. Its strict partition contract is:
+There is one history root: `data/histo` by default, overrideable with
+`PL_HISTORICAL_PATH`. Both **Validate P&L** and **Histo P&L** read that same
+root. A date leaf has one of two contracts:
 
 ```text
-histo/
-└── <YYYY>/
-    └── <MM-DD>/
-        ├── histo.csv
-        └── predicted.csv
+<PL_HISTORICAL_PATH>/<YYYY-MM-DD>/
+    risk.csv
+    colossus.csv
+    _SUCCESS
 ```
 
-Every date leaf must contain exactly both files. Each CSV has exact ordered
-columns `Risk Type, Risk Greek, Underlying, Product, Book, PL`, with one finite
-numeric P&L per full hierarchy leaf. The directory supplies `Market Date`.
-`histo.csv` is exposed as the user-facing P&L type **Colossus**, while
-`predicted.csv` is exposed as **Predict**; the old Histo/Predicted names remain
-compatible input aliases rather than display labels. The combined loader
-validates uniqueness at Market Date + P&L Type + Risk Type + Risk Greek +
-Underlying + Product + Book grain. The older Portfolio + ConcertoField shape is
-not silently promoted because it cannot truthfully reconstruct the new
-hierarchy identities; `load_historical_pl` remains available only to callers
-that explicitly retain that separate legacy contract.
+That is the authoritative official contract. Predict (`P`) is derived from the
+same `risk.csv` `PL` values displayed by Risk Explorer, aggregated to Risk Type
++ Risk Greek + Underlying + Product + Portfolio and exposed with
+`Book = Portfolio`. Colossus (`C`) comes from the same leaf's `colossus.csv`.
+Product is attached to C only through a strict one-Product-per-Portfolio
+authority proved by `risk.csv`; a partially missing Predict group is omitted
+rather than treated as zero or as a partial total.
+
+The existing checked-in dates retain this older two-file shape only for
+legacy/demo compatibility:
+
+```text
+<PL_HISTORICAL_PATH>/<YYYY-MM-DD>/
+    histo.csv
+    predicted.csv
+```
+
+Each legacy CSV has exact ordered columns `Risk Type, Risk Greek, Underlying,
+Product, Book, PL`, with one finite numeric P&L per full hierarchy leaf.
+`histo.csv` is displayed as **Colossus** and `predicted.csv` as **Predict**.
+These files are independent fake examples: `predicted.csv` is not built from
+the fake Risk Explorer snapshot. They remain visible only for dates without an
+official archive; an official date has whole-date authority. No official
+projection reads legacy `predicted.csv`.
+
+| Leaf contract | Predict (`P`) | Colossus (`C`) |
+|---|---|---|
+| Official | `<PL_HISTORICAL_PATH>/<YYYY-MM-DD>/risk.csv` `PL` projection | `<PL_HISTORICAL_PATH>/<YYYY-MM-DD>/colossus.csv` |
+| Legacy/demo compatibility | `<PL_HISTORICAL_PATH>/<YYYY-MM-DD>/predicted.csv` | `<PL_HISTORICAL_PATH>/<YYYY-MM-DD>/histo.csv` |
+
+The checked-in `get_colossus_pl` fixture supplies the frame written to an
+official `colossus.csv` by reading that date's legacy `histo.csv`; this is only
+a visible demo adapter. Replace it with the real Colossus function in
+production. `load_shared_pl_history` validates uniqueness at Market Date + P&L
+Type + Risk Type + Risk Greek + Underlying + Product + Book grain. The older
+Portfolio + ConcertoField shape is not silently promoted because it cannot
+truthfully reconstruct the hierarchy.
 
 The Histo P&L table starts at Risk Type and creates lower hierarchy rows only as
 their chevrons are opened. Its index uses the same clean labels, indentation,
@@ -894,13 +940,14 @@ def write_pl(rows: pd.DataFrame, market_date: str, revision: int) -> None:
     my_s3_writer.put_csv(rows, date=market_date, revision=revision)
 ```
 
-The workflow is genuinely lazy. Preview, SOG, Portfolio, and Histo P&L each
-have their own native odd/even click gate; Send All builds its governed payload
-only when its button is pressed. Effective rows, dropdown scopes, editable
-stores, and historical rows are created only when requested, so a risk revision
-does not serialize hidden copies of P&L. If `build_app` receives no
-`PLSendConfig`, `/pnl` renders an explicit unavailable state and the factory
-omits its workflow stores/callbacks; it does not render inert controls.
+The workflow is genuinely lazy. Preview, SOG, Portfolio, Validate P&L, and
+Histo P&L each have their own native odd/even click gate; Send All builds its
+governed payload only when its button is pressed. Effective rows, dropdown
+scopes, editable stores, and historical rows are created only when requested,
+so a risk revision does not serialize hidden copies of P&L. If `build_app`
+receives no `PLSendConfig`, `/pnl` renders an explicit unavailable state and
+the factory omits its workflow stores/callbacks; it does not render inert
+controls.
 
 Each editable row is governed:
 
@@ -944,6 +991,71 @@ complete committed columns—Risk, dRisk, P&L, Product, Portfolio, Activity,
 SignoffGroup, Category/registered metadata, tenor ranks, dates, market values,
 availability, and status—while adjustment records add the governed fields that
 exist at their Portfolio + ConcertoField grain.
+
+## Official Risk archive and Validate P&L
+
+The **Validate P&L** section immediately above **Histo P&L** on `/pnl` reopens
+one completed daily Risk snapshot. Validate P&L reconstructs a
+Risk-Explorer-style table with Risk, dRisk, Predict P&L (`P`), and Colossus P&L
+(`C`), while Histo P&L provides period totals and time-series plotting.
+
+The official archive is a flat-file partition, not a serialized Dash table:
+
+```text
+<PL_HISTORICAL_PATH>/
+└── <YYYY-MM-DD>/
+    ├── risk.csv
+    ├── colossus.csv
+    └── _SUCCESS
+```
+
+`risk.csv` is the complete committed `dashboard_frame` for that official run,
+including all position and tenor detail needed to rebuild views later.
+`colossus.csv` has exact ordered columns `Portfolio, Underlying, Risk Type,
+Risk Greek, PL`, with exactly one finite P&L row per first-four-column key.
+`_SUCCESS` is a JSON completion manifest containing the schema version, date,
+revision, refresh time, row counts, columns, and SHA-256 digest for both CSVs.
+Readers ignore partial leaves without `_SUCCESS` and fail closed if a completed
+leaf has extra/missing files or does not match its manifest.
+
+The P/C comparison key is exactly **Portfolio + Underlying + Risk Type + Risk
+Greek**. The Validate P&L tree therefore stops at Risk Type → Risk Greek →
+Underlying → Portfolio. It does not push a Portfolio-level Colossus value down
+into Product or tenor rows, which would duplicate C and make totals false. The
+section uses a full outer comparison and reports matched, Predict-only, and
+Colossus-only keys; the untouched full `risk.csv` remains available for future
+Risk-only detail that does not repeat Colossus.
+
+### JupyterHub scheduling
+
+Use Jupyter Scheduler to run `jobs/archive_official_risk.ipynb` after the
+market becomes official. The notebook calls the tested Python entry point in
+`tools/s03_archive_official_risk.py`; it does not duplicate archive logic. A
+suitable recurring schedule is:
+
+```cron
+0-55/5 22 * * 1-5
+```
+
+This attempts the job every five minutes during the 22:00 hour, Monday to
+Friday. Configure Jupyter Scheduler for Europe/London, or translate the hour to
+the scheduler server's timezone. Each attempt performs a forced Risk and P&L
+refresh and publishes only when all of these are true:
+
+1. `Market Date` equals the manager's natural `System Date`.
+2. The committed market status is exactly `OFFICIAL`.
+3. The committed snapshot has no refresh errors.
+
+An early run returns `skipped`. The first eligible run writes both CSVs to a
+temporary sibling and atomically renames the completed leaf. Later attempts
+return `already_archived`; they do not call the Colossus loader and never
+overwrite that official date. Set the notebook parameter
+`risk_cube_project_root`, or `RISK_CUBE_PROJECT_ROOT`, when Scheduler stages the
+notebook outside the repository; otherwise run it from the notebook's input
+folder. Point `PL_HISTORICAL_PATH` at storage that survives JupyterHub restarts
+and give the scheduled notebook and Dash app the same value. Replace the
+fixture `feeds.s01_sources:get_colossus_pl` boundary (or set
+`COLOSSUS_LOADER=module:function`) before production use.
 
 ## Replace the fake connectors
 
@@ -1285,7 +1397,7 @@ page copies or second content router. Its prefix-safe routes are:
 | Path | Page-owned content |
 |---|---|
 | `/` | Risk dashboard, including Aggregate P&L and Unmapped Books. |
-| `/pnl` | Always-open filtered Aggregate P&L plus Send All, SOG/Portfolio editing and sending, Write PL, Preview, and expandable Colossus/Predict history. |
+| `/pnl` | Always-open filtered Aggregate P&L plus Send All, SOG/Portfolio editing and sending, Write PL, Preview, official Validate P&L, and expandable Colossus/Predict history. |
 | `/stock` | A lazy Activity → Promotion → temporary Group → CPTY → CRDS stack over the filtered two-date comparison. |
 | `/static-data` | The Statics fixture/static CSV selector and table. |
 | `/404` | Native fallback for unknown paths. |
@@ -1395,7 +1507,7 @@ makes demo entities obvious without corrupting the schemas being demonstrated.
 | `data/s07_thresholds.csv` | 25 | all 16 ProductSpec pairs, Cash Flow/New, and `XGamma` plus `XGamma Vega` for each of the four market Risk Types, each with positive PL/Risk/dRisk limits. |
 | `data/s08_concerto.csv` | 17 | all 16 ProductSpec pairs plus Cash Flow/New, each mapped to exactly one ConcertoField. Cross Gamma source sensitivities have zero P&L and are excluded before PLSEND mapping. |
 | `data/s09_reported.csv` | 4 | unique Risk Type + Risk Greek + Underlying sources mapped to Reported Underlying; multiple sources may share one target. |
-| `data/histo/<YYYY>/<MM-DD>/{histo,predicted}.csv` | 48 | four paired daily Colossus/Predict partitions; each backing file has six unique Risk Type + Risk Greek + Underlying + Product + Book rows and exact hierarchy-plus-PL columns. |
+| `data/histo/<YYYY-MM-DD>/{histo,predicted}.csv` | 48 | Four checked-in legacy/demo compatibility partitions; each backing file has six unique Risk Type + Risk Greek + Underlying + Product + Book rows and exact hierarchy-plus-PL columns. New official dates use `risk.csv`, `colossus.csv`, and `_SUCCESS` in this same root. |
 
 The fixture generator validates schemas, finite numbers, uniqueness, complete
 source coverage, MarketBook order, and the visible fake marker:
@@ -1460,7 +1572,9 @@ the committed prior snapshot remains readable while the next one is built.
 | `CUBE_STARTUP_TIMEOUT_SECONDS` | `2400` | Non-destructive startup watchdog. |
 | `CUBE_MARKET_TIMEZONE` | `Europe/London` | IANA trading timezone used to derive the manager's system date and passed to the fake status boundary. |
 | `RISK_PRODUCT_DELAY_SECONDS` | `1` | Operator-visible hold after each post-startup Risk/dRisk product; initial startup remains undelayed. |
-| `PL_HISTORICAL_PATH` | `data/histo` | Root of strict `<YYYY>/<MM-DD>/{histo,predicted}.csv` partitions displayed as Colossus/Predict. |
+| `PL_HISTORICAL_PATH` | `data/histo` | Single history root used by Validate P&L, Histo P&L, the official archive job, and legacy/demo compatibility partitions. |
+| `COLOSSUS_LOADER` | `feeds.s01_sources:get_colossus_pl` | Scheduler-only `module:function` override for the exact four-key Colossus source. |
+| `RISK_CUBE_PROJECT_ROOT` | unset | Repository root used when Jupyter Scheduler stages the notebook outside its input folder. |
 | `CONCERTO_MAPPING_PATH` | `data/s08_concerto.csv` | Governed P&L-send mapping. |
 | `PL_ADJUSTMENT_PATH` | `adjustments` | Adjustment root. |
 | `PL_LOCAL_FALLBACK_PATH` | `saved_pl` | Local Write P&L fallback. |
@@ -1478,7 +1592,11 @@ python s03_publish.py
 `s03_publish.py` creates a temporary minimal bundle. It stages `s01_app.py` as
 Plotly's conventional `app.py` and `s04_server.py` as `gunicorn.conf.py` **only
 inside that temporary directory**. Tests, tools, docs, caches, and compatibility
-forwarders are not deployed. `plotly-cloud.toml` now records the application
+forwarders are not deployed. Runtime official date leaves under `data/histo`
+are also excluded; only the checked-in legacy/demo partitions are bundled.
+Point `PL_HISTORICAL_PATH` in the deployed app at the same durable shared
+storage used by the Jupyter job—deployment is not a history-file transfer.
+`plotly-cloud.toml` now records the application
 metadata created by Rebirth's first publish. The deployment regression test
 pins that Rebirth-owned identity so a future publish cannot silently target an
 unrelated app. The publisher
@@ -1529,14 +1647,17 @@ docstrings and type hints are the source of truth.
 
 ### Composition and feeds
 
-- `s01_app.create_app` wires settings, manager, adjustment repository, PL
-  actions, and the Dash factory.
+- `s01_app.create_app` wires settings, manager, adjustment repository, one
+  shared PL-history root, PL actions, and the Dash factory.
 - `s02_config.RuntimeSettings.from_env` validates local/proxy configuration.
 - `s03_publish.stage_bundle` builds the minimal runtime; `publish` invokes the
   Plotly CLI.
 - `feeds.s01_sources.get_risk_checker`, `get_risk`, `get_market_state`,
   `get_market_open`, `get_market_status`, `get_portfolio_config`, and
   `get_risk_thresholds` are the production replacement boundaries.
+- `feeds.s01_sources.get_colossus_pl` is the replaceable official P&L source for
+  the daily archive. It returns exactly Portfolio + Underlying + Risk Type +
+  Risk Greek + PL, with one row per first-four-column key.
 - `get_new_trades` and `get_cross_gamma_sensitivities` expose the active dated
   supplemental-risk sources used by the manager.
 - `get_product_connector_adapters` binds a separate personal adapter per Source
@@ -1578,6 +1699,14 @@ docstrings and type hints are the source of truth.
 - `core.s10_new_trades.validate_new_trade_rows`, `new_trade_market_scope`, and
   `build_new_trade_rows` validate, scope, join, and calculate position-grain New
   Trades while retaining their execution audit trail.
+- `core.s11_risk_archive.archive_official_snapshot` and
+  `archive_from_manager` enforce natural-date/OFFICIAL/error-free eligibility
+  and atomically publish one immutable flat-file partition.
+- `list_completed_market_dates` discovers only leaves carrying `_SUCCESS`, and
+  `load_risk_archive` validates that manifest, both file digests, schemas, and
+  row counts; `project_archive_to_pl_history` derives the canonical daily P/C
+  rows, and `load_shared_pl_history` combines official dates with legacy/demo
+  leaves from the same root.
 - `load_config`, `load_thresholds`, `merge_config`, `apply_thresholds`, and
   `to_dashboard_frame` govern the release frame. Threshold application never
   rewrites connector-owned Group values.
@@ -1595,9 +1724,10 @@ docstrings and type hints are the source of truth.
   `apply_adjustment_overlay`, and `build_saved_pl_frame` own P&L governance.
 - `load_plsend_mapping`, `load_portfolio_governance`,
   `normalize_pl_send_rows`, and `validate_pl_send_rows` guard those operations;
-  `load_pl_history` maps paired `histo.csv`/`predicted.csv` partitions to
-  Colossus/Predict, `select_pl_history_series` returns observed daily points,
-  and `pl_history_period_values` owns Daily (P), WTD, MTD, and YTD totals.
+  `load_pl_history` remains the strict paired legacy-root reader, while
+  `load_legacy_pl_history_leaf` parses one exact two-file compatibility leaf;
+  `select_pl_history_series` returns observed daily points, and
+  `pl_history_period_values` owns Daily (P), WTD, MTD, and YTD totals.
 - `LocalCsvAdjustmentRepository.save/load` own adjustment persistence; `save`
   performs scoped staged publish/rollback and explicit Portfolio removal.
 - `compare_stock_snapshots` owns the strict full-outer dated comparison;
@@ -1636,20 +1766,26 @@ docstrings and type hints are the source of truth.
 - `StartupCoordinator` owns the background revision-1 worker;
   `register_callbacks` owns Risk/search/date interaction.
 - `build_pl_page` and `build_pl_send_sections` build the native sender page,
-  its Send All panel, and five independent P&L disclosures;
+  its Send All panel, and six independent P&L disclosures;
   `PLSendConfig` supplies their external boundaries, and
   `register_pl_send_callbacks` owns lazy loading, editing, save, send, and write
   actions.
 - `build_pl_history_table_with_state`, `build_pl_history_figure`, and
   `build_pl_history_series_selector` render the expandable period table and its
   Colossus/Predict observed-series viewer.
+- `build_validate_pl_comparison`, `build_validate_pl_table`, and
+  `build_validate_pl_section` render Validate P&L at the exact Portfolio +
+  Underlying + Risk Type + Risk Greek comparison grain;
+  `register_validate_pl_callbacks` owns its lazy completed-date discovery,
+  archive read, and section-local chevrons.
 - `default_stock_dates`, `load_stock_page_data`, `build_stock_page`, and
   `build_stock_table` own Stock date defaults, source composition, controls, and
   the one-table comparison page.
 - `build_app` creates Flask endpoints and the persistent shell, registers the
   native page catalogue, and mounts one active body through
   `dash.page_container`. `/pnl` and `/stock` show explicit unavailable states
-  when their external boundaries are not supplied.
+  when their external boundaries are not supplied. Validate P&L lists only
+  completed archives from the configured P&L-history root.
 
 ## Deliberate rules versus replaceable examples
 

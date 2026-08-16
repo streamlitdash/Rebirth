@@ -104,8 +104,7 @@ PL_HISTORY_PERIOD_COLUMNS = (
     PL,
 )
 
-_HISTORY_YEAR_PATTERN = re.compile(r"\d{4}")
-_HISTORY_DATE_PATTERN = re.compile(r"(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])")
+_HISTORY_DATE_PATTERN = re.compile(r"\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])")
 _HISTORY_FILES = {
     "histo.csv": HISTO_TYPE,
     "predicted.csv": PREDICTED_TYPE,
@@ -308,22 +307,17 @@ def _history_directory_entries(directory: Path, *, label: str) -> list[Path]:
         raise PLSendValidationError(f"Could not inspect {label}: {exc}") from exc
 
 
-def _history_leaf_date(year: str, month_day: str) -> str:
-    """Validate and normalize one ``YYYY/MM-DD`` history partition."""
-    if not _HISTORY_YEAR_PATTERN.fullmatch(year):
+def _history_leaf_date(value: str) -> str:
+    """Validate and normalize one flat ``YYYY-MM-DD`` history partition."""
+    if not _HISTORY_DATE_PATTERN.fullmatch(value):
         raise PLSendValidationError(
-            f"P&L history year directory must be YYYY; found {year!r}"
-        )
-    if not _HISTORY_DATE_PATTERN.fullmatch(month_day):
-        raise PLSendValidationError(
-            "P&L history date directory must be MM-DD below its year; "
-            f"found {year}/{month_day}"
+            f"P&L history date directory must be YYYY-MM-DD; found {value!r}"
         )
     try:
-        return datetime.strptime(f"{year}-{month_day}", "%Y-%m-%d").date().isoformat()
+        return datetime.strptime(value, "%Y-%m-%d").date().isoformat()
     except ValueError as exc:
         raise PLSendValidationError(
-            f"P&L history date directory is not a valid date: {year}/{month_day}"
+            f"P&L history date directory is not a valid date: {value}"
         ) from exc
 
 
@@ -364,10 +358,48 @@ def _load_history_leaf_file(
     return frame[list(PL_HISTORY_COLUMNS)]
 
 
-def _load_pl_history_uncached(source: FrameSource) -> pd.DataFrame:
-    """Load paired actual/predicted P&L from ``YYYY/MM-DD`` partitions.
+def load_legacy_pl_history_leaf(source: str | Path) -> pd.DataFrame:
+    """Load one strict legacy ``YYYY-MM-DD`` P&L history leaf."""
 
-    A directory source must contain only ``YYYY/MM-DD`` leaf directories. Every
+    leaf = Path(source)
+    if not leaf.exists() or not leaf.is_dir():
+        raise PLSendValidationError(
+            f"legacy P&L history leaf must be an existing directory; found {leaf}"
+        )
+    market_date = _history_leaf_date(leaf.name)
+    file_entries = _history_directory_entries(
+        leaf,
+        label=f"P&L history date {leaf}",
+    )
+    names = {entry.name for entry in file_entries if entry.is_file()}
+    unexpected = [entry.name for entry in file_entries if not entry.is_file()]
+    unexpected.extend(sorted(names - set(_HISTORY_FILES)))
+    missing = sorted(set(_HISTORY_FILES) - names)
+    if missing or unexpected:
+        details: list[str] = []
+        if missing:
+            details.append(f"missing {missing}")
+        if unexpected:
+            details.append(f"unexpected {sorted(unexpected)}")
+        raise PLSendValidationError(
+            f"P&L history date {leaf.name} must contain "
+            "exactly histo.csv and predicted.csv; " + "; ".join(details)
+        )
+    partitions = [
+        _load_history_leaf_file(
+            leaf / filename,
+            market_date=market_date,
+            history_type=history_type,
+        )
+        for filename, history_type in _HISTORY_FILES.items()
+    ]
+    return pd.concat(partitions, ignore_index=True)
+
+
+def _load_pl_history_uncached(source: FrameSource) -> pd.DataFrame:
+    """Load paired actual/predicted P&L from ``YYYY-MM-DD`` partitions.
+
+    A directory source must contain only ``YYYY-MM-DD`` leaf directories. Every
     leaf must contain exactly ``histo.csv`` and ``predicted.csv``. Their exact
     leaf grain is Risk Type + Risk Greek + Underlying + Product + Book; Market
     Date and P&L Type are authoritative in the partition path and file name.
@@ -379,7 +411,7 @@ def _load_pl_history_uncached(source: FrameSource) -> pd.DataFrame:
     """
     if isinstance(source, pd.DataFrame):
         raise PLSendValidationError(
-            "paired P&L history requires a YYYY/MM-DD directory with strict "
+            "paired P&L history requires a YYYY-MM-DD directory with strict "
             "Risk Type, Risk Greek, Underlying, Product, Book, PL files"
         )
     if not isinstance(source, (str, Path)):
@@ -390,62 +422,22 @@ def _load_pl_history_uncached(source: FrameSource) -> pd.DataFrame:
     root = Path(source)
     if not root.exists() or not root.is_dir():
         raise PLSendValidationError(
-            f"paired P&L history must be an existing YYYY/MM-DD directory; found {root}"
+            f"paired P&L history must be an existing YYYY-MM-DD directory; found {root}"
         )
 
-    year_entries = _history_directory_entries(root, label=f"P&L history root {root}")
-    if not year_entries:
+    date_entries = _history_directory_entries(root, label=f"P&L history root {root}")
+    if not date_entries:
         raise PLSendValidationError(f"P&L history root is empty: {root}")
 
     partitions: list[pd.DataFrame] = []
-    for year_directory in year_entries:
-        year = year_directory.name
-        if not year_directory.is_dir() or not _HISTORY_YEAR_PATTERN.fullmatch(year):
+    for date_directory in date_entries:
+        if not date_directory.is_dir():
             raise PLSendValidationError(
-                "P&L history root may contain only YYYY directories; "
-                f"found {year_directory}"
+                "P&L history root may contain only YYYY-MM-DD directories; "
+                f"found {date_directory}"
             )
-        date_entries = _history_directory_entries(
-            year_directory,
-            label=f"P&L history year {year_directory}",
-        )
-        if not date_entries:
-            raise PLSendValidationError(
-                f"P&L history year directory is empty: {year_directory}"
-            )
-        for date_directory in date_entries:
-            if not date_directory.is_dir():
-                raise PLSendValidationError(
-                    "P&L history year directories may contain only MM-DD "
-                    f"directories; found {date_directory}"
-                )
-            market_date = _history_leaf_date(year, date_directory.name)
-            file_entries = _history_directory_entries(
-                date_directory,
-                label=f"P&L history date {date_directory}",
-            )
-            names = {entry.name for entry in file_entries if entry.is_file()}
-            unexpected = [entry.name for entry in file_entries if not entry.is_file()]
-            unexpected.extend(sorted(names - set(_HISTORY_FILES)))
-            missing = sorted(set(_HISTORY_FILES) - names)
-            if missing or unexpected:
-                details: list[str] = []
-                if missing:
-                    details.append(f"missing {missing}")
-                if unexpected:
-                    details.append(f"unexpected {sorted(unexpected)}")
-                raise PLSendValidationError(
-                    f"P&L history date {year}/{date_directory.name} must contain "
-                    "exactly histo.csv and predicted.csv; " + "; ".join(details)
-                )
-            for filename, history_type in _HISTORY_FILES.items():
-                partitions.append(
-                    _load_history_leaf_file(
-                        date_directory / filename,
-                        market_date=market_date,
-                        history_type=history_type,
-                    )
-                )
+        _history_leaf_date(date_directory.name)
+        partitions.append(load_legacy_pl_history_leaf(date_directory))
 
     if not partitions:
         raise PLSendValidationError(f"P&L history root has no date partitions: {root}")
@@ -586,6 +578,12 @@ def _normalize_pl_history_for_analysis(history: pd.DataFrame) -> pd.DataFrame:
     return normalized.sort_values(list(PL_HISTORY_KEY), kind="stable").reset_index(
         drop=True
     )
+
+
+def validate_pl_history_frame(history: pd.DataFrame) -> pd.DataFrame:
+    """Validate one already-loaded canonical Colossus/Predict history frame."""
+
+    return _normalize_pl_history_for_analysis(history)
 
 
 def _normalize_pl_history_path(path: Sequence[object]) -> tuple[str, ...]:
@@ -1295,6 +1293,7 @@ __all__ = [
     "empty_pl_send_frame",
     "load_plsend_mapping",
     "load_historical_pl",
+    "load_legacy_pl_history_leaf",
     "load_pl_history",
     "load_portfolio_governance",
     "normalize_market_date",
@@ -1303,5 +1302,6 @@ __all__ = [
     "pl_history_period_bounds",
     "pl_history_period_values",
     "select_pl_history_series",
+    "validate_pl_history_frame",
     "validate_pl_send_rows",
 ]

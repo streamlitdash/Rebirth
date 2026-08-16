@@ -8,6 +8,7 @@ deployment directory; no forwarding modules are checked in.
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import subprocess
 import sys
@@ -42,6 +43,41 @@ IGNORED_NAMES = (
     ".write.lock",
     ".*.tmp",
 )
+_OFFICIAL_HISTORY_ARTIFACTS = {"risk.csv", "colossus.csv", "_SUCCESS"}
+_PENDING_HISTORY_LEAF = re.compile(
+    r"\.\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])\.pending-.+"
+)
+
+
+def _deployment_ignore(directory: str, names: list[str]) -> set[str]:
+    """Exclude caches and runtime-only official history date directories."""
+
+    ignored = set(shutil.ignore_patterns(*IGNORED_NAMES)(directory, names))
+    current = Path(directory).resolve()
+    history_root = (PROJECT / "data" / "histo").resolve()
+    try:
+        relative = current.relative_to(history_root)
+    except ValueError:
+        return ignored
+    if relative.parts:
+        return ignored
+    for name in names:
+        candidate = current / name
+        if _PENDING_HISTORY_LEAF.fullmatch(name):
+            ignored.add(name)
+            continue
+        if not candidate.is_dir():
+            continue
+        try:
+            child_names = {path.name for path in candidate.iterdir()}
+        except OSError:
+            # A scheduler may atomically rename its temporary leaf while the
+            # bundle is staged. Omitting that transient entry is always safe.
+            ignored.add(name)
+            continue
+        if child_names & _OFFICIAL_HISTORY_ARTIFACTS:
+            ignored.add(name)
+    return ignored
 
 
 def _require_file(relative_path: str) -> Path:
@@ -74,7 +110,7 @@ def stage_bundle(destination: Path) -> Path:
         shutil.copytree(
             _require_directory(directory_name),
             destination / directory_name,
-            ignore=shutil.ignore_patterns(*IGNORED_NAMES),
+            ignore=_deployment_ignore,
         )
 
     return destination

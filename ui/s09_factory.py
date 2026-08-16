@@ -85,6 +85,7 @@ from .s11_saved_views import (
     saved_view_request_matches_base,
     saved_view_request_values,
 )
+from .s13_validate_pl import register_validate_pl_callbacks
 
 
 def _register_native_pages() -> None:
@@ -201,6 +202,7 @@ def build_app(
     stock_source: Any | None = None,
     stock_portfolio_source: Any | None = None,
     saved_view_root: str | Path | None = None,
+    pl_history_root: str | Path | None = None,
     dash_kwargs: Mapping[str, Any] | None = None,
 ) -> Dash:
     """Create the Dash app from static data or a server-side refresh manager."""
@@ -222,6 +224,11 @@ def build_app(
         if saved_view_root is not None
         else Path(__file__).resolve().parent.parent / "data" / "saved_views",
         tuple(field.key for field in FILTER_DIMENSION_FIELDS),
+    )
+    resolved_pl_history_root = Path(
+        pl_history_root
+        if pl_history_root is not None
+        else Path(__file__).resolve().parent.parent / "data" / "histo"
     )
     stock_load_lock = Lock()
     stock_cached_pages: dict[tuple[int, str, str, str], StockPageData] = {}
@@ -698,6 +705,7 @@ def build_app(
             PL_SAVED_VIEW_CONTROLS,
         )
     if refresh_manager is not None and pl_send_config is not None:
+        register_validate_pl_callbacks(app, resolved_pl_history_root)
         register_pl_send_callbacks(app, refresh_manager, pl_send_config)
     if stock_source is not None and stock_portfolio_source is not None:
         register_saved_filter_view_callbacks(

@@ -15,6 +15,7 @@ from core.s04_pl import (
     COLOSSUS_TYPE,
     HISTORY_FILE_COLUMNS,
     PREDICT_TYPE,
+    load_pl_history,
 )
 from core.s05_storage import LocalCsvAdjustmentRepository
 from feeds.s01_sources import build_production_refresh_manager
@@ -85,8 +86,7 @@ def _history_frame() -> pd.DataFrame:
 def _config(tmp_path: Path) -> PLSendConfig:
     history_source = tmp_path / "histo"
     for market_date, daily in _history_frame().groupby("Market Date", sort=True):
-        year, month, day = str(market_date).split("-")
-        leaf = history_source / year / f"{month}-{day}"
+        leaf = history_source / str(market_date)
         leaf.mkdir(parents=True)
         actual = daily[list(HISTORY_FILE_COLUMNS)]
         predicted = actual.copy()
@@ -283,6 +283,7 @@ def test_pl_sections_are_independent_top_level_disclosures() -> None:
         "Portfolio P&L",
         "Write PL to S3",
         "P&L Preview",
+        "Validate P&L",
         "Histo P&L",
     ]
     assert all(
@@ -324,6 +325,7 @@ def test_native_pl_page_owns_workflow_and_adjustment_state() -> None:
         "pl-preview-summary",
         "pl-sog-summary",
         "pl-portfolio-summary",
+        "pl-validate-summary",
         "pl-history-summary",
     } <= ids
     filters = [
@@ -903,6 +905,42 @@ def test_histo_data_is_lazy_expandable_and_reuses_the_loaded_history(
     assert collapsed_comparison[6] == {"path": ["IR"], "period": MTD_PERIOD}
 
 
+def test_histo_accepts_a_lazy_canonical_history_function(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    file_config = _config(tmp_path)
+    expected = load_pl_history(file_config.history_source)
+    calls = 0
+
+    def history_source() -> pd.DataFrame:
+        nonlocal calls
+        calls += 1
+        return expected.copy(deep=True)
+
+    config = replace(file_config, history_source=history_source)
+    app, _manager = _registered_pl_app(tmp_path, config=config)
+    history_callback = _callback(app, "pl-history-grid.children")
+    monkeypatch.setattr(
+        pl_events,
+        "ctx",
+        SimpleNamespace(triggered_id="pl-history-summary"),
+    )
+    monkeypatch.setattr(
+        pl_events,
+        "load_pl_history",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("callable history fell back to the directory loader")
+        ),
+    )
+
+    table, status, *_state = history_callback(1, [], [], [], [], [], {})
+
+    assert isinstance(table, html.Div)
+    assert "daily partitions" in status
+    assert calls == 1
+
+
 def test_histo_chart_supports_wtd_type_selection_and_observed_rows_only(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1053,6 +1091,7 @@ def test_manager_app_without_pl_config_omits_inert_workflow(tmp_path: Path) -> N
     assert "pl-preview-summary" not in without_ids
     assert "pl-sog-summary" not in without_ids
     assert "pl-portfolio-summary" not in without_ids
+    assert "pl-validate-summary" not in without_ids
     assert "pl-history-summary" not in without_ids
     assert "pl-adjustment-revision-store" not in without_ids
     assert not any(
@@ -1088,6 +1127,7 @@ def test_manager_app_without_pl_config_omits_inert_workflow(tmp_path: Path) -> N
         "pl-preview-summary",
         "pl-sog-summary",
         "pl-portfolio-summary",
+        "pl-validate-summary",
         "pl-history-summary",
         "pl-adjustment-revision-store",
     } <= with_ids

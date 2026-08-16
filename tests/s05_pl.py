@@ -108,8 +108,7 @@ def _historical_pl() -> pd.DataFrame:
 
 
 def _history_leaf(root, market_date: str, *, duplicate: bool = False):
-    year, month, day = market_date.split("-")
-    leaf = root / year / f"{month}-{day}"
+    leaf = root / market_date
     leaf.mkdir(parents=True)
     histo_rows = [
         ["IR", "Delta", "EUR", "XVA", "BOOK_A", 10.0],
@@ -404,12 +403,22 @@ def test_pl_history_requires_both_named_files_in_every_date_partition(
 
 
 def test_pl_history_rejects_invalid_calendar_partition(tmp_path) -> None:
-    leaf = tmp_path / "histo" / "2026" / "02-30"
+    leaf = tmp_path / "histo" / "2026-02-30"
     leaf.mkdir(parents=True)
     for name in ("histo.csv", "predicted.csv"):
         pd.DataFrame(columns=HISTORY_FILE_COLUMNS).to_csv(leaf / name, index=False)
 
     with pytest.raises(PLSendValidationError, match="not a valid date"):
+        load_pl_history(tmp_path / "histo")
+
+
+def test_pl_history_rejects_the_retired_nested_year_layout(tmp_path) -> None:
+    leaf = tmp_path / "histo" / "2026" / "08-15"
+    leaf.mkdir(parents=True)
+    for name in ("histo.csv", "predicted.csv"):
+        pd.DataFrame(columns=HISTORY_FILE_COLUMNS).to_csv(leaf / name, index=False)
+
+    with pytest.raises(PLSendValidationError, match="YYYY-MM-DD"):
         load_pl_history(tmp_path / "histo")
 
 

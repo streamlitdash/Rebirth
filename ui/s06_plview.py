@@ -16,6 +16,7 @@ from .s02_constants import (
 from .s04_components import build_aggregate_pl_table, build_cube_loader
 from .s11_saved_views import SavedFilterViewControls
 from .s12_plhistory import build_pl_history_series_selector
+from .s13_validate_pl import build_validate_pl_section
 
 
 DISPLAY_COLUMNS = (
@@ -805,6 +806,7 @@ def build_pl_send_sections() -> list[html.Div | html.Details]:
         ],
         className="aux-details",
     )
+    validate_pl = build_validate_pl_section()
     history = html.Details(
         [
             html.Summary(
@@ -937,7 +939,16 @@ def build_pl_send_sections() -> list[html.Div | html.Details]:
         id="pl-workflow-state",
         hidden=True,
     )
-    return [state, send_all, by_sog, by_portfolio, save, preview, history]
+    return [
+        state,
+        send_all,
+        by_sog,
+        by_portfolio,
+        save,
+        preview,
+        validate_pl,
+        history,
+    ]
 
 
 def build_pl_page(

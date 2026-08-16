@@ -7,7 +7,12 @@ import os
 from pathlib import Path
 
 from adapters.s05_stock import get_stock
+from core.s04_pl import PLSendValidationError
 from core.s05_storage import LocalCsvAdjustmentRepository
+from core.s11_risk_archive import (
+    RiskArchiveValidationError,
+    load_shared_pl_history,
+)
 from feeds.s01_sources import (
     build_production_refresh_manager,
     get_portfolio_config,
@@ -79,13 +84,23 @@ def create_app(settings: RuntimeSettings | None = None):
         root=project_root,
     )
 
+    def combined_pl_history():
+        """Read legacy fixtures and official P/C from one history root."""
+
+        try:
+            return load_shared_pl_history(historical_pl_path)
+        except (OSError, RiskArchiveValidationError) as exc:
+            raise PLSendValidationError(
+                f"Shared P&L history is invalid: {exc}"
+            ) from exc
+
     pl_send_config = PLSendConfig(
         mapping_source=mapping_path,
         adjustment_repository=LocalCsvAdjustmentRepository(adjustment_path),
         saved_directory=saved_pl_path,
         send_sog_pl=send_sog_pl,
         send_portfolio_pl=send_portfolio_pl,
-        history_source=historical_pl_path,
+        history_source=combined_pl_history,
     )
     return build_app(
         refresh_manager=manager,
@@ -93,6 +108,7 @@ def create_app(settings: RuntimeSettings | None = None):
         stock_source=get_stock,
         stock_portfolio_source=get_portfolio_config,
         saved_view_root=saved_view_path,
+        pl_history_root=historical_pl_path,
         dash_kwargs=settings.dash_kwargs,
     )
 
