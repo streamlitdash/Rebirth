@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Loading Rebirth V2 simulation…</title>
+<style>
+html,body{margin:0;min-height:100%;font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#111}
+body{min-height:100vh;display:grid;place-items:center;padding:20px}.card{width:min(460px,100%);padding:20px;border:1px solid #d9dee5;border-radius:12px;background:white;box-shadow:0 8px 28px rgba(16,24,40,.08)}.bar{height:7px;margin-top:12px;overflow:hidden;border-radius:999px;background:#e6e9ed}.fill{height:100%;width:0;background:#111;transition:width .2s}pre{white-space:pre-wrap;overflow-wrap:anywhere;color:#8a1c15}
+</style>
+</head>
+<body>
+<div class="card"><strong>Loading Rebirth V2 simulation…</strong><div id="status">Preparing source</div><div class="bar"><div id="fill" class="fill"></div></div></div>
+<script>
+(async()=>{
+  const sourceFiles=[0,1,2,3].map(i=>`rebirth-v2-simulation.part-${String(i).padStart(2,"0")}.txt`);
+  const tailFiles=[0,1,2].map(i=>`rebirth-v2-simulation.tail-${String(i).padStart(2,"0")}.hex`);
+  const status=document.getElementById("status"),fill=document.getElementById("fill"),prefix=[];
+  for(let i=0;i<sourceFiles.length;i++){
+    const r=await fetch(sourceFiles[i],{cache:"no-store"});if(!r.ok)throw new Error(`${sourceFiles[i]}: HTTP ${r.status}`);
+    prefix.push(await r.text());status.textContent=`Loaded ${i+1} / ${sourceFiles.length} source parts`;fill.style.width=`${(i+1)*12}%`;
+  }
+  const prefixText=prefix.join("");if(prefixText.length!==72000)throw new Error(`Incomplete prefix (${prefixText.length} characters)`);
+  const tail=[];
+  for(let i=0;i<tailFiles.length;i++){
+    const r=await fetch(tailFiles[i],{cache:"no-store"});if(!r.ok)throw new Error(`${tailFiles[i]}: HTTP ${r.status}`);
+    tail.push((await r.text()).trim());status.textContent=`Loaded ${i+1} / ${tailFiles.length} compressed tail parts`;fill.style.width=`${55+(i+1)*10}%`;
+  }
+  const hex=tail.join("");if(hex.length!==20664)throw new Error(`Incomplete compressed tail (${hex.length} characters)`);
+  const bytes=new Uint8Array(hex.length/2);for(let i=0;i<bytes.length;i++)bytes[i]=parseInt(hex.slice(i*2,i*2+2),16);
+  if(typeof DecompressionStream!=="function")throw new Error("This browser does not support gzip DecompressionStream");
+  const stream=new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
+  const tailText=await new Response(stream).text();if(tailText.length!==46722)throw new Error(`Incomplete tail (${tailText.length} characters)`);
+  const html=prefixText+tailText;if(html.length!==118722||!html.startsWith("<!doctype html>")||!html.trimEnd().endsWith("</html>"))throw new Error(`Invalid reconstructed HTML (${html.length} characters)`);
+  status.textContent="Launching simulation";fill.style.width="100%";document.open();document.write(html);document.close();
+})().catch(error=>{document.querySelector(".card").innerHTML=`<strong>Simulation failed to load</strong><pre>${String(error)}</pre>`;});
+</script>
+</body>
+</html>
