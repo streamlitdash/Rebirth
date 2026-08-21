@@ -52,3 +52,6 @@ jobs:
           git add -A
           git commit -m "Materialize modular Rebirth V2 codebase"
           git push origin HEAD:rebirth-v2
+
+      # This comment intentionally changes the workflow file to trigger a clean
+      # materialization run after the V2 source archive was reconstructed.
