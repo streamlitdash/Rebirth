@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Loading Rebirth V2 simulation…</title>
+<style>
+html,body{margin:0;min-height:100%;font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;background:#f4f6f8;color:#111}body{min-height:100vh;display:grid;place-items:center;padding:20px}.card{width:min(460px,100%);padding:20px;border:1px solid #d9dee5;border-radius:12px;background:#fff;box-shadow:0 8px 28px rgba(16,24,40,.08)}.bar{height:7px;margin-top:12px;overflow:hidden;border-radius:999px;background:#e6e9ed}.fill{height:100%;width:0;background:#111;transition:width .2s}pre{white-space:pre-wrap;overflow-wrap:anywhere;color:#8a1c15}
+</style>
+</head>
+<body>
+<div class="card"><strong>Loading Rebirth V2 simulation…</strong><div id="status">Preparing source</div><div class="bar"><div id="fill" class="fill"></div></div></div>
+<script>
+(async()=>{
+  const EXPECTED_PREFIX_LENGTH=72000;
+  const EXPECTED_TAIL_HEX_LENGTH=20664;
+  const EXPECTED_TAIL_LENGTH=46722;
+  const EXPECTED_HTML_LENGTH=118722;
+  const status=document.getElementById("status");
+  const fill=document.getElementById("fill");
+
+  async function fetchText(file){
+    const url=new URL(file,location.href);
+    url.searchParams.set("loader","v3");
+    const response=await fetch(url,{cache:"no-store"});
+    if(!response.ok)throw new Error(`${file}: HTTP ${response.status}`);
+    return response.text();
+  }
+
+  const sourceFiles=[0,1,2,3].map(index=>`rebirth-v2-simulation.part-${String(index).padStart(2,"0")}.txt`);
+  const sourceParts=[];
+  for(let index=0;index<sourceFiles.length;index++){
+    sourceParts.push(await fetchText(sourceFiles[index]));
+    status.textContent=`Loaded ${index+1} / ${sourceFiles.length} source parts`;
+    fill.style.width=`${(index+1)*12}%`;
+  }
+
+  let prefixText=sourceParts.join("");
+  // The original GitHub upload appended one extra closing bracket to part 01.
+  // The expected boundary is …</div + >\n…, but the stored parts produce …</div>>\n….
+  if(
+    prefixText.length===EXPECTED_PREFIX_LENGTH+1 &&
+    prefixText[36000]===">" &&
+    prefixText[36001]===">"
+  ){
+    prefixText=prefixText.slice(0,36000)+prefixText.slice(36001);
+  }
+  if(prefixText.length!==EXPECTED_PREFIX_LENGTH){
+    throw new Error(`Incomplete prefix (${prefixText.length} characters)`);
+  }
+  fill.style.width="54%";
+
+  const tailFiles=[0,1,2].map(index=>`rebirth-v2-simulation.tail-${String(index).padStart(2,"0")}.hex`);
+  const tailParts=[];
+  for(let index=0;index<tailFiles.length;index++){
+    tailParts.push((await fetchText(tailFiles[index])).replace(/\s+/g,""));
+    status.textContent=`Loaded ${index+1} / ${tailFiles.length} compressed tail parts`;
+    fill.style.width=`${58+(index+1)*10}%`;
+  }
+
+  const hex=tailParts.join("");
+  if(hex.length!==EXPECTED_TAIL_HEX_LENGTH){
+    throw new Error(`Incomplete compressed tail (${hex.length} characters)`);
+  }
+  const bytes=new Uint8Array(hex.length/2);
+  for(let index=0;index<bytes.length;index++){
+    const value=Number.parseInt(hex.slice(index*2,index*2+2),16);
+    if(!Number.isFinite(value))throw new Error(`Invalid compressed byte at ${index}`);
+    bytes[index]=value;
+  }
+
+  if(typeof DecompressionStream!=="function"){
+    throw new Error("This Safari version cannot decompress the simulation. Update iOS/Safari or use the standalone file link.");
+  }
+  status.textContent="Decompressing application";
+  const stream=new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
+  const tailText=await new Response(stream).text();
+  if(tailText.length!==EXPECTED_TAIL_LENGTH){
+    throw new Error(`Incomplete tail (${tailText.length} characters)`);
+  }
+
+  const html=prefixText+tailText;
+  if(
+    html.length!==EXPECTED_HTML_LENGTH ||
+    !html.startsWith("<!doctype html>") ||
+    !html.trimEnd().endsWith("</html>")
+  ){
+    throw new Error(`Invalid reconstructed HTML (${html.length} characters)`);
+  }
+
+  status.textContent="Launching simulation";
+  fill.style.width="100%";
+  document.open();
+  document.write(html);
+  document.close();
+})().catch(error=>{
+  document.querySelector(".card").innerHTML=`<strong>Simulation failed to load</strong><pre>${String(error)}</pre>`;
+});
+</script>
+</body>
+</html>
