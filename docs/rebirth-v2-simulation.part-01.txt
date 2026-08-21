@@ -1,0 +1,313 @@
+ge="pnl">P&amp;L</button>
+      <button data-page="statics">Statics</button>
+      <button data-page="system">System</button>
+    </nav>
+    <div class="header-actions">
+      <span class="badge ok">Fake adapters</span>
+      <button id="theme" class="theme" aria-label="Toggle theme">◐</button>
+    </div>
+  </header>
+
+  <div id="shared-refresh" class="shell" style="padding-bottom:0">
+    <section class="refresh-strip">
+      <div class="refresh-top">
+        <div class="actions">
+          <button class="btn btn-blue" data-refresh="portfolio">Refresh Portfolios</button>
+          <button class="btn btn-dark" data-refresh="risk">Refresh Risk &amp; Market</button>
+          <button class="btn btn-light" data-refresh="pnl">Refresh P&amp;L</button>
+          <button id="commo-toggle" class="toggle">Commo: Off</button>
+          <button id="checker-toggle" class="toggle on">RiskChecker: On</button>
+          <button id="autopl-toggle" class="toggle on">AutoPL: On</button>
+        </div>
+        <div class="date-banner">
+          <div class="date-card"><span>MARKET DATE</span><strong>2026-08-20</strong><small>OFFICIAL</small></div>
+          <div class="date-card"><span>RISK DATE</span><strong>2026-08-19</strong><small>15 source types</small></div>
+        </div>
+      </div>
+      <div id="refresh-status" class="refresh-status">Last success 08:15:22 UTC · revision 218 · baseline promotion committed</div>
+      <div id="refresh-progress" class="progress" hidden>
+        <div class="progress-head"><strong>Transactional refresh pipeline</strong><span id="refresh-count">0 / 0</span></div>
+        <div class="progress-card">
+          <strong id="refresh-product">Preparing queue</strong>
+          <code id="refresh-function">waiting</code>
+          <span id="refresh-percent">0%</span>
+          <div class="progress-track"><div id="refresh-fill" class="progress-fill"></div></div>
+        </div>
+        <ol id="refresh-stages" class="stage-list"></ol>
+      </div>
+    </section>
+  </div>
+
+  <main>
+    <section id="page-risk" class="page active shell">
+      <div class="prototype-note">
+        <span><strong>Risk V2:</strong> promotion is revision-owned, Top Book is removed, filters are bounded, Aggregate P&amp;L remains open, and wide dimensions use a server-style column viewport.</span>
+        <span class="badge">24 fake portfolios</span>
+      </div>
+
+      <details>
+        <summary>Dates, readiness, and committed snapshot</summary>
+        <div class="details-body grid2">
+          <section class="panel">
+            <div class="panel-head"><div class="panel-title">Current snapshot</div><span class="badge ok">Committed</span></div>
+            <div class="panel-body">
+              <div class="metric-cards">
+                <div class="metric-card"><span>Market</span><strong>2026-08-20</strong></div>
+                <div class="metric-card"><span>Risk</span><strong>2026-08-19</strong></div>
+                <div class="metric-card"><span>Revision</span><strong id="snapshot-revision">218</strong></div>
+                <div class="metric-card"><span>Promotion</span><strong id="snapshot-promotion">Baseline</strong></div>
+              </div>
+            </div>
+          </section>
+          <section class="panel">
+            <div class="panel-head"><div class="panel-title">Risk readiness</div></div>
+            <div class="table-wrap" style="max-height:260px">
+              <table>
+                <thead><tr><th class="index-head">Source</th><th>Age</th><th>Effective</th><th>Ready</th></tr></thead>
+                <tbody id="readiness-body"></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      </details>
+
+      <div id="risk-saved"></div>
+      <div id="risk-filters" class="controls five"></div>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <div class="panel-title">Aggregate P&amp;L</div>
+            <div class="note">Always open. All dimension values remain available; only the current column window is sent to the table.</div>
+          </div>
+          <div id="risk-aggregate-dimension" class="inline"></div>
+        </div>
+        <div id="risk-aggregate-virtual"></div>
+        <div id="risk-aggregate-grid" class="table-wrap"></div>
+      </section>
+
+      <details id="market-history-details" open>
+        <summary>Market History · zero, one, and two tenor dimensions</summary>
+        <div class="details-body">
+          <div class="controls five">
+            <div class="field"><label>Risk Type</label><select id="market-risk-type"></select></div>
+            <div class="field"><label>Risk Greek</label><select id="market-greek"></select></div>
+            <div class="field"><label>Underlying</label><select id="market-underlying"></select></div>
+            <div class="field"><label>View</label><select id="market-view"></select></div>
+            <div class="field" id="market-tenor-field"><label id="market-tenor-label">Specific tenor</label><select id="market-tenor"></select></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <div id="market-chart-title" class="panel-title">Market History</div>
+                <div id="market-chart-subtitle" class="note">Select an identity.</div>
+              </div>
+              <span id="market-shape-badge" class="badge">0 axes</span>
+            </div>
+            <div id="market-chart" class="chart large"></div>
+            <div id="market-transport" class="virtual-toolbar" hidden>
+              <button id="market-play" class="btn btn-dark">▶ Play</button>
+              <label style="flex:1 1 420px">Market date <input id="market-slider" type="range" min="0" max="0" value="0"></label>
+              <span id="market-date-label" class="virtual-label">—</span>
+            </div>
+            <div id="market-status" class="status" style="margin:10px 14px 14px">No identity selected.</div>
+          </div>
+        </div>
+      </details>
+
+      <div class="heading">
+        <div><div class="title">Risk Explorer</div><div class="note">Cross and SplitVA retain the existing financial semantics while bounding visible rows and columns.</div></div>
+        <span id="promotion-status" class="badge ok">Baseline promotion · revision 218</span>
+      </div>
+
+      <div id="risk-type-tabs" class="tabs"></div>
+      <div id="risk-greek-tabs" class="tabs" style="margin-top:8px"></div>
+
+      <div class="controls">
+        <div class="field">
+          <label>Layout</label>
+          <div id="risk-view-selector" class="segmented">
+            <button data-view="cross" class="active">Cross</button>
+            <button data-view="split">SplitVA</button>
+          </div>
+        </div>
+        <div class="field"><label>Reporting dimension</label><div id="risk-dimension-selector" class="inline"></div></div>
+        <div class="field"><label>Hierarchy options</label><div class="actions"><button id="promotion-toggle" class="toggle on">Promotion</button><button id="region-toggle" class="toggle">Region</button></div></div>
+        <div class="field">
+          <label>Promotion calculation</label>
+          <div class="actions"><button id="promotion-recalculate" class="btn btn-blue">Recalculate current view</button><button id="promotion-reset" class="btn btn-light">Use baseline</button></div>
+        </div>
+      </div>
+
+      <section id="risk-cross-panel" class="panel">
+        <div id="risk-cross-grid" class="table-wrap tall"></div>
+      </section>
+      <section id="risk-split-panel" class="panel" hidden>
+        <div class="virtual-toolbar">
+          <span class="control-label">Metric</span>
+          <div id="split-metric-selector" class="inline"></div>
+          <label id="split-window-wrap">Column window <input id="split-window" type="range" min="0" max="0" value="0"></label>
+          <span id="split-window-label" class="virtual-label"></span>
+        </div>
+        <div id="risk-split-grid" class="table-wrap tall"></div>
+      </section>
+
+      <section class="panel" style="margin-top:14px">
+        <div class="panel-head">
+          <div><div class="panel-title">Risk Detail</div><div id="risk-detail-subtitle" class="note">Select a Risk, dRisk, P&amp;L, or Market cell.</div></div>
+          <div class="inline">
+            <label>Metric <select id="risk-detail-metric"><option value="risk">Risk</option><option value="drisk">dRisk</option><option value="pl">P&amp;L</option><option value="move">Move</option></select></label>
+            <label>Tenor view <select id="risk-detail-view"><option value="auto">Auto</option><option value="line">Line</option><option value="surface">Surface</option></select></label>
+          </div>
+        </div>
+        <div class="panel-body grid2">
+          <div id="risk-detail-chart" class="chart"></div>
+          <div id="risk-detail-table" class="table-wrap" style="max-height:500px"></div>
+        </div>
+      </section>
+
+      <details>
+        <summary>Unmapped portfolios</summary>
+        <div class="details-body"><div id="unmapped-table" class="table-wrap"></div></div>
+      </details>
+    </section>
+
+    <section id="page-stock" class="page shell">
+      <div class="heading">
+        <div><div class="title">Stock</div><div class="note">Two committed dates, one explicit mapping authority, view-local promotion, and historical drill-through.</div></div>
+        <span class="badge ok">History repository</span>
+      </div>
+      <div id="stock-saved"></div>
+      <div class="controls">
+        <div class="field"><label>Prior snapshot</label><select id="stock-date-a"></select></div>
+        <div class="field"><label>Current snapshot</label><select id="stock-date-b"></select></div>
+        <div class="field"><label>Mapping authority</label><select id="stock-mapping"><option value="newer">Newer selected date</option><option value="historical">Each date historically</option><option value="current">Current registry</option></select></div>
+        <div class="field"><label>Promotion threshold</label><input id="stock-threshold" type="number" value="50000" min="0" step="10000"></div>
+      </div>
+      <div id="stock-filters" class="controls five"></div>
+      <div id="stock-summary" class="metric-cards"></div>
+      <div class="grid2">
+        <section class="panel">
+          <div class="panel-head">
+            <div><div class="panel-title">Stacked Stock</div><div class="note">Activity → Promotion Bucket → Currency Group → CPTY → CRDS</div></div>
+            <button id="stock-collapse" class="btn btn-light">Collapse all</button>
+          </div>
+          <div id="stock-tree" class="table-wrap tall"></div>
+        </section>
+        <section class="panel">
+          <div class="panel-head"><div><div id="stock-history-title" class="panel-title">Stock history</div><div class="note">Select a hierarchy leaf or source row.</div></div></div>
+          <div id="stock-history-chart" class="chart"></div>
+        </section>
+      </div>
+      <details>
+        <summary>Source comparison rows</summary>
+        <div class="details-body">
+          <div class="actions" style="justify-content:space-between"><span class="note">Raw comparison rows load only on request.</span><button id="stock-load-rows" class="btn btn-light">Load filtered source rows</button></div>
+          <div id="stock-source-rows" class="empty">Source rows are not loaded.</div>
+        </div>
+      </details>
+    </section>
+
+    <section id="page-pnl" class="page shell">
+      <div class="heading">
+        <div><div class="title">P&amp;L Sender</div><div class="note">Aggregate P&amp;L, governed adjustments, Predict-versus-Colossus validation, and canonical historical queries.</div></div>
+        <span class="badge ok">Latest committed revision</span>
+      </div>
+      <div id="pnl-saved"></div>
+      <div id="pnl-filters" class="controls five"></div>
+      <section class="panel">
+        <div class="panel-head"><div class="panel-title">Aggregate P&amp;L</div><div id="pnl-aggregate-dimension" class="inline"></div></div>
+        <div id="pnl-aggregate-virtual"></div>
+        <div id="pnl-aggregate-grid" class="table-wrap"></div>
+      </section>
+      <section class="panel" style="margin-top:14px">
+        <div class="panel-body actions" style="justify-content:space-between">
+          <div><div class="title" style="font-size:18px">Send All P&amp;L</div><div class="note">Send complete governed effective P&amp;L, including saved adjustments.</div></div>
+          <div class="actions"><button id="send-all" class="btn btn-dark">Send All P&amp;L</button><span id="send-all-status" class="note"></span></div>
+        </div>
+      </section>
+
+      <details>
+        <summary>SOG P&amp;L editor</summary>
+        <div class="details-body">
+          <div class="controls">
+            <div class="field"><label>Signoff Group</label><select id="sog-scope"></select></div>
+            <div class="field"><label><input id="sog-show-adjustments" type="checkbox"> Show adjustments</label></div>
+          </div>
+          <div id="sog-editor" class="table-wrap"></div>
+          <div class="actions" style="margin-top:10px"><button class="btn btn-light" data-editor="sog" data-action="add">Add row</button><button class="btn btn-blue" data-editor="sog" data-action="save">Save adjustments</button><button class="btn btn-dark" data-editor="sog" data-action="send">Send SOG P&amp;L</button></div>
+          <div id="sog-editor-status" class="note"></div>
+        </div>
+      </details>
+
+      <details>
+        <summary>Portfolio P&amp;L editor</summary>
+        <div class="details-body">
+          <div class="controls">
+            <div class="field"><label>Portfolio</label><select id="portfolio-scope"></select></div>
+            <div class="field"><label><input id="portfolio-show-adjustments" type="checkbox"> Show adjustments</label></div>
+          </div>
+          <div id="portfolio-editor" class="table-wrap"></div>
+          <div class="actions" style="margin-top:10px"><button class="btn btn-light" data-editor="portfolio" data-action="add">Add row</button><button class="btn btn-blue" data-editor="portfolio" data-action="save">Save adjustments</button><button class="btn btn-dark" data-editor="portfolio" data-action="send">Send Portfolio P&amp;L</button></div>
+          <div id="portfolio-editor-status" class="note"></div>
+        </div>
+      </details>
+
+      <div class="heading"><div><div class="title">P&amp;L Explorer</div><div class="note">Page filters govern both validation and historical P&amp;L. Missing observations are not filled with zero.</div></div></div>
+
+      <details open>
+        <summary>Validate P&amp;L</summary>
+        <div class="details-body">
+          <div class="controls">
+            <div class="field"><label>Official date</label><select id="validate-date"></select></div>
+            <div class="field"><label>Comparison status</label><select id="validate-status"><option value="all">All</option><option value="Matched">Matched</option><option value="Predict only">Predict only</option><option value="Colossus only">Colossus only</option></select></div>
+          </div>
+          <div id="validate-summary" class="metric-cards"></div>
+          <div id="validate-table" class="table-wrap tall"></div>
+        </div>
+      </details>
+
+      <details open>
+        <summary>Historical P&amp;L</summary>
+        <div class="details-body">
+          <div class="grid2">
+            <div id="pnl-history-tree" class="table-wrap tall"></div>
+            <div>
+              <div class="controls">
+                <div class="field" style="grid-column:span 2"><label>Period</label><div id="pnl-periods" class="inline"></div></div>
+                <div class="field"><label>Series</label><select id="pnl-series"><option value="both">Colossus + Predict</option><option value="predict">Predict</option><option value="colossus">Colossus</option></select></div>
+              </div>
+              <div id="pnl-history-chart" class="chart"></div>
+              <div id="pnl-history-status" class="status">TOTAL · ALL</div>
+            </div>
+          </div>
+        </div>
+      </details>
+    </section>
+
+    <section id="page-statics" class="page shell">
+      <div class="heading">
+        <div><div class="title">Statics</div><div class="note">Approved fake configuration, thresholds, mappings, and history commits.</div></div>
+        <div class="field"><label>Dataset</label><select id="statics-dataset"></select></div>
+      </div>
+      <div class="controls" style="grid-template-columns:minmax(280px,520px) auto">
+        <div class="field"><label>Search rows</label><input id="statics-search" placeholder="Search every displayed column"></div>
+        <div class="field"><label>History</label><span class="badge ok">Committed Parquet catalogue</span></div>
+      </div>
+      <div id="statics-meta" class="status"></div>
+      <div id="statics-table" class="panel table-wrap tall"></div>
+    </section>
+
+    <section id="page-system" class="page shell">
+      <div class="heading">
+        <div><div class="title">System architecture</div><div class="note">Adapters, the application factory, refresh pipeline, repositories, and page-local callback modules remain explicit concepts.</div></div>
+        <span class="badge ok">Modular V2 target</span>
+      </div>
+
+      <section class="panel">
+        <div class="panel-head"><div class="panel-title">Composition root</div><span class="badge">Factory-owned dependencies</span></div>
+        <div class="panel-body">
+          <div class="arch-grid">
+            <div>
+              <div class="module-card"><h3>Adapters</h3><p>IR, FX, Credit, Commodities, Stock, Colossus, senders, and deterministic fake implementations.</p></div>
+              <div class="module-card" style="margin-top:8px"><h3>Repositories</h3><p>Parquet history, saved views, adjustment storage, manifests, and current-snapshot stores.</p></div>
