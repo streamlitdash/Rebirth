@@ -1,557 +1,394 @@
-"""Single-file Dash viewer for dated double-tenor market CSV files.
-
-Expected folder structure::
-
-    historical-tenor-surface-app.py
-    data/
-        01082026.csv
-        02082026.csv
-        ...
-
-Every CSV filename must be ``DDMMYYYY.csv`` and contain these columns:
-
-    Underlying, Tenor Swap, Tenor Option, OFFICIAL
-
-Install and run::
-
-    python -m pip install dash pandas numpy plotly
-    python historical-tenor-surface-app.py
-
-The data directory can be overridden with ``CUBE_HISTORY_DATA_DIR``.
-"""
-
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
+from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
-from typing import Final
+from threading import Lock
+from typing import Any
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-from dash import Dash, Input, Output, State, callback, dcc, html
+from dash import Dash, Input, Output, State, callback, ctx, dcc, html
+
+try:
+    import pyarrow.dataset as ds
+except ImportError:
+    ds = None
+
+ROOT = Path(__file__).resolve().parent
+DATA = Path(os.getenv("CUBE_HISTORY_DATA_DIR", ROOT / "data")).expanduser().resolve()
+CACHE = Path(os.getenv("CUBE_HISTORY_CACHE_DIR", DATA / ".cube_surface_cache")).expanduser().resolve()
+PARQUET = CACHE / "parquet"
+MANIFEST = CACHE / "manifest.json"
+DATE_RE = re.compile(r"^(\d{8})\.csv$")
+COLUMNS = ("Underlying", "Tenor Swap", "Tenor Option", "OFFICIAL")
+CACHE_VERSION = 1
 
 
-APP_ROOT: Final[Path] = Path(__file__).resolve().parent
-DATA_DIR: Final[Path] = Path(
-    os.environ.get("CUBE_HISTORY_DATA_DIR", APP_ROOT / "data")
-).expanduser().resolve()
-
-DATE_FILE_RE: Final[re.Pattern[str]] = re.compile(r"^(?P<date>\d{8})\.csv$")
-REQUIRED_COLUMNS: Final[tuple[str, ...]] = (
-    "Underlying",
-    "Tenor Swap",
-    "Tenor Option",
-    "OFFICIAL",
-)
-
-_STANDARD_TENOR_RE: Final[re.Pattern[str]] = re.compile(
-    r"^(?P<number>\d+(?:\.\d+)?)(?P<unit>[DWMY])$",
-    re.IGNORECASE,
-)
-_UNIT_DAYS: Final[dict[str, float]] = {
-    "D": 1.0,
-    "W": 7.0,
-    "M": 30.4375,
-    "Y": 365.25,
-}
-_SPECIAL_TENORS: Final[dict[str, float]] = {
-    "ON": 0.10,
-    "O/N": 0.10,
-    "TN": 0.20,
-    "T/N": 0.20,
-    "SN": 0.30,
-    "S/N": 0.30,
-    "SPOT": 0.40,
-}
-
-
-def parse_market_date(path: Path) -> pd.Timestamp:
-    """Parse a strict DDMMYYYY.csv filename."""
-    match = DATE_FILE_RE.fullmatch(path.name)
-    if match is None:
-        raise ValueError(f"Not a DDMMYYYY.csv file: {path.name}")
+def market_date(path: Path) -> pd.Timestamp:
+    match = DATE_RE.fullmatch(path.name)
+    if not match:
+        raise ValueError(f"Expected DDMMYYYY.csv, found {path.name}")
     try:
-        return pd.Timestamp(
-            datetime.strptime(match.group("date"), "%d%m%Y")
-        ).normalize()
+        return pd.Timestamp(datetime.strptime(match.group(1), "%d%m%Y")).normalize()
     except ValueError as exc:
-        raise ValueError(f"Invalid date in filename: {path.name}") from exc
+        raise ValueError(f"Invalid date in {path.name}") from exc
 
 
-def normalize_columns(frame: pd.DataFrame, filename: str) -> pd.DataFrame:
-    """Accept harmless casing/whitespace differences in the four headers."""
-    canonical = {column.casefold(): column for column in REQUIRED_COLUMNS}
-    rename: dict[object, str] = {}
-    for column in frame.columns:
-        normalized = str(column).strip().casefold()
-        if normalized in canonical:
-            rename[column] = canonical[normalized]
+def sources() -> list[Path]:
+    if not DATA.is_dir():
+        raise FileNotFoundError(f"Data directory does not exist: {DATA}")
+    found = [p for p in DATA.iterdir() if p.is_file() and DATE_RE.fullmatch(p.name)]
+    found.sort(key=market_date)
+    if not found:
+        raise FileNotFoundError(f"No DDMMYYYY.csv files found in {DATA}")
+    return found
 
-    result = frame.rename(columns=rename)
-    missing = [column for column in REQUIRED_COLUMNS if column not in result]
+
+def fingerprint(path: Path) -> dict[str, int]:
+    stat = path.stat()
+    return {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+
+
+def read_manifest() -> dict[str, Any]:
+    try:
+        value = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        value = {}
+    if value.get("version") != CACHE_VERSION or not isinstance(value.get("files"), dict):
+        return {"version": CACHE_VERSION, "files": {}, "generation": ""}
+    return value
+
+
+def write_manifest(value: dict[str, Any]) -> None:
+    CACHE.mkdir(parents=True, exist_ok=True)
+    temp = MANIFEST.with_name(f".{MANIFEST.name}.tmp-{os.getpid()}")
+    temp.write_text(json.dumps(value, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(temp, MANIFEST)
+
+
+def clean_csv(path: Path) -> pd.DataFrame:
+    header = pd.read_csv(path, nrows=0)
+    actual: dict[str, str] = {}
+    for raw in header.columns:
+        canonical = {c.casefold(): c for c in COLUMNS}.get(str(raw).strip().casefold())
+        if canonical:
+            actual[canonical] = str(raw)
+    missing = [c for c in COLUMNS if c not in actual]
     if missing:
-        raise ValueError(
-            f"{filename} is missing {missing}; found {list(frame.columns)}"
-        )
-    return result.loc[:, list(REQUIRED_COLUMNS)].copy()
+        raise ValueError(f"{path.name} is missing {missing}; found {list(header.columns)}")
 
-
-def load_one_file(path: Path) -> pd.DataFrame:
-    """Read and validate one historical snapshot."""
-    frame = normalize_columns(pd.read_csv(path), path.name)
-
+    frame = pd.read_csv(path, usecols=[actual[c] for c in COLUMNS]).rename(
+        columns={actual[c]: c for c in COLUMNS}
+    )
     underlying = frame["Underlying"].astype("string").str.strip()
-    invalid_underlying = underlying.isna() | underlying.eq("")
-    if invalid_underlying.any():
-        rows = frame.index[invalid_underlying].tolist()[:5]
-        raise ValueError(f"{path.name}: blank Underlying values at rows {rows}")
+    if (underlying.isna() | underlying.eq("")).any():
+        raise ValueError(f"{path.name}: Underlying contains blank values")
     frame["Underlying"] = underlying.astype(str)
-
     for column in ("Tenor Swap", "Tenor Option"):
         values = frame[column].astype("string").str.strip().fillna("N/A")
         frame[column] = values.mask(values.eq(""), "N/A").astype(str)
 
-    raw_official = frame["OFFICIAL"]
-    official = pd.to_numeric(raw_official, errors="coerce")
-    nonblank = raw_official.notna() & raw_official.astype("string").str.strip().ne("")
-    invalid = nonblank & official.isna()
-    invalid |= official.notna() & ~np.isfinite(official)
-    if invalid.any():
-        rows = frame.index[invalid].tolist()[:5]
-        raise ValueError(f"{path.name}: invalid OFFICIAL values at rows {rows}")
+    raw = frame["OFFICIAL"]
+    numeric = pd.to_numeric(raw, errors="coerce")
+    bad = raw.notna() & raw.astype("string").str.strip().ne("") & numeric.isna()
+    bad |= numeric.notna() & ~np.isfinite(numeric)
+    if bad.any():
+        raise ValueError(f"{path.name}: OFFICIAL contains non-numeric values")
+    frame["OFFICIAL"] = numeric.astype(float)
+    frame = frame.loc[frame["OFFICIAL"].notna()]
 
-    frame["OFFICIAL"] = official.astype(float)
-    frame = frame.loc[frame["OFFICIAL"].notna()].copy()
-    frame.insert(0, "Market Date", parse_market_date(path))
-    return frame
-
-
-def load_history(root: Path) -> pd.DataFrame:
-    """Load all dated CSV snapshots into one logical history table."""
-    if not root.is_dir():
-        raise FileNotFoundError(
-            f"Data directory does not exist: {root}. Create data/ beside this file "
-            "or set CUBE_HISTORY_DATA_DIR."
-        )
-
-    files = sorted(
-        (
-            path
-            for path in root.iterdir()
-            if path.is_file() and DATE_FILE_RE.fullmatch(path.name)
-        ),
-        key=parse_market_date,
-    )
-    if not files:
-        raise FileNotFoundError(f"No DDMMYYYY.csv files found in {root}")
-
-    history = pd.concat(
-        [load_one_file(path) for path in files],
-        ignore_index=True,
-        sort=False,
-    )
-
-    # Duplicate source rows for the same quote cell are averaged explicitly.
-    return (
-        history.groupby(
-            ["Market Date", "Underlying", "Tenor Swap", "Tenor Option"],
-            as_index=False,
-            dropna=False,
-            sort=False,
-        )
-        .agg(OFFICIAL=("OFFICIAL", "mean"), Source_Rows=("OFFICIAL", "size"))
-        .sort_values(
-            ["Market Date", "Underlying", "Tenor Option", "Tenor Swap"],
-            kind="stable",
-        )
-        .reset_index(drop=True)
-    )
+    grouped = frame.groupby(
+        ["Underlying", "Tenor Swap", "Tenor Option"], as_index=False, sort=False
+    ).agg(OFFICIAL=("OFFICIAL", "mean"), **{"Source Rows": ("OFFICIAL", "size")})
+    grouped.insert(0, "Market Date", market_date(path))
+    return grouped.sort_values(
+        ["Underlying", "Tenor Option", "Tenor Swap"], kind="stable"
+    ).reset_index(drop=True)
 
 
-def tenor_sort_key(value: object) -> tuple[object, ...]:
-    """Sort ordinary market tenors chronologically."""
+TOKEN_RE = re.compile(r"(\d+(?:\.\d+)?)")
+TENOR_RE = re.compile(r"^(\d+(?:\.\d+)?)([DWMY])$", re.I)
+DAYS = {"D": 1.0, "W": 7.0, "M": 30.4375, "Y": 365.25}
+SPECIAL = {"ON": 0.1, "O/N": 0.1, "TN": 0.2, "T/N": 0.2, "SN": 0.3, "S/N": 0.3, "SPOT": 0.4}
+
+
+def natural(value: str) -> tuple[Any, ...]:
+    return tuple(float(p) if p.replace(".", "", 1).isdigit() else p for p in TOKEN_RE.split(value.casefold()))
+
+
+def tenor_key(value: Any) -> tuple[Any, ...]:
     label = str(value).strip()
     normalized = label.upper().replace(" ", "")
-
-    if normalized in _SPECIAL_TENORS:
-        return (0, _SPECIAL_TENORS[normalized], label.casefold())
-
-    match = _STANDARD_TENOR_RE.fullmatch(normalized)
-    if match is not None:
-        days = float(match.group("number")) * _UNIT_DAYS[match.group("unit").upper()]
-        return (1, days, label.casefold())
-
-    if normalized in {"", "N/A", "NA", "NONE", "NULL", "UNSPECIFIED"}:
-        return (3, float("inf"), label.casefold())
-
-    return (2, float("inf"), label.casefold())
+    if normalized.casefold() in {"", "n/a", "na", "none", "null", "unspecified"}:
+        return (3, float("inf"), natural(label))
+    if normalized in SPECIAL:
+        return (0, SPECIAL[normalized], natural(label))
+    match = TENOR_RE.fullmatch(normalized)
+    if match:
+        return (1, float(match.group(1)) * DAYS[match.group(2).upper()], natural(label))
+    return (2, float("inf"), natural(label))
 
 
-def ordered_tenors(values: pd.Series) -> list[str]:
-    """Return unique labels in financial tenor order."""
-    labels = values.dropna().astype(str).str.strip().drop_duplicates().tolist()
-    return sorted(labels, key=tenor_sort_key)
+def ordered(series: pd.Series) -> list[str]:
+    return sorted(series.dropna().astype(str).str.strip().drop_duplicates().tolist(), key=tenor_key)
 
 
-def slider_marks(dates: list[pd.Timestamp], maximum: int = 8) -> dict[int, str]:
-    """Keep the date slider readable with a small number of labels."""
-    if not dates:
-        return {}
-    indexes = sorted(
-        set(np.linspace(0, len(dates) - 1, min(maximum, len(dates)), dtype=int))
-    )
-    return {index: dates[index].strftime("%d %b\n%Y") for index in indexes}
-
-
-def value_range(values: pd.Series) -> tuple[float, float, str, float | None]:
-    """Use one fixed colour and Z range across dates for an Underlying."""
-    numeric = pd.to_numeric(values, errors="coerce")
-    numeric = numeric[np.isfinite(numeric)]
-    if numeric.empty:
-        return -1.0, 1.0, "RdBu_r", 0.0
-
-    low = float(numeric.min())
-    high = float(numeric.max())
+def scale(values: pd.Series) -> tuple[float, float, str, float | None]:
+    finite = pd.to_numeric(values, errors="coerce")
+    finite = finite[np.isfinite(finite)]
+    if finite.empty:
+        return -1.0, 1.0, "RdBu", 0.0
+    low, high = float(finite.min()), float(finite.max())
     if low == high:
         padding = max(abs(low) * 0.05, 1.0)
-        low -= padding
-        high += padding
-
+        low, high = low - padding, high + padding
     if low < 0 < high:
         bound = max(abs(low), abs(high))
-        return -bound, bound, "RdBu_r", 0.0
+        return -bound, bound, "RdBu", 0.0
     return low, high, "Viridis", None
 
 
-def empty_figure(message: str) -> go.Figure:
-    """Return a clean chart empty state."""
-    figure = go.Figure()
-    figure.update_layout(
-        template="plotly_white",
-        paper_bgcolor="rgba(0,0,0,0)",
-        margin={"l": 20, "r": 20, "t": 40, "b": 20},
-        annotations=[
-            {
-                "text": message,
-                "showarrow": False,
-                "xref": "paper",
-                "yref": "paper",
-                "x": 0.5,
-                "y": 0.5,
-                "font": {"size": 15},
+class Store:
+    def __init__(self) -> None:
+        self.lock = Lock()
+        self.generation = ""
+        self.bundles: OrderedDict[tuple[str, str], dict[str, Any]] = OrderedDict()
+
+    def ensure_cache(self, force: bool = False) -> dict[str, Any]:
+        if ds is None:
+            raise RuntimeError("PyArrow is not installed. Run: python -m pip install pyarrow")
+        with self.lock:
+            old = read_manifest().get("files", {})
+            current: dict[str, Any] = {}
+            PARQUET.mkdir(parents=True, exist_ok=True)
+            converted = reused = 0
+            pending: list[tuple[Path, Path]] = []
+            try:
+                for source in sources():
+                    fp = fingerprint(source)
+                    target = PARQUET / f"{source.stem}.parquet"
+                    previous = old.get(source.name)
+                    same = (
+                        not force and isinstance(previous, dict)
+                        and previous.get("size") == fp["size"]
+                        and previous.get("mtime_ns") == fp["mtime_ns"]
+                        and target.is_file()
+                    )
+                    if same:
+                        entry = dict(previous)
+                        reused += 1
+                    else:
+                        frame = clean_csv(source)
+                        temp = target.with_name(f".{target.name}.tmp-{os.getpid()}")
+                        frame.to_parquet(temp, engine="pyarrow", compression="zstd", index=False)
+                        pending.append((temp, target))
+                        entry = {
+                            **fp,
+                            "parquet": target.name,
+                            "date": market_date(source).date().isoformat(),
+                            "rows": len(frame),
+                            "underlyings": sorted(frame["Underlying"].drop_duplicates().tolist(), key=str.casefold),
+                        }
+                        converted += 1
+                    current[source.name] = entry
+
+                for temp, target in pending:
+                    os.replace(temp, target)
+                for name in set(old) - set(current):
+                    old_target = old.get(name, {}).get("parquet") if isinstance(old.get(name), dict) else None
+                    if old_target:
+                        (PARQUET / old_target).unlink(missing_ok=True)
+
+                generation = hashlib.sha256(
+                    json.dumps(current, sort_keys=True, separators=(",", ":")).encode()
+                ).hexdigest()[:16]
+                write_manifest({"version": CACHE_VERSION, "generation": generation, "files": current})
+            except Exception:
+                for temp, _target in pending:
+                    temp.unlink(missing_ok=True)
+                raise
+
+            if generation != self.generation:
+                self.bundles.clear()
+            self.generation = generation
+            underlyings = sorted(
+                {str(u) for entry in current.values() for u in entry.get("underlyings", [])},
+                key=str.casefold,
+            )
+            return {
+                "generation": generation,
+                "underlyings": underlyings,
+                "files": len(current),
+                "rows": sum(int(e.get("rows", 0)) for e in current.values()),
+                "converted": converted,
+                "reused": reused,
             }
-        ],
-        scene={
-            "xaxis": {"visible": False},
-            "yaxis": {"visible": False},
-            "zaxis": {"visible": False},
-        },
-    )
-    return figure
 
+    def bundle(self, underlying: str, generation: str) -> dict[str, Any]:
+        key = (generation, underlying)
+        with self.lock:
+            if key in self.bundles:
+                self.bundles.move_to_end(key)
+                return self.bundles[key]
 
-def build_surface(
-    history: pd.DataFrame,
-    underlying: str,
-    market_date: pd.Timestamp,
-) -> tuple[go.Figure, str]:
-    """Build one selected-date option-tenor by swap-tenor surface."""
-    underlying_history = history.loc[history["Underlying"].eq(underlying)]
-    day = underlying_history.loc[
-        underlying_history["Market Date"].eq(market_date)
-    ]
-    if day.empty:
-        return empty_figure("No rows for the selected date"), "No rows available."
-
-    swap_tenors = ordered_tenors(underlying_history["Tenor Swap"])
-    option_tenors = ordered_tenors(underlying_history["Tenor Option"])
-
-    matrix = (
-        day.pivot_table(
-            index="Tenor Option",
-            columns="Tenor Swap",
-            values="OFFICIAL",
-            aggfunc="mean",
-            sort=False,
+        files = sorted(PARQUET.glob("*.parquet"))
+        if not files:
+            raise RuntimeError("Parquet cache is empty")
+        table = ds.dataset([str(p) for p in files], format="parquet").to_table(
+            columns=["Market Date", "Underlying", "Tenor Swap", "Tenor Option", "OFFICIAL", "Source Rows"],
+            filter=ds.field("Underlying") == underlying,
         )
-        .reindex(index=option_tenors, columns=swap_tenors)
-    )
-    z = matrix.to_numpy(dtype=float)
-
-    cmin, cmax, colorscale, cmid = value_range(
-        underlying_history["OFFICIAL"]
-    )
-    surface_options: dict[str, object] = {
-        "x": np.arange(len(swap_tenors)),
-        "y": np.arange(len(option_tenors)),
-        "z": z,
-        "colorscale": colorscale,
-        "cmin": cmin,
-        "cmax": cmax,
-        "connectgaps": False,
-        "colorbar": {"title": "OFFICIAL", "thickness": 18, "len": 0.72},
-        "contours": {
-            "z": {
-                "show": True,
-                "usecolormap": True,
-                "project_z": True,
-                "highlightcolor": "#111111",
-            }
-        },
-        "hovertemplate": (
-            "<b>Swap %{customdata[0]}</b><br>"
-            "Option %{customdata[1]}<br>"
-            "OFFICIAL: %{z:,.6g}<extra></extra>"
-        ),
-        "customdata": np.array(
-            [
-                [[swap, option] for swap in swap_tenors]
-                for option in option_tenors
-            ],
-            dtype=object,
-        ),
-    }
-    if cmid is not None:
-        surface_options["cmid"] = cmid
-
-    figure = go.Figure(data=[go.Surface(**surface_options)])
-    figure.update_layout(
-        template="plotly_white",
-        title={
-            "text": f"{underlying} · OFFICIAL · {market_date.date().isoformat()}",
-            "x": 0.02,
-            "xanchor": "left",
-        },
-        height=680,
-        margin={"l": 20, "r": 30, "t": 65, "b": 20},
-        paper_bgcolor="rgba(0,0,0,0)",
-        uirevision=f"camera::{underlying}",
-        scene={
-            "camera": {"eye": {"x": 1.55, "y": 1.55, "z": 1.10}},
-            "aspectmode": "manual",
-            "aspectratio": {"x": 1.3, "y": 1.1, "z": 0.8},
-            "xaxis": {
-                "title": "Tenor Swap",
-                "tickmode": "array",
-                "tickvals": list(range(len(swap_tenors))),
-                "ticktext": swap_tenors,
-            },
-            "yaxis": {
-                "title": "Tenor Option",
-                "tickmode": "array",
-                "tickvals": list(range(len(option_tenors))),
-                "ticktext": option_tenors,
-            },
-            "zaxis": {"title": "OFFICIAL", "range": [cmin, cmax]},
-        },
-    )
-
-    populated = int(np.isfinite(z).sum())
-    return (
-        figure,
-        f"{len(day):,} aggregated quote rows · {populated:,}/{z.size:,} surface cells populated",
-    )
+        history = table.to_pandas()
+        if history.empty:
+            raise ValueError(f"No cached history for {underlying!r}")
+        history["Market Date"] = pd.to_datetime(history["Market Date"]).dt.normalize()
+        dates = sorted(history["Market Date"].drop_duplicates().tolist())
+        swaps, options = ordered(history["Tenor Swap"]), ordered(history["Tenor Option"])
+        surfaces, counts = [], []
+        for date in dates:
+            day = history.loc[history["Market Date"].eq(date)]
+            values = day.pivot_table(index="Tenor Option", columns="Tenor Swap", values="OFFICIAL", aggfunc="mean", sort=False).reindex(index=options, columns=swaps)
+            source_counts = day.pivot_table(index="Tenor Option", columns="Tenor Swap", values="Source Rows", aggfunc="sum", sort=False).reindex(index=options, columns=swaps)
+            surfaces.append([[float(v) if np.isfinite(v) else None for v in row] for row in values.to_numpy(float)])
+            counts.append([[int(v) if np.isfinite(v) else None for v in row] for row in source_counts.to_numpy(float)])
+        cmin, cmax, colorscale, cmid = scale(history["OFFICIAL"])
+        result = {
+            "underlying": underlying,
+            "dates": [pd.Timestamp(d).date().isoformat() for d in dates],
+            "swap_tenors": swaps,
+            "option_tenors": options,
+            "surfaces": surfaces,
+            "source_counts": counts,
+            "cmin": cmin,
+            "cmax": cmax,
+            "colorscale": colorscale,
+            "cmid": cmid,
+            "rows": len(history),
+            "duplicate_cells": int((history["Source Rows"] > 1).sum()),
+        }
+        with self.lock:
+            self.bundles[key] = result
+            self.bundles.move_to_end(key)
+            while len(self.bundles) > 8:
+                self.bundles.popitem(last=False)
+        return result
 
 
-HISTORY: Final[pd.DataFrame] = load_history(DATA_DIR)
-UNDERLYINGS: Final[list[str]] = sorted(
-    HISTORY["Underlying"].drop_duplicates().astype(str).tolist(),
-    key=str.casefold,
-)
-DATES_BY_UNDERLYING: Final[dict[str, list[pd.Timestamp]]] = {
-    underlying: sorted(
-        HISTORY.loc[HISTORY["Underlying"].eq(underlying), "Market Date"]
-        .drop_duplicates()
-        .tolist()
+STORE = Store()
+
+
+def empty_figure(message: str) -> go.Figure:
+    fig = go.Figure()
+    fig.update_layout(
+        template="plotly_white", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        annotations=[{"text": message, "showarrow": False, "x": 0.5, "y": 0.5, "xref": "paper", "yref": "paper"}],
+        scene={"xaxis": {"visible": False}, "yaxis": {"visible": False}, "zaxis": {"visible": False}},
     )
-    for underlying in UNDERLYINGS
-}
+    return fig
+
+
+def marks(dates: list[str]) -> dict[int, str]:
+    if not dates:
+        return {}
+    indexes = sorted(set(np.linspace(0, len(dates) - 1, min(8, len(dates)), dtype=int).tolist()))
+    return {i: pd.Timestamp(dates[i]).strftime("%d %b\n%Y") for i in indexes}
 
 
 app = Dash(__name__)
 app.title = "Historical tenor surface"
 server = app.server
-
-app.layout = html.Main(
-    html.Section(
-        [
-            html.Header(
-                [
-                    html.H1(
-                        "Historical double-tenor market surface",
-                        style={"margin": 0, "fontSize": "22px"},
-                    ),
-                    html.P(
-                        "Choose an Underlying, then hold and drag the date slider.",
-                        style={"margin": "6px 0 0", "color": "#626875"},
-                    ),
-                ],
-                style={
-                    "padding": "18px 22px 14px",
-                    "borderBottom": "1px solid #D9DEE5",
-                },
-            ),
-            html.Div(
-                [
-                    html.Label(
-                        "Underlying",
-                        htmlFor="underlying-dropdown",
-                        style={
-                            "display": "block",
-                            "marginBottom": "6px",
-                            "fontWeight": 800,
-                        },
-                    ),
-                    dcc.Dropdown(
-                        id="underlying-dropdown",
-                        options=[
-                            {"label": value, "value": value}
-                            for value in UNDERLYINGS
-                        ],
-                        value=UNDERLYINGS[0],
-                        clearable=False,
-                        searchable=True,
-                    ),
-                ],
-                style={"padding": "14px 22px 4px", "maxWidth": "560px"},
-            ),
-            dcc.Loading(
-                dcc.Graph(
-                    id="surface-graph",
-                    responsive=True,
-                    config={
-                        "displaylogo": False,
-                        "responsive": True,
-                        "scrollZoom": True,
-                    },
-                    style={"height": "680px"},
-                ),
-                type="dot",
-                delay_show=120,
-            ),
-            html.Div(
-                [
-                    html.Div(
-                        [
-                            html.Strong("Historical date"),
-                            html.Strong(
-                                id="selected-date-label",
-                                style={
-                                    "padding": "6px 10px",
-                                    "border": "1px solid #D9DEE5",
-                                    "borderRadius": "999px",
-                                    "background": "#FFFFFF",
-                                },
-                            ),
-                        ],
-                        style={
-                            "display": "flex",
-                            "justifyContent": "space-between",
-                            "gap": "12px",
-                            "marginBottom": "8px",
-                        },
-                    ),
-                    dcc.Slider(
-                        id="date-slider",
-                        min=0,
-                        max=0,
-                        step=1,
-                        value=0,
-                        marks={},
-                        updatemode="drag",
-                        tooltip={"placement": "bottom"},
-                    ),
-                    dcc.Store(id="available-date-store"),
-                    html.Div(
-                        id="surface-status",
-                        style={
-                            "marginTop": "16px",
-                            "color": "#626875",
-                            "fontSize": "12px",
-                        },
-                    ),
-                ],
-                style={
-                    "padding": "14px 24px 22px",
-                    "borderTop": "1px solid #D9DEE5",
-                    "background": "#F7F8FA",
-                },
-            ),
-        ],
-        style={
-            "maxWidth": "1380px",
-            "margin": "22px auto",
-            "border": "1px solid #D9DEE5",
-            "borderRadius": "14px",
-            "background": "#FFFFFF",
-            "boxShadow": "0 8px 28px rgba(16,24,40,0.08)",
-            "overflow": "hidden",
-        },
-    ),
-    style={
-        "minHeight": "100vh",
-        "padding": "1px 16px",
-        "background": "#F4F6F8",
-        "fontFamily": '"Segoe UI Variable Text", "Segoe UI", Arial, sans-serif',
-    },
-)
+app.layout = html.Main([
+    dcc.Interval(id="catalog-trigger", interval=350, n_intervals=0, max_intervals=1),
+    dcc.Store(id="generation-store"),
+    dcc.Store(id="bundle-store"),
+    html.Section([
+        html.Header([
+            html.H1("Historical double-tenor market surface", style={"margin": 0, "fontSize": "22px"}),
+            html.P("Choose an Underlying, then hold and drag the date control. Slider updates happen locally in the browser.", style={"margin": "6px 0 0", "color": "#626875"}),
+        ], style={"padding": "18px 22px 14px", "borderBottom": "1px solid #D9DEE5"}),
+        html.Div([
+            html.Div([html.Label("Underlying", style={"display": "block", "fontWeight": 800, "marginBottom": "6px"}), dcc.Dropdown(id="underlying", options=[], disabled=True, clearable=False, searchable=True)], style={"flex": "1 1 420px"}),
+            html.Button("Refresh cache", id="refresh-cache", n_clicks=0, style={"minHeight": "39px", "padding": "8px 14px"}),
+        ], style={"display": "flex", "alignItems": "end", "gap": "12px", "padding": "14px 22px 4px", "maxWidth": "760px"}),
+        html.Div("Starting Dash; checking the cache after the page is visible.", id="cache-status", style={"padding": "6px 22px 0", "color": "#626875", "whiteSpace": "pre-wrap"}),
+        dcc.Loading(dcc.Graph(id="surface", figure=empty_figure("Preparing the cache…"), config={"displaylogo": False, "responsive": True, "scrollZoom": True}, style={"height": "680px"}), type="dot"),
+        html.Div([
+            html.Div([html.Strong("Historical date"), html.Strong("—", id="date-label", style={"padding": "6px 10px", "border": "1px solid #D9DEE5", "borderRadius": "999px", "background": "white"})], style={"display": "flex", "justifyContent": "space-between", "marginBottom": "8px"}),
+            dcc.Slider(id="date-slider", min=0, max=0, value=0, step=1, marks={}, disabled=True, updatemode="drag"),
+            html.Div(id="surface-status", style={"marginTop": "16px", "color": "#626875"}),
+        ], style={"padding": "14px 24px 22px", "borderTop": "1px solid #D9DEE5", "background": "#F7F8FA"}),
+    ], style={"maxWidth": "1380px", "margin": "22px auto", "background": "white", "border": "1px solid #D9DEE5", "borderRadius": "14px", "overflow": "hidden", "boxShadow": "0 8px 28px rgba(16,24,40,.08)"}),
+    html.P(["Source: ", html.Code(str(DATA)), " · Cache: ", html.Code(str(CACHE))], style={"maxWidth": "1380px", "margin": "-8px auto 28px", "color": "#626875", "fontSize": "11px"}),
+], style={"minHeight": "100vh", "padding": "1px 16px", "background": "#F4F6F8", "fontFamily": "Segoe UI,Arial,sans-serif"})
 
 
 @callback(
-    Output("available-date-store", "data"),
-    Output("date-slider", "max"),
-    Output("date-slider", "value"),
-    Output("date-slider", "marks"),
-    Input("underlying-dropdown", "value"),
+    Output("underlying", "options"), Output("underlying", "value"), Output("underlying", "disabled"),
+    Output("cache-status", "children"), Output("generation-store", "data"),
+    Input("catalog-trigger", "n_intervals"), Input("refresh-cache", "n_clicks"), State("underlying", "value"),
 )
-def update_dates(underlying: str | None) -> tuple[list[str], int, int, dict[int, str]]:
-    if not underlying or underlying not in DATES_BY_UNDERLYING:
-        return [], 0, 0, {}
-    dates = DATES_BY_UNDERLYING[underlying]
-    serialized = [pd.Timestamp(value).date().isoformat() for value in dates]
-    latest = len(dates) - 1
-    return serialized, latest, latest, slider_marks(dates)
-
-
-@callback(
-    Output("surface-graph", "figure"),
-    Output("selected-date-label", "children"),
-    Output("surface-status", "children"),
-    Input("underlying-dropdown", "value"),
-    Input("date-slider", "value"),
-    State("available-date-store", "data"),
-)
-def update_surface(
-    underlying: str | None,
-    selected_index: int | None,
-    available_dates: list[str] | None,
-) -> tuple[go.Figure, str, str]:
-    if not underlying:
-        return empty_figure("Choose an Underlying"), "—", "No Underlying selected."
-
-    dates = list(available_dates or [])
-    if not dates:
-        return empty_figure("No dates available"), "—", "No dates available."
-
+def build_catalog(_interval: int, _clicks: int, current: str | None):
     try:
-        index = int(selected_index if selected_index is not None else len(dates) - 1)
-    except (TypeError, ValueError):
-        index = len(dates) - 1
-    index = max(0, min(index, len(dates) - 1))
+        catalog = STORE.ensure_cache(force=ctx.triggered_id == "refresh-cache")
+    except Exception as exc:
+        return [], None, True, f"Cache could not be prepared:\n{exc}", None
+    values = catalog["underlyings"]
+    selected = current if current in values else (values[0] if values else None)
+    status = f"{catalog['files']:,} CSV files · {catalog['rows']:,} cached cells · {catalog['converted']:,} converted · {catalog['reused']:,} reused"
+    return [{"label": v, "value": v} for v in values], selected, not bool(values), status, catalog["generation"]
 
-    market_date = pd.Timestamp(dates[index]).normalize()
-    figure, status = build_surface(HISTORY, underlying, market_date)
-    return figure, market_date.date().isoformat(), status
+
+@callback(
+    Output("bundle-store", "data"), Output("date-slider", "max"), Output("date-slider", "value"),
+    Output("date-slider", "marks"), Output("date-slider", "disabled"),
+    Input("underlying", "value"), Input("generation-store", "data"),
+)
+def load_underlying(underlying: str | None, generation: str | None):
+    if not underlying or not generation:
+        return None, 0, 0, {}, True
+    try:
+        bundle = STORE.bundle(underlying, generation)
+    except Exception as exc:
+        return {"error": str(exc)}, 0, 0, {}, True
+    latest = len(bundle["dates"]) - 1
+    return bundle, latest, latest, marks(bundle["dates"]), False
+
+
+app.clientside_callback(
+    """
+    function(index, bundle, underlying) {
+        const empty = message => ({data: [], layout: {template: 'plotly_white', paper_bgcolor: 'rgba(0,0,0,0)', annotations: [{text: message, showarrow: false, x: .5, y: .5, xref: 'paper', yref: 'paper'}]}});
+        if (!bundle) return [empty('Choose an Underlying'), '—', 'No surface loaded.'];
+        if (bundle.error) return [empty(bundle.error), '—', bundle.error];
+        let i = Number.isFinite(Number(index)) ? Number(index) : bundle.dates.length - 1;
+        i = Math.max(0, Math.min(i, bundle.dates.length - 1));
+        const x = bundle.swap_tenors.map((_v, n) => n), y = bundle.option_tenors.map((_v, n) => n);
+        const counts = bundle.source_counts[i] || [];
+        const text = bundle.option_tenors.map((o, oi) => bundle.swap_tenors.map((s, si) => `<b>${s} swap</b><br>${o} option<br>Source rows: ${counts[oi] && counts[oi][si] != null ? counts[oi][si] : 0}`));
+        const surface = bundle.swap_tenors.length >= 2 && bundle.option_tenors.length >= 2;
+        const trace = surface ? {type: 'surface', x, y, z: bundle.surfaces[i], text, hovertemplate: '%{text}<br>OFFICIAL: %{z:,.6g}<extra></extra>', colorscale: bundle.colorscale, reversescale: bundle.colorscale === 'RdBu', cmin: bundle.cmin, cmax: bundle.cmax, cmid: bundle.cmid, connectgaps: false, colorbar: {title: 'OFFICIAL'}, contours: {z: {show: true, usecolormap: true, project: {z: true}}}} : {type: 'heatmap', x, y, z: bundle.surfaces[i], text, hovertemplate: '%{text}<br>OFFICIAL: %{z:,.6g}<extra></extra>', colorscale: bundle.colorscale, reversescale: bundle.colorscale === 'RdBu', zmin: bundle.cmin, zmax: bundle.cmax, zmid: bundle.cmid, connectgaps: false};
+        const layout = {template: 'plotly_white', title: {text: `${underlying} · OFFICIAL surface · ${bundle.dates[i]}`, x: .02}, height: 680, margin: {l: 20, r: 30, t: 65, b: 20}, paper_bgcolor: 'rgba(0,0,0,0)', uirevision: `camera::${underlying}`};
+        if (surface) layout.scene = {camera: {eye: {x: 1.55, y: 1.55, z: 1.1}}, aspectmode: 'manual', aspectratio: {x: 1.3, y: 1.1, z: .8}, xaxis: {title: 'Tenor Swap', tickmode: 'array', tickvals: x, ticktext: bundle.swap_tenors}, yaxis: {title: 'Tenor Option', tickmode: 'array', tickvals: y, ticktext: bundle.option_tenors}, zaxis: {title: 'OFFICIAL', range: [bundle.cmin, bundle.cmax]}};
+        else {layout.xaxis = {title: 'Tenor Swap', tickmode: 'array', tickvals: x, ticktext: bundle.swap_tenors, side: 'top'}; layout.yaxis = {title: 'Tenor Option', tickmode: 'array', tickvals: y, ticktext: bundle.option_tenors};}
+        const duplicate = bundle.duplicate_cells ? ` · ${bundle.duplicate_cells} duplicate cells averaged` : '';
+        return [{data: [trace], layout}, bundle.dates[i], `${bundle.rows.toLocaleString()} cached cells across ${bundle.dates.length} dates${duplicate} · slider rendered clientside`];
+    }
+    """,
+    Output("surface", "figure"), Output("date-label", "children"), Output("surface-status", "children"),
+    Input("date-slider", "value"), Input("bundle-store", "data"), State("underlying", "value"),
+)
 
 
 if __name__ == "__main__":
     app.run(
-        host=os.environ.get("HOST", "127.0.0.1"),
-        port=int(os.environ.get("PORT", "8050")),
-        debug=os.environ.get("DASH_DEBUG", "0").strip().casefold()
-        in {"1", "true", "yes", "on"},
+        host=os.getenv("HOST", "127.0.0.1"),
+        port=int(os.getenv("PORT", "8050")),
+        debug=os.getenv("DASH_DEBUG", "0").strip().casefold() in {"1", "true", "yes", "on"},
         use_reloader=False,
     )
