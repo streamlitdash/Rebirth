@@ -2,7 +2,7 @@ name: Materialize Rebirth V2
 
 on:
   push:
-    branches: [rebirth-v2]
+    branches: [main, rebirth-v2]
     paths:
       - ".v2-bootstrap/**"
       - ".github/workflows/materialize-v2.yml"
