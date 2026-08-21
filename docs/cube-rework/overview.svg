@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="760" viewBox="0 0 1500 760" role="img" aria-labelledby="title desc">
+  <title id="title">Cube target architecture</title>
+  <desc id="desc">Connectors feed a transactional refresh, baseline promotion, a committed snapshot, revision indexes, Parquet history and bounded user interface projections.</desc>
+  <defs>
+    <style>
+      .bg{fill:#f4f5f7}.panel{fill:#fff;stroke:#d9dee5;stroke-width:2}.head{font:800 34px system-ui;fill:#111318}.sub{font:500 18px system-ui;fill:#626b75}.label{font:800 20px system-ui;fill:#111318}.small{font:500 16px system-ui;fill:#626b75}.arrow{stroke:#294c72;stroke-width:4;fill:none;marker-end:url(#m)}.accent{fill:#e9f0f7;stroke:#294c72;stroke-width:2}.good{fill:#e7f0ea;stroke:#2f6f4e;stroke-width:2}.warn{fill:#fff1d5;stroke:#895d00;stroke-width:2}
+    </style>
+    <marker id="m" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#294c72"/></marker>
+  </defs>
+  <rect class="bg" width="1500" height="760"/>
+  <text class="head" x="70" y="70">Cube / Rebirth target architecture</text>
+  <text class="sub" x="70" y="105">Calculate financial classification once per revision; query and project afterwards.</text>
+
+  <rect class="panel" x="65" y="175" rx="18" width="250" height="310"/>
+  <text class="label" x="95" y="220">Connectors</text>
+  <rect class="accent" x="95" y="250" rx="11" width="190" height="52"/><text class="small" x="120" y="283">Risk / RiskChecker</text>
+  <rect class="accent" x="95" y="320" rx="11" width="190" height="52"/><text class="small" x="128" y="353">MarketBook</text>
+  <rect class="accent" x="95" y="390" rx="11" width="190" height="52"/><text class="small" x="132" y="423">Stock / Colossus</text>
+
+  <path class="arrow" d="M315 330 H390"/>
+  <rect class="panel" x="400" y="155" rx="18" width="300" height="350"/>
+  <text class="label" x="430" y="200">Refresh transaction</text>
+  <rect class="accent" x="430" y="230" rx="11" width="240" height="52"/><text class="small" x="475" y="263">Risk + Market joins</text>
+  <rect class="accent" x="430" y="300" rx="11" width="240" height="52"/><text class="small" x="490" y="333">P&amp;L calculation</text>
+  <rect class="warn" x="430" y="370" rx="11" width="240" height="52"/><text class="small" x="458" y="403">Baseline promotion policy</text>
+  <text class="small" x="430" y="460">Validate everything before publication</text>
+
+  <path class="arrow" d="M700 330 H775"/>
+  <rect class="good" x="785" y="205" rx="18" width="260" height="250"/>
+  <text class="label" x="820" y="252">Committed snapshot</text>
+  <text class="small" x="825" y="295">• Dashboard frame</text>
+  <text class="small" x="825" y="330">• Market frame</text>
+  <text class="small" x="825" y="365">• Promotion metadata</text>
+  <text class="small" x="825" y="400">• Revision identity</text>
+
+  <path class="arrow" d="M1045 280 H1120"/>
+  <rect class="panel" x="1130" y="145" rx="18" width="300" height="190"/>
+  <text class="label" x="1160" y="190">Current-state indexes</text>
+  <text class="small" x="1160" y="235">Position postings</text>
+  <text class="small" x="1160" y="270">Dimension catalogues</text>
+  <text class="small" x="1160" y="305">Indexed pivot aggregation</text>
+
+  <path class="arrow" d="M1045 390 H1120"/>
+  <rect class="panel" x="1130" y="365" rx="18" width="300" height="190"/>
+  <text class="label" x="1160" y="410">Parquet history</text>
+  <text class="small" x="1160" y="455">Market · Stock · P&amp;L · Risk</text>
+  <text class="small" x="1160" y="490">Date partitions + commit manifest</text>
+  <text class="small" x="1160" y="525">Predicate and column pushdown</text>
+
+  <path class="arrow" d="M1280 555 V625 H920"/>
+  <path class="arrow" d="M1280 335 V625"/>
+  <rect class="accent" x="540" y="600" rx="18" width="380" height="105"/>
+  <text class="label" x="585" y="646">Bounded UI projections</text>
+  <text class="small" x="585" y="681">Lazy rows · searchable filters · virtual columns</text>
+
+  <rect class="panel" x="65" y="560" rx="14" width="390" height="145"/>
+  <text class="label" x="95" y="605">Key semantic rule</text>
+  <text class="small" x="95" y="645">Normal filters select the committed promotion.</text>
+  <text class="small" x="95" y="677">Only an explicit action recalculates a custom view.</text>
+</svg>
