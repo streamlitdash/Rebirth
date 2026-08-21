@@ -1,0 +1,54 @@
+name: Materialize Rebirth V2
+
+on:
+  push:
+    branches: [rebirth-v2]
+    paths:
+      - ".v2-bootstrap/**"
+      - ".github/workflows/materialize-v2.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: rebirth-v2
+          fetch-depth: 0
+
+      - name: Reconstruct and verify source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat \
+            .v2-bootstrap/source.00.b64 \
+            .v2-bootstrap/source.01.b64 \
+            .v2-bootstrap/source.02.b64 \
+            .v2-bootstrap/source.03.b64 \
+            .v2-bootstrap/source.04.b64 \
+            .v2-bootstrap/source.05.b64 \
+            .v2-bootstrap/source.06a.b64 \
+            | base64 --decode > /tmp/Rebirth-V2.tar.xz
+          echo "8e32e61c156adcff18aa46a7448e793012e88d27bb53e24a522ef454cacc70c2  /tmp/Rebirth-V2.tar.xz" | sha256sum -c -
+          mkdir -p /tmp/rebirth-v2
+          tar -xJf /tmp/Rebirth-V2.tar.xz -C /tmp/rebirth-v2
+          test -f /tmp/rebirth-v2/Rebirth-V2/README.md
+          test -f /tmp/rebirth-v2/Rebirth-V2/app.py
+          test -d /tmp/rebirth-v2/Rebirth-V2/rebirth_v2/pages
+
+      - name: Replace the branch with the V2 repository tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          cp -a /tmp/rebirth-v2/Rebirth-V2/. .
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Materialize modular Rebirth V2 codebase"
+          git push origin HEAD:rebirth-v2
