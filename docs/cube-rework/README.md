@@ -17,6 +17,7 @@ The GitHub code viewer intentionally shows HTML source and does not execute Java
 - [Architecture deep dive](architecture-deep-dive.md) — current-state findings, target architecture, file-by-file changes, migration sequence, and performance plan.
 - [Full proposed Cube application](proposed-cube-full-app-prototype.html) — integrated fake-data prototype covering Risk, Stock, P&L, Statics, promotion, history, 500-Portfolio views, and refresh behavior.
 - [IR Vega 3-D date-slider prototype](ir-vega-3d-date-slider-prototype.html) — draggable and playable double-tenor surface history.
+- [Single-file historical tenor Dash app](historical-tenor-surface-app.py) — runnable app for `data/DDMMYYYY.csv` snapshots with an Underlying filter and drag-controlled 3-D date surface.
 - [Interactive architecture prototype](interactive-prototype.html) — synthetic examples for initialization, promotion ownership, Market dimensionality, Stock history, P&L history, 500-Portfolio views, and Pyright.
 - [Data download and Parquet guide](data-download-and-parquet-guide.md) — source schemas, daily archive layout, and PyArrow conversion/query examples.
 - [Architecture overview](overview.svg) — compact target architecture diagram.
