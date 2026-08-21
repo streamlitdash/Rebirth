@@ -1,0 +1,430 @@
+>
+            </div>
+            <div class="arrow">→</div>
+            <div>
+              <div class="module-card"><h3>ApplicationFactory</h3><p>Reads RuntimeSettings, chooses adapters and repositories, builds the pipeline, constructs services, then registers pages.</p></div>
+              <div class="module-card" style="margin-top:8px"><h3>RefreshPipeline</h3><p>Stages, validates, enriches, promotes, indexes, and atomically commits one immutable revision.</p></div>
+            </div>
+            <div class="arrow">→</div>
+            <div>
+              <div class="module-card"><h3>Page modules</h3><p>Risk, Stock, P&amp;L, and Statics each own layout.py, callbacks.py, services.py, tables.py, charts.py, and state.py.</p></div>
+              <div class="module-card" style="margin-top:8px"><h3>Dash shell</h3><p>Navigation and refresh status are shared; page callbacks never import another page's callback module.</p></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div class="grid2" style="margin-top:14px">
+        <section class="panel">
+          <div class="panel-head"><div class="panel-title">Adapter matrix</div><button id="adapter-mode-button" class="btn btn-blue">Switch to production outline</button></div>
+          <div id="adapter-table" class="table-wrap"></div>
+        </section>
+        <section class="panel">
+          <div class="panel-head"><div class="panel-title">Refresh pipeline</div><button id="system-run-pipeline" class="btn btn-dark">Run pipeline simulation</button></div>
+          <div class="panel-body"><ol id="system-pipeline-list" class="pipeline-list"></ol></div>
+        </section>
+      </div>
+
+      <section class="panel" style="margin-top:14px">
+        <div class="panel-head"><div class="panel-title">Factory wiring</div><span class="badge">Typed ports</span></div>
+        <div class="panel-body">
+          <div class="code">def create_app(settings: RuntimeSettings | None = None) -&gt; Dash:
+    settings = settings or RuntimeSettings.from_env()
+
+    adapters = AdapterFactory(settings).build()
+    history = RepositoryFactory(settings).history()
+    storage = RepositoryFactory(settings).application_storage()
+
+    pipeline = PipelineFactory(
+        adapters=adapters,
+        history=history,
+        settings=settings,
+    ).build()
+
+    services = ApplicationServices(
+        refresh=pipeline,
+        history=history,
+        saved_views=storage.saved_views,
+        adjustments=storage.adjustments,
+    )
+
+    app = Dash(__name__, use_pages=True, **settings.dash_kwargs)
+    PageFactory(app, services).register_all()
+    return app</div>
+        </div>
+      </section>
+    </section>
+  </main>
+</div>
+<div id="toast" class="toast" hidden></div>
+
+<script>
+(() => {
+"use strict";
+
+/* ---------- deterministic fake data ---------- */
+function mulberry32(seed) {
+  return function() {
+    let t = seed += 0x6D2B79F5;
+    t = Math.imul(t ^ t >>> 15, t | 1);
+    t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+const random = mulberry32(20260821);
+const normal = () => {
+  let u = 0, v = 0;
+  while (!u) u = random();
+  while (!v) v = random();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+};
+const unique = values => [...new Set(values)];
+const sum = values => values.reduce((total, value) => total + (Number.isFinite(+value) ? +value : 0), 0);
+const mean = values => values.length ? sum(values) / values.length : null;
+const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
+const escapeHtml = value => String(value ?? "").replace(/[&<>"']/g, char => ({
+  "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+})[char]);
+const signClass = value => Number.isFinite(+value) && +value < 0 ? "neg" : "";
+function formatNumber(value, metric = "") {
+  if (value == null || !Number.isFinite(+value)) return "—";
+  const number = +value;
+  const absolute = Math.abs(number);
+  if (["risk", "drisk", "pl"].includes(metric)) {
+    if (absolute >= 1e9) return `${(number / 1e9).toFixed(2)}bn`;
+    if (absolute >= 1e6) return `${(number / 1e6).toFixed(2)}m`;
+    if (absolute >= 1e3) return `${(number / 1e3).toFixed(1)}k`;
+  }
+  return new Intl.NumberFormat(undefined, {
+    maximumFractionDigits: ["open", "current", "move"].includes(metric) ? 5 : 1
+  }).format(number);
+}
+function toast(message) {
+  const element = document.getElementById("toast");
+  element.textContent = message;
+  element.hidden = false;
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => { element.hidden = true; }, 2500);
+}
+function businessDates(start, count) {
+  const result = [];
+  const cursor = new Date(`${start}T00:00:00Z`);
+  while (result.length < count) {
+    if (cursor.getUTCDay() !== 0 && cursor.getUTCDay() !== 6) {
+      result.push(cursor.toISOString().slice(0, 10));
+    }
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return result;
+}
+
+const dates = businessDates("2026-05-01", 80);
+const activities = ["Rates", "Credit", "FX", "Commodities", "Treasury", "Hedge"];
+const signoffGroups = Array.from({length: 10}, (_, index) => `SOG-${String.fromCharCode(65 + index)}`);
+const categories = ["Core", "Flow", "Macro", "Exotics", "Structured", "Hedges"];
+const subcategories = ["IR Delta", "IR Vega", "Cross Currency", "Credit Index", "G10 FX", "Energy", "Treasury"];
+const regions = ["Americas", "EMEA", "APAC"];
+const currencies = ["USD", "EUR", "GBP", "JPY", "CHF", "AUD"];
+const portfolios = Array.from({length: 24}, (_, index) => ({
+  portfolio: `BOOK-${String(index + 1).padStart(3, "0")}`,
+  product: index % 5 === 0 ? "Hedges" : "XVA",
+  activity: activities[index % activities.length],
+  signoffGroup: signoffGroups[index % signoffGroups.length],
+  category: categories[(index * 3) % categories.length],
+  subcategory: subcategories[(index * 5) % subcategories.length],
+  mapped: index % 13 !== 0
+}));
+const productSpecs = [
+  {riskType: "IR", greek: "Delta", axes: 1, underlyings: ["USD-SOFR", "EUR-ESTR", "GBP-SONIA"]},
+  {riskType: "IR", greek: "Gamma", axes: 1, underlyings: ["USD-SOFR", "EUR-ESTR"]},
+  {riskType: "IR", greek: "Vega", axes: 2, underlyings: ["USD", "EUR", "GBP"]},
+  {riskType: "Credit", greek: "Delta", axes: 1, underlyings: ["CDX IG", "CDX HY", "iTraxx Main"]},
+  {riskType: "Credit", greek: "Vega", axes: 1, underlyings: ["CDX IG", "iTraxx Main"]},
+  {riskType: "FX", greek: "Delta", axes: 0, underlyings: ["EUR/USD", "GBP/USD", "USD/JPY"]},
+  {riskType: "FX", greek: "Vega", axes: 1, underlyings: ["EUR/USD", "GBP/USD", "USD/JPY"]},
+  {riskType: "Commo", greek: "Delta", axes: 1, underlyings: ["Brent", "WTI", "Gold"]}
+];
+const swapTenors = ["1M", "3M", "6M", "1Y", "2Y", "5Y", "10Y", "20Y", "30Y"];
+const optionTenors = ["1M", "3M", "6M", "1Y", "2Y", "5Y", "10Y"];
+
+const riskRows = [];
+productSpecs.forEach((spec, specIndex) => {
+  const count = spec.axes === 2 ? 120 : spec.axes === 1 ? 100 : 65;
+  for (let index = 0; index < count; index++) {
+    const portfolio = portfolios[(index * 7 + specIndex * 5) % portfolios.length];
+    const underlying = spec.underlyings[(index + specIndex) % spec.underlyings.length];
+    const tenorSwap = spec.axes >= 1 ? swapTenors[(index * 3 + specIndex) % swapTenors.length] : "Spot";
+    const tenorOption = spec.axes === 2 ? optionTenors[(index * 5 + specIndex) % optionTenors.length] : "N/A";
+    const riskScale = spec.riskType === "IR" ? 2.3e6 : spec.riskType === "Credit" ? 1.5e6 : 8e5;
+    const risk = normal() * riskScale + (index % 17 === 0 ? riskScale * 3 : 0);
+    const drisk = normal() * riskScale * 0.18;
+    const open = spec.riskType === "FX" ? 1 + random() * 0.5 : spec.riskType === "IR" ? 1.5 + random() * 4 : 50 + random() * 80;
+    const move = normal() * (spec.riskType === "FX" ? 0.008 : spec.riskType === "IR" ? 0.06 : 1.2);
+    const current = open + move;
+    const pl = risk * move * (spec.riskType === "FX" ? 0.02 : spec.riskType === "IR" ? 0.05 : 0.004) + normal() * 35000;
+    riskRows.push({
+      id: `${spec.riskType}-${spec.greek}-${index}`,
+      riskType: spec.riskType,
+      riskGreek: spec.greek,
+      axes: spec.axes,
+      portfolio: portfolio.portfolio,
+      product: portfolio.product,
+      activity: portfolio.activity,
+      signoffGroup: portfolio.signoffGroup,
+      category: portfolio.category,
+      subcategory: portfolio.subcategory,
+      mapped: portfolio.mapped,
+      region: regions[(index + specIndex) % regions.length],
+      reportedUnderlying: underlying,
+      underlying,
+      tenorSwap,
+      tenorOption,
+      split: index % 19 === 0 ? "New Trades" : spec.greek === "Gamma" && index % 4 === 0 ? "Gamma" : "Risk",
+      risk,
+      drisk,
+      pl,
+      open,
+      current,
+      move
+    });
+  }
+});
+
+const thresholds = new Map();
+productSpecs.forEach(spec => thresholds.set(`${spec.riskType}|${spec.greek}`, {
+  risk: spec.riskType === "IR" ? 5.5e7 : spec.riskType === "Credit" ? 3.5e7 : 2.2e7,
+  drisk: spec.riskType === "IR" ? 8.5e6 : 5.5e6,
+  pl: spec.riskType === "IR" ? 1.4e6 : 1.0e6
+}));
+
+const stockInstruments = Array.from({length: 72}, (_, index) => {
+  const portfolio = portfolios[(index * 5) % portfolios.length];
+  return {
+    id: `STOCK-${String(index + 1).padStart(3, "0")}`,
+    instrument: ["Swap", "Option", "Bond", "Future", "Index"][index % 5] + ` ${index + 1}`,
+    crds: `CRDS-${1000 + index}`,
+    cpty: `CPTY-${String(index % 18 + 1).padStart(2, "0")}`,
+    portfolio: portfolio.portfolio,
+    currency: currencies[index % currencies.length],
+    activity: portfolio.activity,
+    signoffGroup: portfolio.signoffGroup,
+    category: portfolio.category,
+    subcategory: portfolio.subcategory,
+    mapped: portfolio.mapped,
+    start: index % 23 === 0 ? 10 : 0,
+    end: index % 31 === 0 ? dates.length - 9 : dates.length - 1,
+    base: normal() * 70000 + (index % 9 === 0 ? 120000 : 0),
+    trend: normal() * 700,
+    phase: random() * 6
+  };
+});
+function stockValue(instrument, dateIndex) {
+  if (dateIndex < instrument.start || dateIndex > instrument.end) return null;
+  return instrument.base + instrument.trend * dateIndex + 18000 * Math.sin(dateIndex / 7 + instrument.phase) + 4500 * Math.sin(dateIndex / 2.7 + instrument.phase / 2);
+}
+function stockQuantity(instrument, dateIndex) {
+  if (dateIndex < instrument.start || dateIndex > instrument.end) return null;
+  return 1000 + 180 * Math.sin(dateIndex / 8 + instrument.phase) + dateIndex * (instrument.trend / 1000);
+}
+
+const pnlHistory = [];
+dates.forEach((date, dateIndex) => {
+  for (let rowIndex = 0; rowIndex < 55; rowIndex++) {
+    const portfolio = portfolios[(rowIndex * 7 + dateIndex * 3) % portfolios.length];
+    const spec = productSpecs[(rowIndex + dateIndex) % productSpecs.length];
+    const underlying = spec.underlyings[(rowIndex * 2 + dateIndex) % spec.underlyings.length];
+    const predict = normal() * 80000 + 150000 * Math.sin(dateIndex / 6 + rowIndex / 11) + (rowIndex % 21 === 0 ? 260000 : 0);
+    const colossus = predict * 0.94 + normal() * 25000;
+    [["Predict", predict], ["Colossus", colossus]].forEach(([pnlType, pl]) => pnlHistory.push({
+      marketDate: date,
+      pnlType,
+      activity: portfolio.activity,
+      signoffGroup: portfolio.signoffGroup,
+      portfolio: portfolio.portfolio,
+      category: portfolio.category,
+      subcategory: portfolio.subcategory,
+      riskType: spec.riskType,
+      riskGreek: spec.greek,
+      underlying,
+      product: portfolio.product,
+      mappingStatus: portfolio.mapped ? "Mapped" : "Unmapped",
+      pl
+    }));
+  }
+});
+
+/* ---------- application state ---------- */
+const state = {
+  page: "risk",
+  revision: 218,
+  commo: false,
+  checker: true,
+  autopl: true,
+  adapterMode: "fake",
+  risk: {
+    filters: {},
+    exclude: false,
+    riskType: "IR",
+    greek: "Delta",
+    view: "cross",
+    dimension: "activity",
+    aggregateDimension: "activity",
+    aggregateWindow: 0,
+    splitMetric: "risk",
+    splitWindow: 0,
+    promotionEnabled: true,
+    regionEnabled: false,
+    promotionMode: "baseline",
+    customPromotion: null,
+    open: new Set(),
+    selected: null
+  },
+  market: {
+    riskType: "IR",
+    greek: "Vega",
+    underlying: "USD",
+    view: "surface",
+    tenor: null,
+    dateIndex: dates.length - 1,
+    playing: false,
+    timer: null
+  },
+  stock: {
+    filters: {},
+    exclude: false,
+    dateA: dates.length - 2,
+    dateB: dates.length - 1,
+    mapping: "newer",
+    threshold: 50000,
+    open: new Set(),
+    selectedInstrument: stockInstruments[0].id,
+    sourceLoaded: false
+  },
+  pnl: {
+    filters: {},
+    exclude: false,
+    aggregateDimension: "activity",
+    aggregateWindow: 0,
+    aggregateOpen: new Set(),
+    historyOpen: new Set(),
+    historySelection: [],
+    period: "all",
+    series: "both",
+    adjustments: {sog: new Map(), portfolio: new Map()}
+  },
+  statics: {dataset: "Portfolio Mapping", search: "", sort: null, direction: 1}
+};
+const filterFields = [
+  ["activity", "Activity"],
+  ["signoffGroup", "Signoff Group"],
+  ["portfolio", "Portfolio"],
+  ["category", "Category"],
+  ["subcategory", "Sub Category"]
+];
+const dimensions = [
+  ["activity", "Activity"],
+  ["portfolio", "Portfolio"],
+  ["category", "Category"],
+  ["signoffGroup", "Signoff Group"],
+  ["subcategory", "Sub Category"]
+];
+["risk", "stock", "pnl"].forEach(page => {
+  state[page].filters = Object.fromEntries(filterFields.map(([key]) => [key, new Set()]));
+});
+
+/* ---------- general UI helpers ---------- */
+function setToggle(button, enabled, label) {
+  button.classList.toggle("on", enabled);
+  button.textContent = label ? `${label}: ${enabled ? "On" : "Off"}` : label;
+}
+function optionsForFilter(key) {
+  if (key === "activity") return activities;
+  if (key === "signoffGroup") return signoffGroups;
+  if (key === "portfolio") return portfolios.map(item => item.portfolio);
+  if (key === "category") return categories;
+  if (key === "subcategory") return subcategories;
+  return [];
+}
+function applyFilters(rows, pageState) {
+  return rows.filter(row => filterFields.every(([key]) => {
+    const selected = pageState.filters[key];
+    if (!selected.size) return true;
+    const match = selected.has(String(row[key]));
+    return pageState.exclude ? !match : match;
+  }));
+}
+class SmartFilter {
+  constructor(host, key, label, selected, onChange) {
+    this.host = host;
+    this.key = key;
+    this.label = label;
+    this.selected = selected;
+    this.onChange = onChange;
+    this.options = optionsForFilter(key);
+    host.classList.add("field", "smart");
+    host.innerHTML = `<label>${escapeHtml(label)}</label>
+      <input autocomplete="off" placeholder="Search ${escapeHtml(label.toLowerCase())}">
+      <div class="chips"></div><div class="smart-menu" hidden></div>`;
+    this.input = host.querySelector("input");
+    this.chips = host.querySelector(".chips");
+    this.menu = host.querySelector(".smart-menu");
+    this.input.addEventListener("focus", () => this.renderMenu());
+    this.input.addEventListener("input", () => this.renderMenu());
+    this.render();
+  }
+  matches() {
+    const query = this.input.value.trim().toLowerCase();
+    return this.options.filter(value => !this.selected.has(value) && (!query || value.toLowerCase().includes(query))).slice(0, 100);
+  }
+  renderMenu() {
+    const values = this.matches();
+    this.menu.innerHTML = values.slice(0, 18).map(value => `<button class="smart-option" data-value="${escapeHtml(value)}"><span>${escapeHtml(value)}</span><span>＋</span></button>`).join("")
+      + `<div class="smart-foot">Showing ${Math.min(18, values.length)} of at most 100 matches · ${this.options.length} available</div>`;
+    this.menu.hidden = false;
+    this.menu.querySelectorAll("[data-value]").forEach(button => button.addEventListener("click", () => {
+      this.selected.add(button.dataset.value);
+      this.input.value = "";
+      this.menu.hidden = true;
+      this.render();
+      this.onChange();
+    }));
+  }
+  render() {
+    this.chips.innerHTML = [...this.selected].map(value => `<span class="chip">${escapeHtml(value)}<button data-remove="${escapeHtml(value)}">×</button></span>`).join("");
+    this.chips.querySelectorAll("[data-remove]").forEach(button => button.addEventListener("click", () => {
+      this.selected.delete(button.dataset.remove);
+      this.render();
+      this.onChange();
+    }));
+  }
+}
+document.addEventListener("click", event => {
+  document.querySelectorAll(".smart-menu").forEach(menu => {
+    if (!menu.parentElement.contains(event.target)) menu.hidden = true;
+  });
+});
+function renderFilterBar(hostId, pageKey) {
+  const host = document.getElementById(hostId);
+  host.innerHTML = "";
+  filterFields.forEach(([key, label]) => {
+    const field = document.createElement("div");
+    host.appendChild(field);
+    new SmartFilter(field, key, label, state[pageKey].filters[key], () => renderPage(pageKey));
+  });
+  const mode = document.createElement("div");
+  mode.className = "filter-mode";
+  mode.innerHTML = `<label><input type="checkbox" ${state[pageKey].exclude ? "checked" : ""}> Exclude rows matching selected values</label>`;
+  mode.querySelector("input").addEventListener("change", event => {
+    state[pageKey].exclude = event.target.checked;
+    renderPage(pageKey);
+  });
+  host.appendChild(mode);
+}
+function renderSavedViews(hostId, pageKey) {
+  const host = document.getElementById(hostId);
+  host.className = "saved";
+  host.innerHTML = `<div class="saved-head"><strong>Saved views</strong><span id="${pageKey}-saved-status" class="note">Page-local filters</span></div>
+    <div class="saved-body">
+      <div class="field"><label>Saved view</label><select id="${pageKey}-saved-select"><option value="">Choose</option><option value="rates">Rates morning</option><option value="credit">Credit focus</option><option value="hedges">Hedges</option></select></div>
+      <div class="field"><label>Name</label><input id="${pageKey}-saved-name" placeholder="Current view name"></div>
+      <div class="actions"><button id="${pageKey}-saved-apply" class="btn btn
