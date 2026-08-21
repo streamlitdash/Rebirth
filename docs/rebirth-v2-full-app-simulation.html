@@ -13,27 +13,107 @@ body{min-height:100vh;display:grid;place-items:center;padding:20px}.card{width:m
 <div class="card"><strong>Loading Rebirth V2 simulation…</strong><div id="status">Preparing source</div><div class="bar"><div id="fill" class="fill"></div></div></div>
 <script>
 (async()=>{
-  const sourceFiles=[0,1,2,3].map(i=>`rebirth-v2-simulation.part-${String(i).padStart(2,"0")}.txt`);
-  const tailFiles=[0,1,2].map(i=>`rebirth-v2-simulation.tail-${String(i).padStart(2,"0")}.hex`);
-  const status=document.getElementById("status"),fill=document.getElementById("fill"),prefix=[];
-  for(let i=0;i<sourceFiles.length;i++){
-    const r=await fetch(sourceFiles[i],{cache:"no-store"});if(!r.ok)throw new Error(`${sourceFiles[i]}: HTTP ${r.status}`);
-    prefix.push(await r.text());status.textContent=`Loaded ${i+1} / ${sourceFiles.length} source parts`;fill.style.width=`${(i+1)*12}%`;
+  const EXPECTED_PREFIX_LENGTH=72000;
+  const EXPECTED_PREFIX_SHA="b96b6aaac0c089c34fe505f42c43aa2e1d72b52b58991711ee589c945e8cef5e";
+  const EXPECTED_TAIL_HEX_LENGTH=20664;
+  const EXPECTED_TAIL_LENGTH=46722;
+  const EXPECTED_HTML_LENGTH=118722;
+  const EXPECTED_HTML_SHA="de69dc5d05ba4cb09c7babd01735cd17c6aeda93d249a50758bff5d9b24d4409";
+
+  const status=document.getElementById("status");
+  const fill=document.getElementById("fill");
+  const encoder=new TextEncoder();
+
+  async function sha256(text){
+    if(!globalThis.crypto?.subtle) return null;
+    const digest=await crypto.subtle.digest("SHA-256",encoder.encode(text));
+    return [...new Uint8Array(digest)].map(byte=>byte.toString(16).padStart(2,"0")).join("");
   }
-  const prefixText=prefix.join("");if(prefixText.length!==72000)throw new Error(`Incomplete prefix (${prefixText.length} characters)`);
-  const tail=[];
-  for(let i=0;i<tailFiles.length;i++){
-    const r=await fetch(tailFiles[i],{cache:"no-store"});if(!r.ok)throw new Error(`${tailFiles[i]}: HTTP ${r.status}`);
-    tail.push((await r.text()).trim());status.textContent=`Loaded ${i+1} / ${tailFiles.length} compressed tail parts`;fill.style.width=`${55+(i+1)*10}%`;
+
+  async function verifiedPrefix(parts){
+    let text=parts.join("");
+    if(text.length===EXPECTED_PREFIX_LENGTH&&await sha256(text)===EXPECTED_PREFIX_SHA)return text;
+
+    // Older GitHub upload tooling inserted one line break into the split prefix.
+    // Test likely part boundaries first, then every line break as a safe fallback.
+    if(text.length===EXPECTED_PREFIX_LENGTH+1){
+      const candidates=new Set();
+      let offset=0;
+      for(const part of parts){
+        if(part.startsWith("\n"))candidates.add(offset);
+        if(part.endsWith("\n"))candidates.add(offset+part.length-1);
+        offset+=part.length;
+      }
+      for(let index=0;index<text.length;index++){
+        if(text[index]==="\n")candidates.add(index);
+      }
+      for(const index of candidates){
+        const repaired=text.slice(0,index)+text.slice(index+1);
+        if(await sha256(repaired)===EXPECTED_PREFIX_SHA)return repaired;
+      }
+    }
+    throw new Error(`Prefix integrity check failed (${text.length} characters)`);
   }
-  const hex=tail.join("");if(hex.length!==20664)throw new Error(`Incomplete compressed tail (${hex.length} characters)`);
-  const bytes=new Uint8Array(hex.length/2);for(let i=0;i<bytes.length;i++)bytes[i]=parseInt(hex.slice(i*2,i*2+2),16);
-  if(typeof DecompressionStream!=="function")throw new Error("This browser does not support gzip DecompressionStream");
+
+  const sourceFiles=[0,1,2,3].map(index=>`rebirth-v2-simulation.part-${String(index).padStart(2,"0")}.txt`);
+  const sourceParts=[];
+  for(let index=0;index<sourceFiles.length;index++){
+    const response=await fetch(sourceFiles[index],{cache:"no-store"});
+    if(!response.ok)throw new Error(`${sourceFiles[index]}: HTTP ${response.status}`);
+    sourceParts.push(await response.text());
+    status.textContent=`Loaded ${index+1} / ${sourceFiles.length} source parts`;
+    fill.style.width=`${(index+1)*12}%`;
+  }
+  status.textContent="Verifying source prefix";
+  const prefixText=await verifiedPrefix(sourceParts);
+  fill.style.width="54%";
+
+  const tailFiles=[0,1,2].map(index=>`rebirth-v2-simulation.tail-${String(index).padStart(2,"0")}.hex`);
+  const tailParts=[];
+  for(let index=0;index<tailFiles.length;index++){
+    const response=await fetch(tailFiles[index],{cache:"no-store"});
+    if(!response.ok)throw new Error(`${tailFiles[index]}: HTTP ${response.status}`);
+    tailParts.push((await response.text()).trim());
+    status.textContent=`Loaded ${index+1} / ${tailFiles.length} compressed tail parts`;
+    fill.style.width=`${58+(index+1)*10}%`;
+  }
+
+  const hex=tailParts.join("");
+  if(hex.length!==EXPECTED_TAIL_HEX_LENGTH)throw new Error(`Incomplete compressed tail (${hex.length} characters)`);
+  const bytes=new Uint8Array(hex.length/2);
+  for(let index=0;index<bytes.length;index++){
+    const value=Number.parseInt(hex.slice(index*2,index*2+2),16);
+    if(!Number.isFinite(value))throw new Error(`Invalid compressed tail byte at ${index}`);
+    bytes[index]=value;
+  }
+
+  if(typeof DecompressionStream!=="function"){
+    throw new Error("This browser does not support gzip DecompressionStream. Update Safari/iOS or open the standalone HTML file.");
+  }
+  status.textContent="Decompressing application";
   const stream=new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
-  const tailText=await new Response(stream).text();if(tailText.length!==46722)throw new Error(`Incomplete tail (${tailText.length} characters)`);
-  const html=prefixText+tailText;if(html.length!==118722||!html.startsWith("<!doctype html>")||!html.trimEnd().endsWith("</html>"))throw new Error(`Invalid reconstructed HTML (${html.length} characters)`);
-  status.textContent="Launching simulation";fill.style.width="100%";document.open();document.write(html);document.close();
-})().catch(error=>{document.querySelector(".card").innerHTML=`<strong>Simulation failed to load</strong><pre>${String(error)}</pre>`;});
+  const tailText=await new Response(stream).text();
+  if(tailText.length!==EXPECTED_TAIL_LENGTH)throw new Error(`Incomplete tail (${tailText.length} characters)`);
+
+  const html=prefixText+tailText;
+  const digest=await sha256(html);
+  if(
+    html.length!==EXPECTED_HTML_LENGTH||
+    digest!==EXPECTED_HTML_SHA||
+    !html.startsWith("<!doctype html>")||
+    !html.trimEnd().endsWith("</html>")
+  ){
+    throw new Error(`Invalid reconstructed HTML (${html.length} characters)`);
+  }
+
+  status.textContent="Launching simulation";
+  fill.style.width="100%";
+  document.open();
+  document.write(html);
+  document.close();
+})().catch(error=>{
+  document.querySelector(".card").innerHTML=`<strong>Simulation failed to load</strong><pre>${String(error)}</pre>`;
+});
 </script>
 </body>
 </html>
