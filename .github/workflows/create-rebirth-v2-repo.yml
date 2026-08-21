@@ -1,0 +1,66 @@
+name: Create standalone Rebirth V2 repository
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/create-rebirth-v2-repo.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  create-v2:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Reconstruct V2 source from staging branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin rebirth-v2:refs/remotes/origin/rebirth-v2
+          git checkout origin/rebirth-v2 -- .v2-bootstrap
+          cat \
+            .v2-bootstrap/source.00.b64 \
+            .v2-bootstrap/source.01.b64 \
+            .v2-bootstrap/source.02.b64 \
+            .v2-bootstrap/source.03.b64 \
+            .v2-bootstrap/source.04.b64 \
+            .v2-bootstrap/source.05.b64 \
+            .v2-bootstrap/source.06a.b64 \
+            | base64 --decode > /tmp/Rebirth-V2.tar.xz
+          echo "8e32e61c156adcff18aa46a7448e793012e88d27bb53e24a522ef454cacc70c2  /tmp/Rebirth-V2.tar.xz" | sha256sum -c -
+          mkdir -p /tmp/rebirth-v2
+          tar -xJf /tmp/Rebirth-V2.tar.xz -C /tmp/rebirth-v2
+          test -f /tmp/rebirth-v2/Rebirth-V2/app.py
+          test -d /tmp/rebirth-v2/Rebirth-V2/rebirth_v2/pages
+
+      - name: Validate Python source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/rebirth-v2/Rebirth-V2
+          python -m compileall -q app.py rebirth_v2 tests
+
+      - name: Create repository and push clean V2 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/rebirth-v2/Rebirth-V2
+          rm -rf .git
+          git init -b main
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Initial modular Rebirth V2 codebase"
+          if ! gh repo view streamlitdash/Rebirth-V2 >/dev/null 2>&1; then
+            gh repo create streamlitdash/Rebirth-V2 --public --description "Modular Rebirth Risk & P&L V2" --source . --remote origin --push
+          else
+            git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/streamlitdash/Rebirth-V2.git"
+            git push --force-with-lease origin main
+          fi
