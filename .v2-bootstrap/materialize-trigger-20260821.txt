@@ -1,0 +1,1 @@
+Trigger clean Rebirth V2 materialization from the validated source archive.
