@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="900" viewBox="0 0 1500 900" role="img" aria-labelledby="title desc">
+  <title id="title">Market history visualization by dimensionality</title>
+  <desc id="desc">FX Spot uses a line, IR Delta uses curves and a date by tenor heatmap, and IR Vega uses an option by swap heatmap with date controls and cell history.</desc>
+  <defs>
+    <style>
+      .bg{fill:#f4f5f7}.panel{fill:#fff;stroke:#d9dee5;stroke-width:2}.head{font:800 34px system-ui;fill:#111318}.sub{font:500 18px system-ui;fill:#626b75}.label{font:800 22px system-ui;fill:#111318}.small{font:500 15px system-ui;fill:#626b75}.axis{stroke:#626b75;stroke-width:2}.line{stroke:#294c72;stroke-width:5;fill:none}.line2{stroke:#a23b3b;stroke-width:4;fill:none}.cell1{fill:#edf4fa}.cell2{fill:#c7dceb}.cell3{fill:#86b2d1}.cell4{fill:#294c72}.neg{fill:#d88989}.zero{fill:#fffdf6}.pos{fill:#79be89}.arrow{stroke:#294c72;stroke-width:4;fill:none;marker-end:url(#m)}
+    </style>
+    <marker id="m" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#294c72"/></marker>
+  </defs>
+  <rect class="bg" width="1500" height="900"/>
+  <text class="head" x="70" y="65">Market history: let the product axes choose the view</text>
+  <text class="sub" x="70" y="102">`ProductSpec.axes` is the authority; the UI should not infer shape from labels.</text>
+
+  <rect class="panel" x="55" y="145" rx="18" width="420" height="620"/>
+  <text class="label" x="85" y="190">0 tenor axes · FX Spot</text>
+  <text class="small" x="85" y="222">Date is the only structural axis.</text>
+  <line class="axis" x1="100" y1="520" x2="420" y2="520"/><line class="axis" x1="100" y1="280" x2="100" y2="520"/>
+  <path class="line" d="M105 455 C145 430 160 460 195 410 S250 340 285 375 S340 330 375 300 S405 285 420 310"/>
+  <text class="small" x="230" y="550">Market Date</text><text class="small" x="72" y="270">Current</text>
+  <rect x="95" y="600" width="330" height="105" rx="12" fill="#e9f0f7" stroke="#294c72" stroke-width="2"/>
+  <text class="small" x="120" y="635">Default: Current history line</text>
+  <text class="small" x="120" y="667">Optional: Open overlay, Move, A/B stats</text>
+
+  <rect class="panel" x="540" y="145" rx="18" width="420" height="620"/>
+  <text class="label" x="570" y="190">1 tenor axis · IR Delta</text>
+  <text class="small" x="570" y="222">Date × swap tenor × value.</text>
+  <line class="axis" x1="585" y1="410" x2="915" y2="410"/><line class="axis" x1="585" y1="265" x2="585" y2="410"/>
+  <path class="line" d="M590 360 C640 345 670 330 715 315 S790 290 835 275 S880 265 910 250"/>
+  <path class="line2" d="M590 380 C640 365 670 345 715 340 S790 310 835 305 S880 285 910 280"/>
+  <text class="small" x="700" y="438">Swap tenor</text><text class="small" x="605" y="250">A/B curves</text>
+  <g transform="translate(590 485)">
+    <rect class="cell1" x="0" y="0" width="55" height="38"/><rect class="cell2" x="58" y="0" width="55" height="38"/><rect class="cell3" x="116" y="0" width="55" height="38"/><rect class="cell4" x="174" y="0" width="55" height="38"/><rect class="cell3" x="232" y="0" width="55" height="38"/>
+    <rect class="cell1" x="0" y="41" width="55" height="38"/><rect class="cell1" x="58" y="41" width="55" height="38"/><rect class="cell2" x="116" y="41" width="55" height="38"/><rect class="cell3" x="174" y="41" width="55" height="38"/><rect class="cell4" x="232" y="41" width="55" height="38"/>
+    <rect class="cell2" x="0" y="82" width="55" height="38"/><rect class="cell2" x="58" y="82" width="55" height="38"/><rect class="cell3" x="116" y="82" width="55" height="38"/><rect class="cell4" x="174" y="82" width="55" height="38"/><rect class="cell4" x="232" y="82" width="55" height="38"/>
+  </g>
+  <text class="small" x="590" y="635">Default history overview: date × tenor heatmap</text>
+  <text class="small" x="590" y="668">Also: B−A curve and optional 3-D surface</text>
+  <text class="small" x="590" y="700">Click tenor → exact tenor history</text>
+
+  <rect class="panel" x="1025" y="145" rx="18" width="420" height="620"/>
+  <text class="label" x="1055" y="190">2 tenor axes · IR Vega</text>
+  <text class="small" x="1055" y="222">Date × option tenor × swap tenor × value.</text>
+  <rect x="1060" y="250" width="350" height="55" rx="12" fill="#e9f0f7" stroke="#294c72" stroke-width="2"/>
+  <text class="small" x="1080" y="282">Date A  ·  Date B  ·  A  ·  B  ·  B−A  ·  %</text>
+  <g transform="translate(1080 340)">
+    <rect class="neg" x="0" y="0" width="52" height="42"/><rect class="zero" x="55" y="0" width="52" height="42"/><rect class="pos" x="110" y="0" width="52" height="42"/><rect class="pos" x="165" y="0" width="52" height="42"/><rect class="zero" x="220" y="0" width="52" height="42"/>
+    <rect class="neg" x="0" y="45" width="52" height="42"/><rect class="neg" x="55" y="45" width="52" height="42"/><rect class="zero" x="110" y="45" width="52" height="42"/><rect class="pos" x="165" y="45" width="52" height="42"/><rect class="pos" x="220" y="45" width="52" height="42"/>
+    <rect class="zero" x="0" y="90" width="52" height="42"/><rect class="pos" x="55" y="90" width="52" height="42"/><rect class="pos" x="110" y="90" width="52" height="42"/><rect class="pos" x="165" y="90" width="52" height="42"/><rect class="zero" x="220" y="90" width="52" height="42"/>
+    <rect class="pos" x="0" y="135" width="52" height="42"/><rect class="pos" x="55" y="135" width="52" height="42"/><rect class="zero" x="110" y="135" width="52" height="42"/><rect class="neg" x="165" y="135" width="52" height="42"/><rect class="neg" x="220" y="135" width="52" height="42"/>
+  </g>
+  <text class="small" x="1140" y="545">Swap tenor →</text><text class="small" x="1040" y="470" transform="rotate(-90 1040 470)">Option tenor →</text>
+  <path class="arrow" d="M1215 560 V625"/>
+  <rect x="1080" y="635" width="300" height="78" rx="12" fill="#fff" stroke="#d9dee5" stroke-width="2"/>
+  <path class="line" d="M1095 690 C1130 665 1160 700 1190 670 S1240 655 1270 675 S1320 650 1360 660"/>
+  <text class="small" x="1095" y="730">Click cell → exact option×swap history</text>
+
+  <rect x="250" y="810" width="1000" height="55" rx="14" fill="#e9f0f7" stroke="#294c72" stroke-width="2"/>
+  <text class="label" x="315" y="845">Do not force four dimensions into one static 3-D chart; make time an interaction.</text>
+</svg>
