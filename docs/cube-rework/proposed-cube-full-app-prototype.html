@@ -10,22 +10,72 @@
   <script>
   (async () => {
     if (!("DecompressionStream" in window)) {
-      throw new Error("This prototype needs a current version of Edge, Chrome, or Firefox with DecompressionStream support.");
+      throw new Error("This prototype needs a current version of Edge, Chrome, or Firefox.");
     }
 
-    const source = "https://raw.githubusercontent.com/streamlitdash/Rebirth/docs/cube-rework-deep-dive/docs/cube-rework/proposed-cube-full-app-prototype.html.gz";
-    const response = await fetch(source, { cache: "no-store" });
-    if (!response.ok || !response.body) {
-      throw new Error(`Could not download the prototype payload (${response.status}).`);
+    const base = "https://raw.githubusercontent.com/streamlitdash/Rebirth/docs/cube-rework-deep-dive/docs/cube-rework/";
+    const files = Array.from(
+      { length: 8 },
+      (_, index) => `proposed-cube-full-app-prototype.payload-${String(index).padStart(2, "0")}.txt`,
+    );
+
+    const parts = await Promise.all(
+      files.map(async (file) => {
+        const response = await fetch(base + file, { cache: "no-store" });
+        if (!response.ok) {
+          throw new Error(`Could not download ${file}: HTTP ${response.status}`);
+        }
+        return response.text();
+      }),
+    );
+
+    const payload = parts.join("").replace(/\s+/g, "");
+    if (payload.length !== 31808 || !payload.startsWith("H4sI")) {
+      throw new Error(`The prototype payload is incomplete (${payload.length} of 31808 characters).`);
     }
 
-    const stream = response.body.pipeThrough(new DecompressionStream("gzip"));
+    function decodeBase64(value) {
+      const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+      const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+      const bytes = new Uint8Array((value.length / 4) * 3 - padding);
+      let output = 0;
+
+      for (let index = 0; index < value.length; index += 4) {
+        const a = alphabet.indexOf(value[index]);
+        const b = alphabet.indexOf(value[index + 1]);
+        const c = value[index + 2] === "=" ? 0 : alphabet.indexOf(value[index + 2]);
+        const d = value[index + 3] === "=" ? 0 : alphabet.indexOf(value[index + 3]);
+        if (a < 0 || b < 0 || c < 0 || d < 0) {
+          throw new Error(`Invalid payload data near character ${index}.`);
+        }
+        const block = (a << 18) | (b << 12) | (c << 6) | d;
+        if (output < bytes.length) bytes[output++] = (block >> 16) & 255;
+        if (output < bytes.length) bytes[output++] = (block >> 8) & 255;
+        if (output < bytes.length) bytes[output++] = block & 255;
+      }
+      return bytes;
+    }
+
+    const compressed = decodeBase64(payload);
+    if (compressed.byteLength !== 23855) {
+      throw new Error(`The decoded payload is incomplete (${compressed.byteLength} of 23855 bytes).`);
+    }
+
+    const stream = new Blob([compressed])
+      .stream()
+      .pipeThrough(new DecompressionStream("gzip"));
     const html = await new Response(stream).text();
+    if (!html.toLowerCase().startsWith("<!doctype html>")) {
+      throw new Error("The downloaded payload did not decode into HTML.");
+    }
+
     document.open();
     document.write(html);
     document.close();
   })().catch((error) => {
-    document.getElementById("status").innerHTML = `<strong>Could not load the prototype.</strong><br>${error.message}<br><br>Make sure the computer is online, then reopen this HTML file.`;
+    document.getElementById("status").innerHTML =
+      `<strong>Could not load the prototype.</strong><br>${String(error)}<br><br>` +
+      "Make sure this computer is online, then reload the file.";
     console.error(error);
   });
   </script>
