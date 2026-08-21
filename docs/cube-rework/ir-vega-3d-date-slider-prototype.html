@@ -1,0 +1,418 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Cube · IR Vega 3-D History Prototype</title>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <style>
+    :root {
+      --bg: #f4f6f8;
+      --panel: #ffffff;
+      --ink: #111827;
+      --muted: #667085;
+      --line: #d0d5dd;
+      --accent: #1f4e79;
+      --accent-soft: #eaf2f8;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, "Segoe UI", Arial, sans-serif;
+    }
+
+    .page {
+      max-width: 1320px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: 0 8px 28px rgba(16, 24, 40, 0.08);
+      overflow: hidden;
+    }
+
+    .header {
+      padding: 18px 22px 10px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 22px;
+      line-height: 1.25;
+    }
+
+    .subhead {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    #surface-chart {
+      width: 100%;
+      height: 680px;
+    }
+
+    .transport {
+      padding: 14px 22px 18px;
+      border-top: 1px solid var(--line);
+      background: #fbfcfd;
+    }
+
+    .transport-row {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 14px;
+    }
+
+    button {
+      min-height: 38px;
+      padding: 8px 13px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: var(--panel);
+      color: var(--ink);
+      cursor: pointer;
+      font-weight: 700;
+    }
+
+    button:hover {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+    }
+
+    .date-pill {
+      min-width: 116px;
+      padding: 8px 11px;
+      border-radius: 999px;
+      text-align: center;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-variant-numeric: tabular-nums;
+      font-weight: 800;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      height: 8px;
+      appearance: none;
+      border-radius: 999px;
+      background: linear-gradient(
+        to right,
+        var(--accent) 0%,
+        var(--accent) var(--progress, 0%),
+        #dce3ea var(--progress, 0%),
+        #dce3ea 100%
+      );
+      outline: none;
+      cursor: grab;
+    }
+
+    input[type="range"]:active {
+      cursor: grabbing;
+    }
+
+    input[type="range"]::-webkit-slider-thumb {
+      appearance: none;
+      width: 22px;
+      height: 22px;
+      border: 3px solid var(--panel);
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 1px 6px rgba(16, 24, 40, 0.35);
+    }
+
+    input[type="range"]::-moz-range-thumb {
+      width: 18px;
+      height: 18px;
+      border: 3px solid var(--panel);
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 1px 6px rgba(16, 24, 40, 0.35);
+    }
+
+    .ticks {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 7px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .note {
+      margin: 11px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    @media (max-width: 760px) {
+      .page { padding: 12px; }
+      #surface-chart { height: 560px; }
+      .transport-row {
+        grid-template-columns: 1fr;
+      }
+      .date-pill { justify-self: start; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="card">
+      <div class="header">
+        <h1>IR Vega · 3-D historical surface</h1>
+        <p class="subhead">
+          Drag and hold the slider thumb to move through dates. The camera stays fixed while the Vega surface updates.
+        </p>
+      </div>
+
+      <div id="surface-chart"></div>
+
+      <div class="transport">
+        <div class="transport-row">
+          <button id="play-button" type="button" aria-label="Play or pause history">▶ Play</button>
+          <input
+            id="date-slider"
+            type="range"
+            min="0"
+            max="0"
+            step="1"
+            value="0"
+            aria-label="Historical market date"
+          />
+          <div id="date-label" class="date-pill">—</div>
+        </div>
+        <div class="ticks">
+          <span id="first-date">—</span>
+          <span>Drag through history</span>
+          <span id="last-date">—</span>
+        </div>
+        <p class="note">
+          X-axis: swap tenor · Y-axis: option tenor · Z-axis and colour: IR Vega value.
+          Hover any cell for the exact value. The example uses synthetic data.
+        </p>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    (() => {
+      const swapTenors = ["1Y", "2Y", "5Y", "10Y", "20Y", "30Y"];
+      const optionTenors = ["1M", "3M", "6M", "1Y", "2Y", "5Y", "10Y"];
+
+      function businessDates(start, count) {
+        const dates = [];
+        const current = new Date(start + "T00:00:00Z");
+        while (dates.length < count) {
+          const day = current.getUTCDay();
+          if (day !== 0 && day !== 6) {
+            dates.push(current.toISOString().slice(0, 10));
+          }
+          current.setUTCDate(current.getUTCDate() + 1);
+        }
+        return dates;
+      }
+
+      const dates = businessDates("2026-06-01", 60);
+
+      function seededNoise(seed) {
+        const x = Math.sin(seed * 12.9898 + 78.233) * 43758.5453;
+        return (x - Math.floor(x)) - 0.5;
+      }
+
+      function buildSurface(dateIndex) {
+        return optionTenors.map((_, optionIndex) =>
+          swapTenors.map((_, swapIndex) => {
+            const ridge =
+              42 +
+              22 * Math.exp(-Math.pow(swapIndex - 3.1, 2) / 4.5) +
+              15 * Math.exp(-Math.pow(optionIndex - 3.0, 2) / 5.0);
+
+            const timeWave =
+              8 * Math.sin(dateIndex / 5.0 + swapIndex / 2.1) -
+              5 * Math.cos(dateIndex / 7.0 + optionIndex / 2.3);
+
+            const localShock =
+              18 *
+              Math.exp(
+                -Math.pow(dateIndex - 37, 2) / 28 -
+                Math.pow(swapIndex - 3, 2) / 1.7 -
+                Math.pow(optionIndex - 2, 2) / 1.6
+              );
+
+            const noise = 3.2 * seededNoise(dateIndex * 100 + optionIndex * 10 + swapIndex);
+
+            return Number((ridge + timeWave + localShock + noise).toFixed(2));
+          })
+        );
+      }
+
+      const surfaces = dates.map((_, index) => buildSurface(index));
+      const allValues = surfaces.flat(2);
+      const minValue = Math.min(...allValues);
+      const maxValue = Math.max(...allValues);
+
+      const slider = document.getElementById("date-slider");
+      const dateLabel = document.getElementById("date-label");
+      const playButton = document.getElementById("play-button");
+
+      slider.max = String(dates.length - 1);
+      slider.value = String(dates.length - 1);
+
+      document.getElementById("first-date").textContent = dates[0];
+      document.getElementById("last-date").textContent = dates[dates.length - 1];
+
+      const initialCamera = {
+        eye: { x: 1.55, y: 1.55, z: 1.1 },
+        center: { x: 0, y: 0, z: -0.05 },
+        up: { x: 0, y: 0, z: 1 }
+      };
+
+      const trace = {
+        type: "surface",
+        x: swapTenors,
+        y: optionTenors,
+        z: surfaces[surfaces.length - 1],
+        cmin: minValue,
+        cmax: maxValue,
+        colorscale: [
+          [0.00, "#263f63"],
+          [0.22, "#4f81bd"],
+          [0.48, "#d9e7f5"],
+          [0.50, "#f7f7f7"],
+          [0.72, "#f4b183"],
+          [1.00, "#a61c1c"]
+        ],
+        colorbar: {
+          title: "Vega",
+          thickness: 18,
+          len: 0.72
+        },
+        contours: {
+          z: {
+            show: true,
+            usecolormap: true,
+            highlightcolor: "#111827",
+            project: { z: true }
+          }
+        },
+        hovertemplate:
+          "<b>Swap %{x}</b><br>" +
+          "Option %{y}<br>" +
+          "Vega %{z:,.2f}<extra></extra>"
+      };
+
+      const layout = {
+        title: {
+          text: `Market date · ${dates[dates.length - 1]}`,
+          x: 0.02,
+          xanchor: "left",
+          font: { size: 17 }
+        },
+        margin: { l: 25, r: 25, t: 62, b: 20 },
+        paper_bgcolor: "rgba(0,0,0,0)",
+        scene: {
+          camera: initialCamera,
+          aspectmode: "manual",
+          aspectratio: { x: 1.3, y: 1.1, z: 0.8 },
+          xaxis: {
+            title: "Swap tenor",
+            type: "category",
+            categoryorder: "array",
+            categoryarray: swapTenors
+          },
+          yaxis: {
+            title: "Option tenor",
+            type: "category",
+            categoryorder: "array",
+            categoryarray: optionTenors
+          },
+          zaxis: {
+            title: "IR Vega",
+            range: [minValue - 5, maxValue + 5]
+          }
+        },
+        uirevision: "keep-camera",
+        showlegend: false
+      };
+
+      const config = {
+        responsive: true,
+        displaylogo: false,
+        scrollZoom: true
+      };
+
+      Plotly.newPlot("surface-chart", [trace], layout, config);
+
+      let playing = false;
+      let timer = null;
+
+      function updateProgress(index) {
+        const percentage = (index / (dates.length - 1)) * 100;
+        slider.style.setProperty("--progress", `${percentage}%`);
+      }
+
+      function updateSurface(index) {
+        const date = dates[index];
+        dateLabel.textContent = date;
+        updateProgress(index);
+
+        Plotly.react(
+          "surface-chart",
+          [{
+            ...trace,
+            z: surfaces[index]
+          }],
+          {
+            ...layout,
+            title: {
+              ...layout.title,
+              text: `Market date · ${date}`
+            }
+          },
+          config
+        );
+      }
+
+      slider.addEventListener("input", () => {
+        updateSurface(Number(slider.value));
+      });
+
+      function stopPlaying() {
+        playing = false;
+        playButton.textContent = "▶ Play";
+        if (timer !== null) {
+          window.clearInterval(timer);
+          timer = null;
+        }
+      }
+
+      function startPlaying() {
+        playing = true;
+        playButton.textContent = "❚❚ Pause";
+        timer = window.setInterval(() => {
+          let next = Number(slider.value) + 1;
+          if (next >= dates.length) next = 0;
+          slider.value = String(next);
+          updateSurface(next);
+        }, 320);
+      }
+
+      playButton.addEventListener("click", () => {
+        if (playing) stopPlaying();
+        else startPlaying();
+      });
+
+      updateSurface(Number(slider.value));
+    })();
+  </script>
+</body>
+</html>
