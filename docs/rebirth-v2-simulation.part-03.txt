@@ -1,0 +1,297 @@
+-light">Apply</button><button id="${pageKey}-saved-save" class="btn btn-dark">Save</button></div>
+      <div class="note">Selections never leak between Risk, Stock, and P&amp;L pages.</div>
+    </div>`;
+  document.getElementById(`${pageKey}-saved-apply`).addEventListener("click", () => {
+    const selected = document.getElementById(`${pageKey}-saved-select`).value;
+    const presets = {
+      rates: {activity: ["Rates"], category: ["Core"]},
+      credit: {activity: ["Credit"], category: ["Structured"]},
+      hedges: {activity: ["Hedge"], portfolio: ["BOOK-006", "BOOK-012"]}
+    };
+    if (!selected) return toast("Choose a saved view first.");
+    filterFields.forEach(([key]) => {
+      state[pageKey].filters[key].clear();
+      (presets[selected][key] || []).forEach(value => state[pageKey].filters[key].add(value));
+    });
+    renderFilterBar(`${pageKey}-filters`, pageKey);
+    document.getElementById(`${pageKey}-saved-status`).textContent = `Applied ${selected}`;
+    renderPage(pageKey);
+  });
+  document.getElementById(`${pageKey}-saved-save`).addEventListener("click", () => {
+    const name = document.getElementById(`${pageKey}-saved-name`).value.trim() || "Unnamed view";
+    document.getElementById(`${pageKey}-saved-status`).textContent = `Saved "${name}" locally`;
+    toast(`Saved ${pageKey} view: ${name}`);
+  });
+}
+function renderDimensionRadios(hostId, current, onChange) {
+  const host = document.getElementById(hostId);
+  host.innerHTML = dimensions.map(([value, label]) => `<label><input type="radio" name="${hostId}" value="${value}" ${value === current ? "checked" : ""}> ${label}</label>`).join("");
+  host.querySelectorAll("input").forEach(input => input.addEventListener("change", () => onChange(input.value)));
+}
+function aggregate(rows) {
+  const result = {
+    risk: sum(rows.map(row => row.risk)),
+    drisk: sum(rows.map(row => row.drisk)),
+    pl: sum(rows.map(row => row.pl)),
+    open: mean(rows.map(row => row.open)),
+    current: mean(rows.map(row => row.current))
+  };
+  result.move = result.current != null && result.open != null ? result.current - result.open : null;
+  return result;
+}
+
+/* ---------- promotion ---------- */
+const baselinePromotionActivities = new Set(["Rates", "Credit", "FX"]);
+function promotionKey(row) {
+  return `${row.riskType}|${row.riskGreek}|${row.reportedUnderlying}`;
+}
+function calculatePromotion(rows) {
+  const grouped = new Map();
+  rows.filter(row => row.mapped).forEach(row => {
+    const key = promotionKey(row);
+    if (!grouped.has(key)) grouped.set(key, {riskType: row.riskType, riskGreek: row.riskGreek, underlying: row.reportedUnderlying, risk: 0, drisk: 0, pl: 0});
+    const item = grouped.get(key);
+    item.risk += row.risk;
+    item.drisk += row.drisk;
+    item.pl += row.pl;
+  });
+  const result = new Map();
+  grouped.forEach((item, key) => {
+    const threshold = thresholds.get(`${item.riskType}|${item.riskGreek}`) || {risk: 2e7, drisk: 5e6, pl: 1e6};
+    const ratios = [
+      Math.abs(item.risk) / threshold.risk,
+      Math.abs(item.drisk) / threshold.drisk,
+      Math.abs(item.pl) / threshold.pl
+    ];
+    const reasons = [];
+    if (ratios[0] >= 1) reasons.push("Big Risk");
+    if (ratios[1] >= 1) reasons.push("Big dRisk");
+    if (ratios[2] >= 1) reasons.push("Big PL");
+    result.set(key, {...item, score: Math.max(...ratios), reason: reasons.join(", "), bucket: reasons.length ? item.underlying : "Other"});
+  });
+  return result;
+}
+const baselinePromotion = calculatePromotion(riskRows.filter(row => baselinePromotionActivities.has(row.activity)));
+function activePromotion() {
+  return state.risk.promotionMode === "custom" && state.risk.customPromotion ? state.risk.customPromotion : baselinePromotion;
+}
+
+/* ---------- aggregate tables ---------- */
+function renderAggregate(hostId, virtualId, rows, dimension, windowStart, setWindow, openSet) {
+  const values = unique(rows.map(row => String(row[dimension]))).sort();
+  const windowSize = 8;
+  const start = clamp(windowStart, 0, Math.max(0, values.length - windowSize));
+  const visible = values.slice(start, start + windowSize);
+  const virtual = document.getElementById(virtualId);
+  if (values.length > windowSize) {
+    virtual.innerHTML = `<div class="virtual-toolbar"><label>Column window <input type="range" min="0" max="${values.length - windowSize}" value="${start}"></label><span class="virtual-label">${start + 1}–${Math.min(start + windowSize, values.length)} of ${values.length} ${dimension}</span></div>`;
+    virtual.querySelector("input").addEventListener("input", event => setWindow(+event.target.value));
+  } else {
+    virtual.innerHTML = "";
+  }
+  const riskTypes = ["IR", "Credit", "FX", "Commo"].filter(type => rows.some(row => row.riskType === type));
+  const records = [{label: "TOTAL", scope: rows, total: true}];
+  riskTypes.forEach(riskType => {
+    const scope = rows.filter(row => row.riskType === riskType);
+    records.push({label: riskType, scope, riskType, expandable: true, open: openSet.has(riskType)});
+    if (openSet.has(riskType)) {
+      unique(scope.map(row => row.riskGreek)).sort().forEach(greek => records.push({label: greek, scope: scope.filter(row => row.riskGreek === greek), child: true}));
+    }
+  });
+  document.getElementById(hostId).innerHTML = `<table><thead><tr><th class="index-head">Risk / Greek</th>${visible.map(value => `<th>${escapeHtml(value)}</th>`).join("")}<th class="total-col">Total</th></tr></thead>
+    <tbody>${records.map(record => {
+      const cells = visible.map(value => sum(record.scope.filter(row => String(row[dimension]) === value).map(row => row.pl)));
+      const total = sum(record.scope.map(row => row.pl));
+      return `<tr class="${record.total ? "total-row" : record.riskType ? "major-row" : ""}">
+        <th class="index-cell" style="padding-left:${record.child ? 50 : 10}px">${record.expandable ? `<button class="row-toggle" data-aggregate-toggle="${record.riskType}">${record.open ? "−" : "▸"}</button>` : ""}${escapeHtml(record.label)}</th>
+        ${cells.map(value => `<td class="${signClass(value)}">${formatNumber(value, "pl")}</td>`).join("")}
+        <td class="total-col ${signClass(total)}">${formatNumber(total, "pl")}</td>
+      </tr>`;
+    }).join("")}</tbody></table>`;
+  document.querySelectorAll(`#${hostId} [data-aggregate-toggle]`).forEach(button => button.addEventListener("click", () => {
+    const riskType = button.dataset.aggregateToggle;
+    openSet.has(riskType) ? openSet.delete(riskType) : openSet.add(riskType);
+    hostId.startsWith("risk") ? renderRiskAggregate() : renderPnlAggregate();
+  }));
+}
+
+/* ---------- Market History ---------- */
+function marketValue(identity, dateIndex, swapIndex = 0, optionIndex = 0) {
+  const seed = identity.split("").reduce((total, character) => total + character.charCodeAt(0), 0);
+  const base = identity.startsWith("FX") ? 1.1 : identity.startsWith("IR") ? 2.6 : 70;
+  return base
+    + 0.18 * Math.sin(dateIndex / 6 + swapIndex / 2 + seed / 31)
+    + 0.11 * Math.cos(dateIndex / 9 + optionIndex / 2 + seed / 47)
+    + 0.32 * Math.exp(-Math.pow(dateIndex - 58, 2) / 45 - Math.pow(swapIndex - 4, 2) / 3 - Math.pow(optionIndex - 2, 2) / 2);
+}
+function selectedMarketSpec() {
+  const spec = productSpecs.find(item => item.riskType === state.market.riskType && item.greek === state.market.greek);
+  return spec ? {...spec, underlying: state.market.underlying} : null;
+}
+function configureMarketControls() {
+  const riskTypes = unique(productSpecs.map(spec => spec.riskType));
+  const riskTypeSelect = document.getElementById("market-risk-type");
+  riskTypeSelect.innerHTML = riskTypes.map(value => `<option ${value === state.market.riskType ? "selected" : ""}>${value}</option>`).join("");
+  const greeks = productSpecs.filter(spec => spec.riskType === state.market.riskType).map(spec => spec.greek);
+  if (!greeks.includes(state.market.greek)) state.market.greek = greeks[0];
+  const greekSelect = document.getElementById("market-greek");
+  greekSelect.innerHTML = greeks.map(value => `<option ${value === state.market.greek ? "selected" : ""}>${value}</option>`).join("");
+  const spec = selectedMarketSpec();
+  if (!spec.underlyings.includes(state.market.underlying)) state.market.underlying = spec.underlyings[0];
+  const underlyingSelect = document.getElementById("market-underlying");
+  underlyingSelect.innerHTML = spec.underlyings.map(value => `<option ${value === state.market.underlying ? "selected" : ""}>${value}</option>`).join("");
+
+  let views;
+  if (spec.axes === 2) {
+    views = [
+      ["surface", "3-D tenor surface through time"],
+      ["swap", "Fixed Tenor Swap through time"],
+      ["option", "Fixed Tenor Option through time"],
+      ["all", "All tenor cells through time"]
+    ];
+  } else if (spec.axes === 1) {
+    views = [
+      ["line", "Specific tenor line"],
+      ["curve", "Full curve through time (3-D)"]
+    ];
+  } else {
+    views = [["flat", "No-tenor historical line"]];
+  }
+  if (!views.some(([value]) => value === state.market.view)) state.market.view = views[0][0];
+  document.getElementById("market-view").innerHTML = views.map(([value, label]) => `<option value="${value}" ${value === state.market.view ? "selected" : ""}>${label}</option>`).join("");
+
+  const tenorField = document.getElementById("market-tenor-field");
+  const tenorSelect = document.getElementById("market-tenor");
+  let tenors = [];
+  if (state.market.view === "swap") {
+    tenors = swapTenors;
+    document.getElementById("market-tenor-label").textContent = "Tenor Swap";
+  } else if (state.market.view === "option") {
+    tenors = optionTenors;
+    document.getElementById("market-tenor-label").textContent = "Tenor Option";
+  } else if (state.market.view === "line" && spec.axes === 1) {
+    tenors = swapTenors;
+    document.getElementById("market-tenor-label").textContent = "Tenor";
+  }
+  tenorField.hidden = !tenors.length;
+  if (tenors.length) {
+    if (!tenors.includes(state.market.tenor)) state.market.tenor = tenors[0];
+    tenorSelect.innerHTML = tenors.map(value => `<option ${value === state.market.tenor ? "selected" : ""}>${value}</option>`).join("");
+  }
+}
+function renderMarketHistory() {
+  configureMarketControls();
+  const spec = selectedMarketSpec();
+  const identity = `${spec.riskType}|${spec.greek}|${state.market.underlying}`;
+  const layoutBase = {
+    margin: {l: 60, r: 45, t: 35, b: 60},
+    paper_bgcolor: "rgba(0,0,0,0)",
+    plot_bgcolor: "rgba(0,0,0,0)",
+    font: {color: getComputedStyle(document.documentElement).getPropertyValue("--text")},
+    uirevision: `market::${identity}::${state.market.view}`
+  };
+  const transport = document.getElementById("market-transport");
+  document.getElementById("market-shape-badge").textContent = `${spec.axes} tenor axes`;
+  document.getElementById("market-chart-title").textContent = `${spec.riskType} · ${spec.greek} · ${state.market.underlying}`;
+  let traces = [], layout = {...layoutBase}, subtitle = "";
+
+  if (spec.axes === 0) {
+    const values = dates.map((_, index) => marketValue(identity, index));
+    traces = [{type: "scatter", mode: "lines+markers", x: dates, y: values, name: "OFFICIAL"}];
+    layout = {...layout, xaxis: {title: "Market Date"}, yaxis: {title: "OFFICIAL"}, hovermode: "x unified"};
+    subtitle = "Zero tenor axes · normal historical line.";
+    transport.hidden = true;
+  } else if (spec.axes === 1 && state.market.view === "line") {
+    const tenorIndex = Math.max(0, swapTenors.indexOf(state.market.tenor));
+    traces = [{type: "scatter", mode: "lines+markers", x: dates, y: dates.map((_, index) => marketValue(identity, index, tenorIndex)), name: state.market.tenor}];
+    layout = {...layout, xaxis: {title: "Market Date"}, yaxis: {title: "OFFICIAL"}, hovermode: "x unified"};
+    subtitle = `Single tenor axis · ${state.market.tenor} plotted flatly through time.`;
+    transport.hidden = true;
+  } else if (spec.axes === 1) {
+    const z = swapTenors.map((_, tenorIndex) => dates.map((_, dateIndex) => marketValue(identity, dateIndex, tenorIndex)));
+    traces = [{type: "surface", x: dates, y: swapTenors, z, colorscale: "Viridis"}];
+    layout = {...layout, height: 600, scene: {domain: {x: [0.05, 0.94], y: [0.05, 0.98]}, camera: {eye: {x: 1.55, y: 1.55, z: 1.1}}, xaxis: {title: "Market Date"}, yaxis: {title: "Tenor"}, zaxis: {title: "OFFICIAL"}}};
+    subtitle = "Single tenor axis · full curve evolution as a 3-D date × tenor surface.";
+    transport.hidden = true;
+  } else if (state.market.view === "surface") {
+    const dateIndex = state.market.dateIndex;
+    const z = optionTenors.map((_, optionIndex) => swapTenors.map((_, swapIndex) => marketValue(identity, dateIndex, swapIndex, optionIndex)));
+    traces = [{type: "surface", x: swapTenors, y: optionTenors, z, colorscale: "RdBu", reversescale: true, cmin: 1.7, cmax: 3.7, contours: {z: {show: true, usecolormap: true, project: {z: true}}}}];
+    layout = {...layout, height: 600, scene: {domain: {x: [0.05, 0.94], y: [0.05, 0.98]}, camera: {eye: {x: 1.55, y: 1.55, z: 1.1}}, xaxis: {title: "Tenor Swap"}, yaxis: {title: "Tenor Option"}, zaxis: {title: "OFFICIAL", range: [1.7, 3.7]}}};
+    subtitle = `Double tenor axes · selected surface on ${dates[dateIndex]}.`;
+    transport.hidden = false;
+    const slider = document.getElementById("market-slider");
+    slider.min = 0;
+    slider.max = dates.length - 1;
+    slider.value = dateIndex;
+    document.getElementById("market-date-label").textContent = dates[dateIndex];
+  } else if (state.market.view === "swap") {
+    const fixed = Math.max(0, swapTenors.indexOf(state.market.tenor));
+    const z = optionTenors.map((_, optionIndex) => dates.map((_, dateIndex) => marketValue(identity, dateIndex, fixed, optionIndex)));
+    traces = [{type: "surface", x: dates, y: optionTenors, z, colorscale: "Viridis"}];
+    layout = {...layout, height: 600, scene: {domain: {x: [0.05, 0.94], y: [0.05, 0.98]}, camera: {eye: {x: 1.55, y: 1.55, z: 1.1}}, xaxis: {title: "Market Date"}, yaxis: {title: "Tenor Option"}, zaxis: {title: "OFFICIAL"}}};
+    subtitle = `Fixed Tenor Swap ${state.market.tenor} · date × option-tenor surface.`;
+    transport.hidden = true;
+  } else if (state.market.view === "option") {
+    const fixed = Math.max(0, optionTenors.indexOf(state.market.tenor));
+    const z = swapTenors.map((_, swapIndex) => dates.map((_, dateIndex) => marketValue(identity, dateIndex, swapIndex, fixed)));
+    traces = [{type: "surface", x: dates, y: swapTenors, z, colorscale: "Viridis"}];
+    layout = {...layout, height: 600, scene: {domain: {x: [0.05, 0.94], y: [0.05, 0.98]}, camera: {eye: {x: 1.55, y: 1.55, z: 1.1}}, xaxis: {title: "Market Date"}, yaxis: {title: "Tenor Swap"}, zaxis: {title: "OFFICIAL"}}};
+    subtitle = `Fixed Tenor Option ${state.market.tenor} · date × swap-tenor surface.`;
+    transport.hidden = true;
+  } else {
+    const cells = [];
+    optionTenors.forEach((option, optionIndex) => swapTenors.forEach((swap, swapIndex) => {
+      cells.push({label: `${option} × ${swap}`, optionIndex, swapIndex});
+    }));
+    const z = cells.map(cell => dates.map((_, dateIndex) => marketValue(identity, dateIndex, cell.swapIndex, cell.optionIndex)));
+    traces = [{type: "surface", x: dates, y: cells.map(cell => cell.label), z, colorscale: "Viridis"}];
+    layout = {...layout, height: 600, scene: {domain: {x: [0.05, 0.94], y: [0.05, 0.98]}, camera: {eye: {x: 1.55, y: 1.55, z: 1.1}}, xaxis: {title: "Market Date"}, yaxis: {title: "Tenor cell", nticks: 10}, zaxis: {title: "OFFICIAL"}}};
+    subtitle = "Double tenor axes · all populated tenor cells through time.";
+    transport.hidden = true;
+  }
+  document.getElementById("market-chart-subtitle").textContent = subtitle;
+  document.getElementById("market-status").textContent = `${dates.length} committed dates · ${spec.axes} tenor axes · query-sized fake history bundle`;
+  Plotly.react("market-chart", traces, layout, {responsive: true, displaylogo: false, scrollZoom: true});
+}
+
+/* ---------- Risk page ---------- */
+function filteredRiskRows(allRiskTypes = false) {
+  let rows = applyFilters(riskRows.filter(row => row.mapped), state.risk);
+  if (!allRiskTypes) rows = rows.filter(row => row.riskType === state.risk.riskType && row.riskGreek === state.risk.greek);
+  return rows;
+}
+function displayBucket(row) {
+  return activePromotion().get(promotionKey(row))?.bucket || "Other";
+}
+function renderReadiness() {
+  document.getElementById("readiness-body").innerHTML = productSpecs.map((spec, index) => `<tr><th class="index-cell">${spec.riskType.toLowerCase()}/${spec.greek.toLowerCase()}</th><td>${index % 3}</td><td>2026-08-19</td><td>${index % 5 ? "✓" : "Review"}</td></tr>`).join("");
+}
+function riskHierarchy(rows) {
+  const groups = ["riskGreek"];
+  if (state.risk.promotionEnabled) groups.push("displayBucket");
+  if (state.risk.regionEnabled) groups.push("region");
+  groups.push("reportedUnderlying", "tenorSwap", "tenorOption", state.risk.dimension);
+  const records = [{label: "TOTAL", depth: 0, scope: rows, total: true, path: ""}];
+  function walk(scope, depth, pathParts) {
+    if (depth >= groups.length) return;
+    const field = groups[depth];
+    const grouped = new Map();
+    scope.forEach(row => {
+      const value = field === "displayBucket" ? displayBucket(row) : String(row[field] ?? "Unspecified");
+      if (!grouped.has(value)) grouped.set(value, []);
+      grouped.get(value).push(row);
+    });
+    [...grouped.entries()].sort((a, b) => Math.abs(aggregate(b[1]).pl) - Math.abs(aggregate(a[1]).pl)).slice(0, 24).forEach(([value, child]) => {
+      const path = [...pathParts, `${field}=${value}`].join("¦");
+      const expandable = depth + 1 < groups.length;
+      const open = state.risk.open.has(path);
+      records.push({label: value, depth: depth + 1, scope: child, path, expandable, open});
+      if (expandable && open) walk(child, depth + 1, [...pathParts, `${field}=${value}`]);
+    });
+  }
+  walk(rows, 0, []);
+  return records;
+}
+function renderRiskControls() {
+  const riskTypes = unique(riskRows.map(row => 
