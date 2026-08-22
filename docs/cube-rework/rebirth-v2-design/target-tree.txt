@@ -1,0 +1,262 @@
+Rebirth-V2/
+|-- app.py
+|-- pyproject.toml
+|-- requirements.txt
+|-- requirements-dev.txt
+|-- README.md
+|-- assets/
+|   |-- app.css
+|   |-- cards.css
+|   |-- tables.css
+|   |-- responsive.css
+|   `-- clientside.js
+|-- rebirth_v2/
+|   |-- __init__.py
+|   |-- config/
+|   |   |-- __init__.py
+|   |   |-- runtime.py
+|   |   |-- settings.py
+|   |   |-- logging.py
+|   |   `-- feature_flags.py
+|   |-- composition/
+|   |   |-- __init__.py
+|   |   |-- container.py
+|   |   |-- factory.py
+|   |   |-- adapter_factory.py
+|   |   |-- repository_factory.py
+|   |   |-- pipeline_factory.py
+|   |   `-- page_factory.py
+|   |-- domain/
+|   |   |-- common/
+|   |   |   |-- dates.py
+|   |   |   |-- errors.py
+|   |   |   |-- frame_contracts.py
+|   |   |   `-- validation.py
+|   |   |-- products/
+|   |   |   |-- models.py
+|   |   |   |-- registry.py
+|   |   |   |-- ir.py
+|   |   |   |-- fx.py
+|   |   |   |-- credit.py
+|   |   |   |-- commodities.py
+|   |   |   `-- cashflow.py
+|   |   |-- risk/
+|   |   |   |-- models.py
+|   |   |   |-- schema.py
+|   |   |   |-- filters.py
+|   |   |   |-- aggregation.py
+|   |   |   |-- hierarchy.py
+|   |   |   |-- pivot.py
+|   |   |   `-- dimension_index.py
+|   |   |-- market/
+|   |   |   |-- models.py
+|   |   |   |-- schema.py
+|   |   |   |-- quote_identity.py
+|   |   |   |-- open_current_merge.py
+|   |   |   |-- tenor_ordering.py
+|   |   |   `-- history_shapes.py
+|   |   |-- pnl/
+|   |   |   |-- models.py
+|   |   |   |-- formulas.py
+|   |   |   |-- aggregation.py
+|   |   |   |-- validation.py
+|   |   |   `-- comparison.py
+|   |   |-- stock/
+|   |   |   |-- models.py
+|   |   |   |-- comparison.py
+|   |   |   |-- mapping_authority.py
+|   |   |   |-- promotion.py
+|   |   |   `-- hierarchy.py
+|   |   `-- promotion/
+|   |       |-- policy.py
+|   |       |-- calculator.py
+|   |       |-- generation.py
+|   |       |-- index.py
+|   |       `-- ranking.py
+|   |-- application/
+|   |   |-- ports/
+|   |   |   |-- risk_source.py
+|   |   |   |-- market_source.py
+|   |   |   |-- readiness_source.py
+|   |   |   |-- portfolio_source.py
+|   |   |   |-- stock_source.py
+|   |   |   |-- colossus_source.py
+|   |   |   |-- pnl_sender.py
+|   |   |   |-- history_repository.py
+|   |   |   |-- saved_view_repository.py
+|   |   |   |-- adjustment_repository.py
+|   |   |   `-- snapshot_store.py
+|   |   |-- pipeline/
+|   |   |   |-- contracts.py
+|   |   |   |-- context.py
+|   |   |   |-- result.py
+|   |   |   |-- coordinator.py
+|   |   |   |-- readiness_stage.py
+|   |   |   |-- risk_stage.py
+|   |   |   |-- market_stage.py
+|   |   |   |-- pnl_stage.py
+|   |   |   |-- mapping_stage.py
+|   |   |   |-- promotion_stage.py
+|   |   |   |-- index_stage.py
+|   |   |   |-- validation_stage.py
+|   |   |   `-- commit_stage.py
+|   |   |-- snapshots/
+|   |   |   |-- models.py
+|   |   |   |-- manager.py
+|   |   |   |-- revision_index.py
+|   |   |   `-- last_good_snapshot.py
+|   |   |-- queries/
+|   |   |   |-- risk_query.py
+|   |   |   |-- risk_pivot_query.py
+|   |   |   |-- top_promotions_query.py
+|   |   |   |-- dimension_catalog.py
+|   |   |   |-- market_history_query.py
+|   |   |   |-- stock_query.py
+|   |   |   `-- pnl_history_query.py
+|   |   `-- services/
+|   |       |-- refresh_service.py
+|   |       |-- risk_service.py
+|   |       |-- quick_market_service.py
+|   |       |-- data_service.py
+|   |       |-- stock_service.py
+|   |       |-- pnl_service.py
+|   |       `-- statics_service.py
+|   |-- adapters/
+|   |   |-- production/
+|   |   |   |-- readiness/risk_checker.py
+|   |   |   |-- risk/ir.py
+|   |   |   |-- risk/fx.py
+|   |   |   |-- risk/credit.py
+|   |   |   |-- risk/commodities.py
+|   |   |   |-- risk/new_positions.py
+|   |   |   |-- risk/cross_gamma.py
+|   |   |   |-- market/ir.py
+|   |   |   |-- market/fx.py
+|   |   |   |-- market/credit.py
+|   |   |   |-- market/commodities.py
+|   |   |   |-- portfolio/configuration.py
+|   |   |   |-- portfolio/reported_underlying.py
+|   |   |   |-- stock/source.py
+|   |   |   |-- pnl/colossus.py
+|   |   |   |-- pnl/sog_sender.py
+|   |   |   `-- pnl/portfolio_sender.py
+|   |   |-- fake/
+|   |   |   |-- dataset.py
+|   |   |   |-- scenarios.py
+|   |   |   |-- readiness.py
+|   |   |   |-- risk.py
+|   |   |   |-- market.py
+|   |   |   |-- portfolios.py
+|   |   |   |-- stock.py
+|   |   |   |-- colossus.py
+|   |   |   `-- senders.py
+|   |   |-- history/
+|   |   |   |-- schemas.py
+|   |   |   |-- parquet.py
+|   |   |   |-- manifests.py
+|   |   |   |-- legacy_market_csv.py
+|   |   |   |-- legacy_stock_csv.py
+|   |   |   |-- legacy_pnl_csv.py
+|   |   |   `-- migration.py
+|   |   `-- storage/
+|   |       |-- saved_views.py
+|   |       |-- adjustments.py
+|   |       `-- snapshot_store.py
+|   |-- pages/
+|   |   |-- shell/
+|   |   |   |-- ids.py
+|   |   |   |-- layout.py
+|   |   |   |-- callbacks.py
+|   |   |   |-- navigation.py
+|   |   |   `-- refresh_bar.py
+|   |   |-- risk/
+|   |   |   |-- ids.py
+|   |   |   |-- state.py
+|   |   |   |-- layout.py
+|   |   |   |-- callbacks.py
+|   |   |   |-- service.py
+|   |   |   |-- aggregate_pnl/{layout.py,callbacks.py,table.py}
+|   |   |   |-- top_promotions/{layout.py,callbacks.py,table.py}
+|   |   |   |-- quick_risk/{layout.py,callbacks.py}
+|   |   |   |-- quick_market/{layout.py,callbacks.py,charts.py}
+|   |   |   |-- explorer/{layout.py,callbacks.py,field_sidebar.py,pivot_table.py,detail.py}
+|   |   |   `-- unmapped/{layout.py,callbacks.py}
+|   |   |-- stock/
+|   |   |   |-- ids.py
+|   |   |   |-- state.py
+|   |   |   |-- layout.py
+|   |   |   |-- callbacks.py
+|   |   |   |-- service.py
+|   |   |   |-- comparison.py
+|   |   |   |-- hierarchy.py
+|   |   |   |-- history_chart.py
+|   |   |   `-- source_rows.py
+|   |   |-- pnl/
+|   |   |   |-- ids.py
+|   |   |   |-- state.py
+|   |   |   |-- layout.py
+|   |   |   |-- callbacks.py
+|   |   |   |-- service.py
+|   |   |   |-- aggregate.py
+|   |   |   |-- sog_editor.py
+|   |   |   |-- portfolio_editor.py
+|   |   |   |-- validation.py
+|   |   |   |-- history_tree.py
+|   |   |   `-- history_chart.py
+|   |   |-- data/
+|   |   |   |-- ids.py
+|   |   |   |-- state.py
+|   |   |   |-- layout.py
+|   |   |   |-- callbacks.py
+|   |   |   |-- service.py
+|   |   |   |-- period_controls.py
+|   |   |   |-- market/{layout.py,callbacks.py,controls.py,charts.py,playback.py,comparison.py}
+|   |   |   |-- stock/{layout.py,callbacks.py,charts.py,comparison.py}
+|   |   |   |-- pnl/{layout.py,callbacks.py,tree.py,charts.py}
+|   |   |   `-- risk/{layout.py,callbacks.py,charts.py}
+|   |   `-- statics/
+|   |       |-- ids.py
+|   |       |-- layout.py
+|   |       |-- callbacks.py
+|   |       |-- service.py
+|   |       `-- table.py
+|   |-- shared/
+|   |   |-- components/
+|   |   |   |-- card.py
+|   |   |   |-- split_panel.py
+|   |   |   |-- bounded_filter.py
+|   |   |   |-- saved_views.py
+|   |   |   |-- disclosure.py
+|   |   |   |-- status.py
+|   |   |   |-- progress.py
+|   |   |   |-- field_sidebar.py
+|   |   |   `-- viewport_table.py
+|   |   |-- browser/
+|   |   |   |-- clientside_callbacks.py
+|   |   |   |-- figure_payloads.py
+|   |   |   |-- playback.py
+|   |   |   `-- column_viewport.py
+|   |   `-- formatting/
+|   |       |-- numbers.py
+|   |       |-- labels.py
+|   |       `-- dates.py
+|   `-- jobs/
+|       |-- archive_daily.py
+|       |-- migrate_market_csv.py
+|       |-- migrate_stock_csv.py
+|       |-- migrate_pnl_csv.py
+|       |-- backfill_history.py
+|       |-- validate_history.py
+|       `-- compact_history.py
+|-- data/
+|   |-- fake/{configuration,generated}/
+|   `-- history/{commits,market,stock,pnl,risk,portfolio_authority}/
+|-- tests/
+|   |-- unit/{domain,application,pages}/
+|   |-- integration/{adapters,history,pipeline}/
+|   |-- architecture/
+|   |-- smoke/
+|   `-- performance/
+|-- docs/
+|-- scripts/
+`-- .github/workflows/
