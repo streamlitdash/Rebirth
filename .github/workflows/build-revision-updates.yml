@@ -1,0 +1,51 @@
+name: Build consolidated revision updates
+
+on:
+  push:
+    branches:
+      - docs/rebirth-v3-spec
+    paths:
+      - docs/rebirth-v3/.revision-parts/READY
+
+permissions:
+  contents: write
+
+jobs:
+  assemble:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out specification branch
+        uses: actions/checkout@v4
+        with:
+          ref: docs/rebirth-v3-spec
+          fetch-depth: 1
+
+      - name: Assemble and verify Markdown archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="docs/rebirth-v3/REVISION_UPDATES.md"
+          parts="docs/rebirth-v3/.revision-parts"
+          : > "$output"
+          count=0
+          while IFS= read -r part; do
+            base64 --decode "$part" >> "$output"
+            count=$((count + 1))
+          done < <(find "$parts" -maxdepth 1 -type f -name 'part-*.b64' | sort)
+          test "$count" -eq 10
+          actual="$(sha256sum "$output" | awk '{print $1}')"
+          expected="47dfc18387240c1f5a99d6398b868e88a7792d7321d87cc0a0980f048fd745b3"
+          test "$actual" = "$expected"
+          test "$(wc -c < "$output")" -eq 1619241
+
+      - name: Commit the single consolidated file and remove staging files
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -rf docs/rebirth-v3/.revision-parts
+          rm -f .github/workflows/build-revision-updates.yml
+          git add -A docs/rebirth-v3 .github/workflows/build-revision-updates.yml
+          git commit -m "Consolidate Rebirth Markdown into revision updates"
+          git push origin HEAD:docs/rebirth-v3-spec
